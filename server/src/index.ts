@@ -1,4 +1,5 @@
-import { loadSampleCrosswords, printPreview } from "./services/crosswordService";
+import { loadSampleCrosswords } from "./services/crosswordService";
+import { checkSingleSlots } from "./utils/checkSingleSlots";
 
 const crosswords = loadSampleCrosswords();
-printPreview(crosswords);
+for (const cw of crosswords) checkSingleSlots(cw);

@@ -2,86 +2,47 @@ import { readFileSync } from "fs";
 import { basename } from "path";
 import { getGridSize } from "../config/templates";
 
-export type CellChar = "*" | "#" | "⬇" | "➡" | "↘";
-export type ColumnMajorGrid = string[]; // строка = один столбец
+export type Cell = "*" | "#" | "⬇" | "➡" | "↘";
+export type Grid = Cell[][];          // [row][col] (row-major)
 
-// ↓, →, ↘ – соответствие byte ⇒ символ
-const DIR_TO_CHAR: Record<number, CellChar> = {
-  // ↓
+const DIR_TO_CELL: Record<number, Cell> = {
   0x01: "⬇", 0x02: "⬇", 0x03: "⬇", 0x04: "⬇", 0x05: "⬇", 0x06: "⬇",
-  // ↘
   0x07: "↘", 0x0d: "↘", 0x19: "↘", 0x1a: "↘", 0x1c: "↘", 0x1d: "↘",
   0x29: "↘", 0x2b: "↘",
-  // →
   0x08: "➡", 0x10: "➡", 0x18: "➡",0x20: "➡", 0x28: "➡", 0x30: "➡", 0x38: "➡",
 };
 
-/**
- * Сигнатура "SHABLON  2GO" в ASCII (0x53 0x48 ... 0x32 0x47 0x4F)
- * Последние 3 байта ("2GO") = ID шаблона.
- */
-const SHABLON_MAGIC = Buffer.from("SHABLON  2GO", "ascii");
-const MAGIC_LEN = "SHABLON  2".length + 1; // первые 10 байт до буквы G
-
 export interface ParsedFsh {
   fileName: string;
-  templateId: string;
   rows: number;
   cols: number;
-  grid: ColumnMajorGrid; // column‑major
+  grid: Grid;
 }
 
-export function parseFshFile(fullPath: string): ParsedFsh {
+export function parseFsh(fullPath: string): ParsedFsh {
   const buf = readFileSync(fullPath);
+  const magicPos = buf.indexOf("SHABLON  ");
+  if (magicPos === -1) throw new Error(`${fullPath}: подписи SHABLON не найдено`);
+  const tplId = buf.toString("ascii", magicPos + 9, magicPos + 12);
+  const { rows, cols } = getGridSize(tplId);
 
-  // Найти начало подписи "SHABLON  2??"
-  const shablonPos = buf.indexOf("SHABLON  ");
-  if (shablonPos === -1) {
-    throw new Error(`Файл ${fullPath}: подпись \"SHABLON  \" не найдена`);
-  }
-
-  // Шаблон ID – 3 байта после пробела: "2GO", "3XY" и т. п.
-  const templateId = buf.toString("ascii", shablonPos + 9, shablonPos + 12);
-  const { rows, cols } = getGridSize(templateId);
-
-  // Смещаемся на конец подписи
-  let i = shablonPos + 12;
-  const cells: CellChar[] = [];
-
+  const cells: Cell[] = [];
+  let i = magicPos + 12;
   while (cells.length < rows * cols) {
-    const byte = buf[i++];
-    switch (byte) {
-      case 0x01:
-        cells.push("*");
-        break;
-      case 0x02:
-        cells.push("#");
-        break;
-      case 0x04: {
-        const dirByte = buf[i++];
-        const ch = DIR_TO_CHAR[dirByte];
-        if (!ch) throw new Error(`Неизвестное направление 0x${dirByte.toString(16)}`);
-        cells.push(ch);
-        break;
-      }
-      default:
-        throw new Error(`Неожиданный байт 0x${byte.toString(16)} в ${fullPath}`);
-    }
+    const b = buf[i++];
+    if (b === 0x01) cells.push("*");
+    else if (b === 0x02) cells.push("#");
+    else if (b === 0x04) {
+      const dir = DIR_TO_CELL[buf[i++]!];
+      if (!dir) throw new Error(`Неизвестное направление в ${fullPath}`);
+      cells.push(dir);
+    } else throw new Error(`Неожиданный байт 0x${b.toString(16)} в ${fullPath}`);
   }
 
-  // Преобразуем в column‑major массив строк
-  const columns: ColumnMajorGrid = Array.from({ length: cols }, () => "");
-  for (let col = 0; col < cols; col++) {
-    for (let row = 0; row < rows; row++) {
-      columns[col] += cells[row * cols + col];
-    }
-  }
+  // row-major
+  const grid: Grid = Array.from({ length: rows }, (_, r) =>
+    cells.slice(r * cols, (r + 1) * cols) as Cell[]
+  );
 
-  return {
-    fileName: basename(fullPath),
-    templateId,
-    rows,
-    cols,
-    grid: columns,
-  };
+  return { fileName: basename(fullPath, ".fsh"), rows, cols, grid };
 }

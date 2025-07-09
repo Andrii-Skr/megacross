@@ -1,6 +1,6 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
+  // output   = "../src/generated/prisma"
 }
 
 datasource db {
@@ -121,4 +121,5 @@ model words_v {
   word_group BigInt @default(0)
   foto       String @default("0") @db.VarChar(1)
   back_id    BigInt @default(-1)
+  word_length Int
 }
