@@ -1,0 +1,21 @@
+{
+  "name": "cross",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^24.0.12",
+    "prisma": "^6.11.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.11.1"
+  }
+}
