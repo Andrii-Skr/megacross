@@ -1,55 +1,52 @@
-import { ColumnGrid, Cell } from "./parseFsh";
-import { extractSlots, Slot, Dir } from "./slots";
+import { Cell, Slot, ROWS, COLS } from "../types";
 
-export interface SolveResult { filled: ColumnGrid; used: string[]; }
+const EMPTY = "." as const;
 
-/** dict: длина → слова */
-export function solve(colGrid: ColumnGrid, dict: Map<number,string[]>): SolveResult {
-  const cols = colGrid.length;
-  const rows = colGrid[0].length;
+export function solve(
+  rawRows: string[],
+  slots: Slot[],
+  dict: Map<number,string[]>
+): string[] | null {
 
-  /* рабочая сетка букв (“#” остаётся, пустое — “”) */
-  const letters: string[] = colGrid.map(col =>
-    col.split("").map(ch => (ch === "#" ? "#" : "")).join("")
-  );
+  // делаем мутируемую копию сетки
+  const grid: Cell[][] = rawRows.map(row =>
+    [...row].map(ch => (ch === "#" ? "#" : EMPTY))
+  ) as Cell[][];
 
-  const slots = extractSlots(colGrid);
-  const used  = new Set<string>();
-  const step: Record<Dir,[number,number]> = { down:[0,1], right:[1,0] };
+  // быстр. проверка: все длины присутствуют в словаре
+  const missing = slots
+    .filter(s => !(dict.get(s.len)?.length))
+    .map(s => s.len);
+  if (missing.length) {
+    console.warn("нет слов длины:", [...new Set(missing)].join(", "));
+    return null;
+  }
 
-  const can = (w:string,s:Slot)=>{
-    let [c,r] = [s.c,s.r];
-    const [dc,dr] = step[s.dir];
-    for (let i=0;i<s.len;i++,c+=dc,r+=dr) {
-      const ch = letters[c][r];
-      if (ch && ch !== w[i]) return false;
-    }
-    return true;
-  };
+  const backtrack = (idx: number): boolean => {
+    if (idx === slots.length) return true;
 
-  const write = (w:string,s:Slot,on:boolean)=>{
-    let [c,r] = [s.c,s.r];
-    const [dc,dr] = step[s.dir];
-    for (let i=0;i<s.len;i++,c+=dc,r+=dr) {
-      const col = letters[c].split("");
-      col[r] = on ? w[i] : "";
-      letters[c] = col.join("");
-    }
-  };
+    const slot = slots[idx];
+    const pattern = slot.cells.map(([r,c]) => grid[r][c]).join("");
 
-  function dfs(k:number):boolean {
-    if (k === slots.length) return true;
-    const s = slots[k];
-    const list = dict.get(s.len) ?? [];
-    for (const w of list) {
-      if (used.has(w) || !can(w,s)) continue;
-      write(w,s,true); used.add(w);
-      if (dfs(k+1)) return true;
-      write(w,s,false); used.delete(w);
+    const candidates = (dict.get(slot.len)!)
+      .filter(w => pattern.split("").every((g,i) =>
+        g === EMPTY || g === w[i]));
+
+    for (const w of candidates) {
+      const written: [number,number,Cell][] = [];
+      for (let i = 0; i < slot.len; i++) {
+        const [r,c] = slot.cells[i];
+        written.push([r,c,grid[r][c]]);
+        grid[r][c] = w[i] as Cell;
+      }
+      if (backtrack(idx + 1)) return true;
+      written.forEach(([r,c,prev]) => grid[r][c] = prev);
     }
     return false;
-  }
-  if (!dfs(0)) throw new Error("словаря не хватает");
+  };
 
-  return { filled: letters, used: [...used] };
+  if (!backtrack(0)) return null;
+
+  // вернуть итоговые строки
+  return grid.map(r => r.join(""));
 }

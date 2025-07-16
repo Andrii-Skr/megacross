@@ -1,68 +1,41 @@
-// grid[col][row]      ← column-major 31 × 23
+import { readFileSync } from "node:fs";
+import { COLS, ROWS, Cell } from "../types";
 
-import { readFileSync } from "fs";
-import { basename } from "path";
-import { getGridSize } from "../config/templates";
+const HEADER_BYTES = 12;
+const down  = new Set([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+const right = new Set([0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38]);
+const diag  = new Set([0x07, 0x0d, 0x19, 0x1a, 0x1c, 0x1d, 0x29, 0x2b]);
 
-export type Cell = "*" | "#" | "⬇" | "➡" | "↘";
-export type ColumnGrid = Cell[][];           // grid[col][row]
+function readCell(buf: Buffer, i: number): [Cell, number] {
+  const b = buf[i];
 
-export interface ParsedFsh {
-  fileName: string;
-  rows:     number;   // 23
-  cols:     number;   // 31
-  grid:     ColumnGrid;   // column-major
-}
+  if (b === 0x01) return ["*", i + 1];
+  if (b === 0x02) return ["#", i + 1];
 
-/* код-направление → символ */
-const DIR: Record<number, Cell> = {
-  0x01:"⬇",0x02:"⬇",0x03:"⬇",0x04:"⬇",0x05:"⬇",0x06:"⬇",
-  0x07:"↘",0x0d:"↘",0x19:"↘",0x1a:"↘",0x1c:"↘",0x1d:"↘",0x29:"↘",0x2b:"↘",
-  0x08:"➡",0x10:"➡",0x18:"➡",0x20:"➡",0x28:"➡",0x30:"➡",0x38:"➡",
-};
-
-export function parseFsh(fullPath: string): ParsedFsh {
-  const buf = readFileSync(fullPath);
-
-  /* 1. «SHABLON  » */
-  const sig = buf.indexOf("SHABLON  ");
-  if (sig === -1) throw new Error(`${fullPath}: подпись SHABLON не найдена`);
-
-  /* 2. размеры 23×31 по ID шаблона */
-  const tplId = buf.toString("ascii", sig + 9, sig + 12);
-  const { rows, cols } = getGridSize(tplId);
-  const need = rows * cols;
-
-  /* 3. первый байт 01 / 02 / 04 */
-  let i = sig + 12;
-  while (i < buf.length && ![0x01, 0x02, 0x04].includes(buf[i])) i++;
-  if (i === buf.length) throw new Error(`${fullPath}: начало сетки не найдено`);
-
-  /* 4. читаем ячейки */
-  const cells: Cell[] = [];
-  while (cells.length < need && i < buf.length) {
-    const b = buf[i++];
-    if (b === 0x01) cells.push("*");
-    else if (b === 0x02) cells.push("#");
-    else if (b === 0x04) {
-      const d = buf[i++]!;
-      const cell = DIR[d];
-      if (!cell) throw new Error(`неизв. код 0x${d.toString(16)} в ${fullPath}`);
-      cells.push(cell);
-    } else break;                      // хвост/паддинг
+  if (b === 0x04) {
+    const dir = buf[i + 1];
+    if (down.has(dir))  return ["↓", i + 2];
+    if (right.has(dir)) return ["→", i + 2];
+    if (diag.has(dir))  return ["↘", i + 2];
+    throw new Error(`unknown direction byte 0x${dir.toString(16)}`);
   }
-  if (cells.length !== need)
-    throw new Error(`${fullPath}: ожидалось ${need}, получено ${cells.length}`);
-
-  /* 5. column-major grid[col][row] */
-  const grid: ColumnGrid = Array.from({ length: cols }, () =>
-    Array<Cell>(rows)
-  );
-
-  let idx = 0;
-  for (let r = 0; r < rows; r++)
-  for (let c = 0; c < cols; c++)          // ← порядок как в файле
-      grid[c][r] = cells[idx++];
-
-  return { fileName: basename(fullPath, ".fsh"), rows, cols, grid };
+  throw new Error(`unexpected byte 0x${b.toString(16)} at ${i}`);
 }
+
+export function parseFsh(path: string): string[] {
+  const buf = readFileSync(path);
+  let idx   = HEADER_BYTES;
+
+  const grid: Cell[][] = Array.from({ length: ROWS }, () => Array(COLS).fill("*"));
+
+  for (let col = 0; col < COLS; col++) {
+    for (let row = 0; row < ROWS; row++) {
+      const [c, next] = readCell(buf, idx);
+      grid[row][col] = c;
+      idx = next;
+    }
+  }
+  return grid.map(r => r.join(""));
+}
+
+export { validate } from "./grid";

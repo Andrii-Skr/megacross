@@ -4,12 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "top10": "ts-node scripts/print-top10.ts",
-    "top10slots": "ts-node scripts/print-top10-with-slots.ts",
-    "missing": "ts-node scripts/check-missing.ts",
-    "debug10": "ts-node scripts/debug-top10.ts",
-    "stats": "ts-node scripts/word-stats.ts",
-    "check": "ts-node scripts/check-dictionary.ts",
+    "fsh": "ts-node scripts/fsh.ts",
+    "length-stats": "ts-node scripts/length-stats.ts",
     "dev": "ts-node src/index.ts"
   },
   "keywords": [],
@@ -23,5 +19,6 @@
   },
   "dependencies": {
     "@prisma/client": "^6.11.1"
-  }
+  },
+  "packageManager": "pnpm@10.11.1+sha512.e519b9f7639869dc8d5c3c5dfef73b3f091094b0a006d7317353c72b124e80e1afd429732e28705ad6bfa1ee879c1fce46c128ccebd3192101f43dd67c667912"
 }
