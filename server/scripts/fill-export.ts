@@ -1,46 +1,54 @@
 #!/usr/bin/env ts-node
-//------------------------------------------------------------
+//------------------------------------------------------------------
 import { mkdirSync, writeFileSync } from "node:fs";
 import { parseArgs }                from "node:util";
 import { parseFsh }                 from "../src/utils/parseFsh";
 import { validate, scanSlots }      from "../src/utils/grid";
 import { solve }                    from "../src/utils/solver";
 import { loadDictionary }           from "../src/services/dictionary";
-import { Cell, ROWS, COLS }         from "../src/types";
+import { Cell, Grid }               from "../src/types";
 
-const CELL = 30; // px
+const CELL = 30;                         // px
 
-// оборачиваем весь «main» в IIFE
+/* ---------- CLI ---------- */
+const { values, positionals } = parseArgs({
+  options: {
+    file:    { type: "string",  short: "f" },
+    shuffle: { type: "boolean", short: "s" },
+  },
+  allowPositionals: true,
+});
+const inFile    = values.file ?? positionals[0];
+const doShuffle = values.shuffle === true;
+
+if (!inFile) {
+  console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle]");
+  process.exit(1);
+}
+
 (async () => {
-  const { values, positionals } = parseArgs({
-    options: { file: { type: "string", short: "f" } },
-    allowPositionals: true,
-  });
-  const inFile = values.file ?? positionals[0];
-  if (!inFile) {
-    console.error("Usage: pnpm run fill-export -- --file <path.fsh>");
-    process.exit(1);
-  }
-
   /* 1. parse + validate */
-  const rawRows = parseFsh(inFile);
-  validate(rawRows);
-  const slots   = scanSlots(rawRows);
+  const grid: Grid = parseFsh(inFile);   // { rows, cols, marker, data[] }
+  validate(grid);
 
-  /* 2. load dictionary + solve */
-  const dict = await loadDictionary();          // ← await внутри IIFE теперь ок
-  const filledRows = solve(rawRows, slots, dict);
-  if (!filledRows) {
-    console.error("⚠ Не удалось подобрать слова.");
+  /* 2. slots + dictionary */
+  const slots = scanSlots(grid);
+  const dict  = await loadDictionary();
+
+  /* 3. solve */
+  const solved = solve(grid.data, slots, dict, doShuffle);
+  if (!solved) {
+    console.error("Не удалось заполнить: словаря недостаточно.");
     process.exit(1);
   }
 
-  /* 3a. make SVG */
+  /* 4. SVG */
+  const { rows: ROWS, cols: COLS } = grid;
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS*CELL}" height="${ROWS*CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const x = c * CELL, y = r * CELL;
-      const ch = filledRows[r][c] as Cell;
+      const ch = solved[r][c] as Cell;
       if (ch === "#") {
         svg += `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
       } else {
@@ -51,17 +59,16 @@ const CELL = 30; // px
   }
   svg += "</svg>";
 
-  /* 3b. words list */
-  const usedWords = slots.map(s =>
-    s.cells.map(([r,c]) => filledRows[r][c]).join("")
-  );
+  /* 5. список использованных слов */
+  const used = slots
+    .map(s => s.cells.map(([r,c]) => solved[r][c]).join(""))
+    .join("\n");
 
-  /* 4. write files */
+  /* 6. вывод */
   mkdirSync("out", { recursive: true });
   writeFileSync("out/crossword.svg", svg);
-  writeFileSync("out/used-words.txt", usedWords.join("\n"));
+  writeFileSync("out/used-words.txt", used);
 
-  console.log("✔ crossword filled.");
-  console.log("  SVG : out/crossword.svg");
-  console.log("  TXT : out/used-words.txt");
+  console.log("✔ SVG  → out/crossword.svg");
+  console.log("✔ words→ out/used-words.txt");
 })();

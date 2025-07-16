@@ -1,31 +1,42 @@
 #!/usr/bin/env ts-node
+//------------------------------------------------------------------
 import { parseArgs }           from "node:util";
 import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
 import { solve }               from "../src/utils/solver";
 import { loadDictionary }      from "../src/services/dictionary";
+import { Grid }                from "../src/types";
 
 (async () => {
+  /* ---- 0. CLI ---- */
   const { values, positionals } = parseArgs({
     options: { file: { type: "string", short: "f" } },
     allowPositionals: true,
   });
   const file = values.file ?? positionals[0];
-  if (!file) { console.error("use --file <path>"); process.exit(1); }
+  if (!file) {
+    console.error("Usage: pnpm run fill -- --file <path/to/file.fsh>");
+    process.exit(1);
+  }
 
-  const raw = parseFsh(file);     // 1) parse
-  validate(raw);                  // 2) structure check
+  /* ---- 1. parse + validate ---- */
+  const grid: Grid = parseFsh(file);   // { rows, cols, marker, data[] }
+  validate(grid);
 
-  const slots = scanSlots(raw);   // 3) find slots
+  /* ---- 2. slots ---- */
+  const slots = scanSlots(grid);
   console.log("slots:", slots.length);
 
+  /* ---- 3. dictionary + solve ---- */
   const dict = await loadDictionary();
-  const solved = solve(raw, slots, dict);   // 4) fill
+  const solved = solve(grid.data, slots, dict);   // grid.data = массив строк
 
   if (!solved) {
     console.error("can't solve with current dictionary");
     process.exit(1);
   }
+
+  /* ---- 4. output ---- */
   console.log("\n=== filled ===");
   console.log(solved.join("\n"));
 })();

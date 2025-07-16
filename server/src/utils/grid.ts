@@ -1,21 +1,22 @@
 // src/grid.ts
 // -----------------------------------------------------------
-// • validate(...)  – проверяем размеры и символы сетки
-// • scanSlots(...) – находим ВСЕ слова-слоты:
-//       ↓  →  и   ↘  (↘ даёт СРАЗУ два слота: вниз И вправо)
-// • lengthStats(...) – выдаём «длина → количество» + total
+// validate(grid)        – проверяем символы и размеры
+// scanSlots(grid)       – находим слова-слоты (↘ ⇒ два: ↓ и →)
+// lengthStats(slots)    – длина → количество + total
 // -----------------------------------------------------------
-import { Cell, Slot, ROWS, COLS, DIRS } from "../types";
+import { Cell, Grid, Slot, DIRS } from "../types";
 
-/* допустимые символы в .fsh */
+/* допустимые символы */
 const ALLOWED = new Set<Cell>(["*", "#", "↓", "→", "↘"]);
 
-/* ------------------ 1. ВАЛИДАЦИЯ ------------------------- */
-export function validate(rows: string[]): void {
-  if (rows.length !== ROWS) {
-    throw new Error(`bad row count: ${rows.length} (expect ${ROWS})`);
+/* ---------- 1. ВАЛИДАЦИЯ --------------------------------- */
+export function validate(grid: Grid): void {
+  const { rows: ROWS, cols: COLS, data } = grid;
+
+  if (data.length !== ROWS) {
+    throw new Error(`bad row count: ${data.length} (expect ${ROWS})`);
   }
-  rows.forEach((row, i) => {
+  data.forEach((row, i) => {
     if (row.length !== COLS) {
       throw new Error(`row ${i} length ${row.length} (expect ${COLS})`);
     }
@@ -27,35 +28,32 @@ export function validate(rows: string[]): void {
   });
 }
 
-/* ------------------ 2. ПОИСК СЛОТОВ ---------------------- */
-// ↘ стартер порождает два направления (down + right).
+/* ---------- 2. ПОИСК СЛОТОВ ------------------------------ */
 const dirListFrom = (ch: Cell) =>
   ch === "↓" ? [DIRS.down] :
   ch === "→" ? [DIRS.right] :
   ch === "↘" ? [DIRS.down, DIRS.right] :
   [];
 
-/** Проверяем, что перед стрелкой стенка (или край), иначе это не старт */
-const isStart = (rows: string[], r: number, c: number, dir: typeof DIRS[keyof typeof DIRS]): boolean => {
-  const at = (row: number, col: number) => rows[row][col] as Cell;
+/** проверяем, что перед стрелкой # или край */
+const isStart = (at: (r: number, c: number) => Cell, r: number, c: number,
+                 dir: typeof DIRS[keyof typeof DIRS]): boolean => {
   if (dir === DIRS.right) return c === 0 || at(r, c - 1) === "#";
-  if (dir === DIRS.down)  return r === 0 || at(r - 1, c) === "#";
-  return false; // DIRS.diag не используем как отдельное направление
+  /* DIRS.down */
+  return r === 0 || at(r - 1, c) === "#";
 };
 
-/** Находит все слоты, пропуская «однобуквенные» */
-export function scanSlots(rows: string[]): Slot[] {
-  const at = (r: number, c: number) => rows[r][c] as Cell;
+export function scanSlots(grid: Grid): Slot[] {
+  const { rows: ROWS, cols: COLS, data } = grid;
+  const at = (r: number, c: number) => data[r][c] as Cell;
+
   const slots: Slot[] = [];
   let id = 0;
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const dirs = dirListFrom(at(r, c));
-      if (!dirs.length) continue;
-
-      for (const dir of dirs) {
-        if (!isStart(rows, r, c, dir)) continue;
+      for (const dir of dirListFrom(at(r, c))) {
+        if (!isStart(at, r, c, dir)) continue;
 
         const cells: [number, number][] = [[r, c]];
         for (
@@ -66,7 +64,7 @@ export function scanSlots(rows: string[]): Slot[] {
           cells.push([nr, nc]);
         }
 
-        if (cells.length > 1) {              // пропускаем 1-буквенные
+        if (cells.length > 1) {
           slots.push({ id: id++, r, c, dir, len: cells.length, cells });
         }
       }
@@ -75,11 +73,9 @@ export function scanSlots(rows: string[]): Slot[] {
   return slots;
 }
 
-/* ------------------ 3. СТАТИСТИКА ------------------------ */
+/* ---------- 3. СТАТИСТИКА ------------------------------- */
 export function lengthStats(slots: Slot[]): Record<string, number> {
   const stats: Record<string, number> = { total: slots.length };
-  for (const { len } of slots) {
-    stats[len] = (stats[len] ?? 0) + 1;
-  }
+  for (const { len } of slots) stats[len] = (stats[len] ?? 0) + 1;
   return stats;
 }

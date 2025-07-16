@@ -1,8 +1,15 @@
-export const ROWS = 31;
-export const COLS = 23;
+// export const ROWS = 31;
+// export const COLS = 23;
 
 export type Cell = "*" | "#" | "↓" | "→" | "↘";
 export type GridCell = Cell | ".";
+
+export interface Grid {
+  rows: number;
+  cols: number;
+  data: string[];
+  marker: string;
+}
 
 export const DIRS = {
   down:  { dr: 1, dc: 0 },

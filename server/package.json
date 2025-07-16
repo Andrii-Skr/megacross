@@ -7,6 +7,7 @@
     "fsh": "ts-node scripts/fsh.ts",
     "length-stats": "ts-node scripts/length-stats.ts",
     "fill-export": "ts-node scripts/fill-export.ts",
+    "fill-batch": "ts-node scripts/fill-batch.ts",
     "dev": "ts-node src/index.ts"
   },
   "keywords": [],
