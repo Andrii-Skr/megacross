@@ -1,32 +1,49 @@
 import { ParsedFsh } from "./parseFsh";
-import { extractSlots } from "./slots";
+import { Dir } from "./slots";
+
+/** Координата и направление «единичного» слота */
+interface SingleSlot {
+  row: number;
+  col: number;
+  dir: Dir;
+}
 
 /**
- * Проверяет, есть ли слоты длиной 1 и выводит их координаты.
- * Если таких слотов нет — пишет «OK».
+ * Проверка: есть ли слоты длиной 1.
+ * Печатает результат в консоль.
  */
-export function checkSingleSlots(cross: ParsedFsh): void {
-  /** 1. column-major (string[]) → row-major (string[][]) */
-  const { grid, rows, cols } = cross;
-  const rowMajor: string[][] = Array.from({ length: rows }, () => Array(cols).fill("#"));
+export function checkSingleSlots({ fileName, grid, rows, cols }: ParsedFsh): void {
+  const singles: SingleSlot[] = [];
 
+  const inBounds = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols;
+  const isBlack   = (r: number, c: number) => grid[c][r] === "#";
+
+  // ► для каждой старт-клетки проверяем «право» и «вниз»
   for (let col = 0; col < cols; col++) {
-    const colStr = grid[col];          // строка-столбец, типа "*#⬇…"
+    const column = grid[col];
+
     for (let row = 0; row < rows; row++) {
-      rowMajor[row][col] = colStr[row];
+      const cell = column[row];
+
+      // горизонтали
+      if ((cell === "➡" || cell === "↘") && inBounds(row, col + 1)) {
+        if (isBlack(row, col + 1)) singles.push({ row, col, dir: "right" });
+      }
+
+      // вертикали
+      if ((cell === "⬇" || cell === "↘") && inBounds(row + 1, col)) {
+        if (isBlack(row + 1, col)) singles.push({ row, col, dir: "down" });
+      }
     }
   }
 
-  /** 2. ищем слоты длиной 1 */
-  const singles = extractSlots(rowMajor as any)  // cast, т.к. extractSlots ждёт Cell[][]
-    .filter(s => s.len === 1);
-
+  // ---------- вывод ----------
   if (singles.length === 0) {
-    console.log(`✔ ${cross.fileName}: слоты длиной 1 отсутствуют`);
+    console.log(`✔ ${fileName}: слотов длиной 1 НЕ найдено`);
   } else {
-    console.log(`❗ ${cross.fileName}: найдено ${singles.length} слотов длиной 1:`);
-    singles.forEach(({ r, c, dir }) =>
-      console.log(`   • (${r},${c}) направление ${dir}`)
+    console.log(`❗ ${fileName}: найдено ${singles.length} слотов длиной 1:`);
+    singles.forEach(({ row, col, dir }) =>
+      console.log(`   • (${row},${col}) направление ${dir}`)
     );
   }
 }
