@@ -1,45 +1,46 @@
-import { Grid } from "./parseFsh";
+/* -----------------------------------------------------------
+   src/utils/slots.ts
+   Работает с column-major сеткой (grid[col][row])
+------------------------------------------------------------ */
 
-/** Направление слова */
+import { Cell } from "./parseFsh";
+
+export type ColumnGrid = Cell[][];      // grid[col][row]
 export type Dir = "down" | "right";
 
-/** Слот (место для слова) */
 export interface Slot {
-  id:  number;  // уникальный ID
-  r:   number;  // стартовая строка (0-based)
-  c:   number;  // стартовый столбец (0-based)
-  dir: Dir;     // "down" | "right"
-  len: number;  // длина слова
+  id:  number;
+  r:   number;   // стартовая строка (row)
+  c:   number;   // стартовый столбец (col)
+  dir: Dir;      // направление
+  len: number;   // длина слова (≥2)
 }
 
-/** Выделяем все слоты в сетке */
-export function extractSlots(grid: Grid): Slot[] {
-  const rows = grid.length;
-  const cols = grid[0].length;
+/** Возвращает все слоты кроссворда */
+export function extractSlots(grid: ColumnGrid): Slot[] {
+  const cols = grid.length;         // 31
+  const rows = grid[0].length;      // 23
   const slots: Slot[] = [];
   let id = 1;
 
-  /** Добавить слот, начиная с (row,col) по направлению dir */
-  const addSlot = (row: number, col: number, dir: Dir) => {
-    let length = 0;
-    let r = row;
-    let c = col;
-    const dr = dir === "down" ? 1 : 0;   // шаг по строкам
-    const dc = dir === "right" ? 1 : 0;  // шаг по столбцам  ←--- FIX
-    while (r < rows && c < cols && grid[r][c] !== "#") {
-      length++;
-      r += dr;
-      c += dc;
+  /* вспомогательный регистратор */
+  const push = (r: number, c: number, dir: Dir) => {
+    let len = 0, cc = c, rr = r;
+    while (cc < cols && rr < rows && grid[cc][rr] !== "#") {
+      len++;
+      if (dir === "right") cc++; else rr++;
     }
-    slots.push({ id: id++, r: row, c: col, dir, len: length });
+    if (len >= 2) slots.push({ id: id++, r, c, dir, len });
   };
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const cell = grid[r][c];
-      if (cell === "⬇")        addSlot(r, c, "down");
-      else if (cell === "➡")   addSlot(r, c, "right");
-      else if (cell === "↘") { addSlot(r, c, "down"); addSlot(r, c, "right"); }
+  /* внешний цикл — по столбцам, внутри — по строкам */
+  for (let c = 0; c < cols; c++) {
+    const col = grid[c];
+    for (let r = 0; r < rows; r++) {
+      const cell = col[r];
+      if (cell === "⬇")        push(r, c, "down");
+      else if (cell === "➡")   push(r, c, "right");
+      else if (cell === "↘") { push(r, c, "down"); push(r, c, "right"); }
     }
   }
   return slots;

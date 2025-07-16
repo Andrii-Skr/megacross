@@ -1,91 +1,55 @@
-import { Grid } from "./parseFsh";
-import { Slot, extractSlots } from "./slots";
+import { ColumnGrid, Cell } from "./parseFsh";
+import { extractSlots, Slot, Dir } from "./slots";
 
-export interface SolveResult {
-  filled: string[][];
-  used: string[];
-}
+export interface SolveResult { filled: ColumnGrid; used: string[]; }
 
-/** ---------- НАСТРОЙКИ ---------- */
-const UNIQUE_WORDS = false;      // ← можно ставить true/false
-const SHUFFLE_WORDS = true;      // ← перемешивать варианты одной длины
-const SHOW_PROGRESS = true;      // ← лог слотов и слов при неудаче
-/** -------------------------------- */
+/** dict: длина → слова */
+export function solve(colGrid: ColumnGrid, dict: Map<number,string[]>): SolveResult {
+  const cols = colGrid.length;
+  const rows = colGrid[0].length;
 
-export function solve(grid: Grid, dict: Map<number, string[]>): SolveResult {
-  const rows = grid.length, cols = grid[0].length;
+  /* рабочая сетка букв (“#” остаётся, пустое — “”) */
+  const letters: string[] = colGrid.map(col =>
+    col.split("").map(ch => (ch === "#" ? "#" : "")).join("")
+  );
 
-  // пустая сетка букв
-  const charG: string[][] = grid.map(row => row.map(c => (c === "#" ? "#" : "")));
+  const slots = extractSlots(colGrid);
+  const used  = new Set<string>();
+  const step: Record<Dir,[number,number]> = { down:[0,1], right:[1,0] };
 
-  // собираем слоты (сортируем по длине – меньшие раньше)
-  const slots = extractSlots(grid).sort((a, b) => a.len - b.len);
-
-  // карта длина → список слов (копия, можно перемешать)
-  const pool = new Map<number, string[]>();
-  for (const [len, arr] of dict) {
-    pool.set(len, SHUFFLE_WORDS ? shuffle([...arr]) : [...arr]);
-  }
-
-  const used = new Set<string>();
-  const dirs = { down: [1, 0] as const, right: [0, 1] as const };
-
-  const canPlace = (word: string, s: Slot): boolean => {
-    const [dr, dc] = dirs[s.dir];
-    let r = s.r, c = s.c;
-    for (let i = 0; i < s.len; i++, r += dr, c += dc) {
-      const ch = charG[r][c];
-      if (ch && ch !== word[i]) return false;
+  const can = (w:string,s:Slot)=>{
+    let [c,r] = [s.c,s.r];
+    const [dc,dr] = step[s.dir];
+    for (let i=0;i<s.len;i++,c+=dc,r+=dr) {
+      const ch = letters[c][r];
+      if (ch && ch !== w[i]) return false;
     }
     return true;
   };
 
-  const write = (word: string, s: Slot, put: boolean) => {
-    const [dr, dc] = dirs[s.dir];
-    let r = s.r, c = s.c;
-    for (let i = 0; i < s.len; i++, r += dr, c += dc) {
-      charG[r][c] = put ? word[i] : "";
+  const write = (w:string,s:Slot,on:boolean)=>{
+    let [c,r] = [s.c,s.r];
+    const [dc,dr] = step[s.dir];
+    for (let i=0;i<s.len;i++,c+=dc,r+=dr) {
+      const col = letters[c].split("");
+      col[r] = on ? w[i] : "";
+      letters[c] = col.join("");
     }
   };
 
-  function backtrack(idx: number): boolean {
-    if (idx === slots.length) return true;
-    const slot = slots[idx];
-    const words = pool.get(slot.len);
-    if (!words || !words.length) return false;
-
-    for (const w of words) {
-      if (UNIQUE_WORDS && used.has(w)) continue;
-      if (!canPlace(w, slot)) continue;
-
-      write(w, slot, true);
-      used.add(w);
-
-      if (backtrack(idx + 1)) return true;
-
-      write(w, slot, false);
-      if (UNIQUE_WORDS) used.delete(w);
+  function dfs(k:number):boolean {
+    if (k === slots.length) return true;
+    const s = slots[k];
+    const list = dict.get(s.len) ?? [];
+    for (const w of list) {
+      if (used.has(w) || !can(w,s)) continue;
+      write(w,s,true); used.add(w);
+      if (dfs(k+1)) return true;
+      write(w,s,false); used.delete(w);
     }
-    // если ни одно слово не подошло
     return false;
   }
+  if (!dfs(0)) throw new Error("словаря не хватает");
 
-  if (!backtrack(0)) {
-    if (SHOW_PROGRESS) {
-      console.error("---- Не удалось решить. Состояние сетки ----");
-      console.table(charG.map(r => r.join("")));
-    }
-    throw new Error("Не удалось заполнить сканворд имеющимся словарём");
-  }
-
-  return { filled: charG, used: [...used] };
-}
-
-/** Fisher-Yates */
-function shuffle<T>(a: T[]): T[] {
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
+  return { filled: letters, used: [...used] };
 }

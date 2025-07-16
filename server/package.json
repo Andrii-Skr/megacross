@@ -4,6 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "top10": "ts-node scripts/print-top10.ts",
+    "top10slots": "ts-node scripts/print-top10-with-slots.ts",
+    "missing": "ts-node scripts/check-missing.ts",
+    "debug10": "ts-node scripts/debug-top10.ts",
+    "stats": "ts-node scripts/word-stats.ts",
+    "check": "ts-node scripts/check-dictionary.ts",
     "dev": "ts-node src/index.ts"
   },
   "keywords": [],

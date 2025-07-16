@@ -1,37 +1,21 @@
 import { writeFileSync } from "fs";
+import { ColumnGrid } from "./parseFsh";
 
-export function buildSvg(
-  letters: string[][],
-  cell = 20,
-  outFile = "crossword.svg"
-): void {
-  const rows = letters.length, cols = letters[0].length;
-  const w = cols * cell, h = rows * cell;
-  const pathLines: string[] = [];
-  const textLines: string[] = [];
+export function buildSvg(grid: ColumnGrid, cell=20, out="crossword.svg") {
+  const cols = grid.length, rows = grid[0].length;
+  const W = cols*cell, H = rows*cell;
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = c * cell, y = r * cell;
-      pathLines.push(
-        `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" ` +
-          `fill="${letters[r][c] === "#" ? "black" : "white"}" stroke="black"/>`
-      );
-      if (letters[r][c] !== "#" && letters[r][c] !== "") {
-        textLines.push(
-          `<text x="${x + cell / 2}" y="${y + cell * 0.7}" font-size="${cell *
-            0.7}" text-anchor="middle" font-family="sans-serif">${letters[r][c]}</text>`
-        );
+  const rects: string[] = [];
+  const texts: string[] = [];
+
+  for (let c=0;c<cols;c++){
+    for (let r=0;r<rows;r++){
+      const x=c*cell, y=r*cell, ch=grid[c][r];
+      rects.push(`<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="${ch==="#"?"black":"white"}" stroke="black"/>`);
+      if (ch && ch!=="#"){
+        texts.push(`<text x="${x+cell/2}" y="${y+cell*0.7}" font-size="${cell*0.7}" text-anchor="middle" font-family="sans-serif">${ch}</text>`);
       }
     }
   }
-
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">\n` +
-    pathLines.join("\n") +
-    "\n" +
-    textLines.join("\n") +
-    "\n</svg>";
-
-  writeFileSync(outFile, svg, "utf-8");
+  writeFileSync(out, `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">\n${rects.join("\n")}\n${texts.join("\n")}\n</svg>`);
 }
