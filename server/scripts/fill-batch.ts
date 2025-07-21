@@ -4,7 +4,7 @@
 //  • флаг -u / --unique  → слово используется только один раз за весь запуск
 //  • сохраняет SVG + used-words.txt в out/<basename>/
 //------------------------------------------------------------------
-import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { readdirSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join, basename, extname }               from "node:path";
 import { parseArgs }                             from "node:util";
 
@@ -15,6 +15,7 @@ import { loadDictionary }      from "../src/services/dictionary";
 import { Cell, Grid }          from "../src/types";
 
 const CELL       = 30;        // px
+const ARROW_30   = readFileSync(join(__dirname, "../src/arrows/30.svg")).toString("base64");
 const SAMPLE_DIR = "sample";
 const OUT_DIR    = "out";
 
@@ -86,20 +87,32 @@ if (!files.length) {
 
       /* 7. SVG */
       const { rows: ROWS, cols: COLS } = grid;
-      let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS * CELL}" height="${ROWS * CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
+      let svg    = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS * CELL}" height="${ROWS * CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
+      let svgRaw = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS * CELL}" height="${ROWS * CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
       for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
           const x = c * CELL, y = r * CELL;
           const ch = solved[r][c] as Cell;
+          const code = grid.codes[r][c];
           if (ch === "#") {
-            svg += `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
+            const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
+            svg += rect;
+            svgRaw += rect;
           } else {
-            svg += `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
+            const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
+            svg += rect;
+            svgRaw += rect;
+            if (code === 0x30) {
+              const arrow = `<image href="data:image/svg+xml;base64,${ARROW_30}" x="${x}" y="${y}" width="${CELL*0.8}" height="${CELL*0.8}"/>`;
+              svg += arrow;
+              svgRaw += arrow;
+            }
             svg += `<text x="${x + CELL / 2}" y="${y + CELL / 2}" font-size="${CELL * 0.6}">${ch}</text>`;
           }
         }
       }
-      svg += "</svg>";
+      svg    += "</svg>";
+      svgRaw += "</svg>";
 
       /* 8. список использованных слов */
       const usedWords = slots
@@ -110,6 +123,7 @@ if (!files.length) {
       const dstDir = join(OUT_DIR, name);
       mkdirSync(dstDir, { recursive: true });
       writeFileSync(join(dstDir, "crossword.svg"), svg);
+      writeFileSync(join(dstDir, "crossword-no-text.svg"), svgRaw);
       writeFileSync(join(dstDir, "used-words.txt"), usedWords);
 
       console.log(`  ✔ готово → ${dstDir}`);

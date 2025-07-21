@@ -9,6 +9,7 @@ export interface Grid {
   cols: number;
   data: string[];
   marker: string;
+  codes: number[][];
 }
 
 export const DIRS = {

@@ -1,6 +1,7 @@
 #!/usr/bin/env ts-node
 //------------------------------------------------------------------
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { join }                     from "node:path";
 import { parseArgs }                from "node:util";
 import { parseFsh }                 from "../src/utils/parseFsh";
 import { validate, scanSlots }      from "../src/utils/grid";
@@ -9,6 +10,7 @@ import { loadDictionary }           from "../src/services/dictionary";
 import { Cell, Grid }               from "../src/types";
 
 const CELL = 30;                         // px
+const ARROW_30 = readFileSync(join(__dirname, "../src/arrows/30.svg")).toString("base64");
 
 /* ---------- CLI ---------- */
 const { values, positionals } = parseArgs({
@@ -44,20 +46,32 @@ if (!inFile) {
 
   /* 4. SVG */
   const { rows: ROWS, cols: COLS } = grid;
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS*CELL}" height="${ROWS*CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
+  let svg    = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS*CELL}" height="${ROWS*CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
+  let svgRaw = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS*CELL}" height="${ROWS*CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const x = c * CELL, y = r * CELL;
       const ch = solved[r][c] as Cell;
+      const code = grid.codes[r][c];
       if (ch === "#") {
-        svg += `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
+        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
+        svg += rect;
+        svgRaw += rect;
       } else {
-        svg += `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
+        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
+        svg += rect;
+        svgRaw += rect;
+        if (code === 0x30) {
+          const arrow = `<image href="data:image/svg+xml;base64,${ARROW_30}" x="${x}" y="${y}" width="${CELL*0.6}" height="${CELL*0.6}"/>`;
+          svg += arrow;
+          svgRaw += arrow;
+        }
         svg += `<text x="${x + CELL/2}" y="${y + CELL/2}" font-size="${CELL*0.6}">${ch}</text>`;
       }
     }
   }
-  svg += "</svg>";
+  svg    += "</svg>";
+  svgRaw += "</svg>";
 
   /* 5. список использованных слов */
   const used = slots
@@ -67,6 +81,7 @@ if (!inFile) {
   /* 6. вывод */
   mkdirSync("out", { recursive: true });
   writeFileSync("out/crossword.svg", svg);
+  writeFileSync("out/crossword-no-text.svg", svgRaw);
   writeFileSync("out/used-words.txt", used);
 
   console.log("✔ SVG  → out/crossword.svg");
