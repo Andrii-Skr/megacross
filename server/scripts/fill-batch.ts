@@ -99,13 +99,13 @@ if (!files.length) {
           const ch = solved[r][c] as Cell;
           const orig = grid.data[r][c] as Cell;
           const code = grid.codes[r][c];
-          console.log(ch)
+
           if (ch === "#") {
-            const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
+            const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#333333"/>`;
             svg += rect;
             svgRaw += rect;
           } else {
-            const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
+            const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#333333"/>`;
             svg += rect;
             svgRaw += rect;
             if (code === 0x30 || code === 0x18 || code === 0x28 || code === 0x29 || (code === 0x01 && orig === "↓")) {
