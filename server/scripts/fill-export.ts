@@ -10,6 +10,9 @@ import { loadDictionary }           from "../src/services/dictionary";
 import { Cell, Grid }               from "../src/types";
 
 const CELL = 30;                         // px
+const ARROW_18 = readFileSync(join(__dirname, "../src/arrows/18.svg")).toString("base64");
+const ARROW_28 = readFileSync(join(__dirname, "../src/arrows/28.svg")).toString("base64");
+const ARROW_29 = readFileSync(join(__dirname, "../src/arrows/29.svg")).toString("base64");
 const ARROW_30 = readFileSync(join(__dirname, "../src/arrows/30.svg")).toString("base64");
 
 /* ---------- CLI ---------- */
@@ -61,8 +64,27 @@ if (!inFile) {
         const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
         svg += rect;
         svgRaw += rect;
-        if (code === 0x30) {
-          const arrow = `<image href="data:image/svg+xml;base64,${ARROW_30}" x="${x}" y="${y}" width="${CELL*0.6}" height="${CELL*0.6}"/>`;
+        if (code === 0x30 || code === 0x18 || code === 0x28 || code === 0x29) {
+          const size = CELL * 0.6;
+          let ax = x, ay = y, img = ARROW_30;
+          if (code === 0x30) {
+            ax = x;
+            ay = y;
+            img = ARROW_30;
+          } else if (code === 0x18) {
+            ax = x + CELL - size;
+            ay = y + CELL / 2 - size / 2;
+            img = ARROW_18;
+          } else if (code === 0x28) {
+            ax = x + CELL / 2 - size / 2;
+            ay = y + CELL - size;
+            img = ARROW_28;
+          } else if (code === 0x29) {
+            ax = x + CELL / 2 - size / 2;
+            ay = y + CELL - size;
+            img = ARROW_29;
+          }
+          const arrow = `<image href="data:image/svg+xml;base64,${img}" x="${ax}" y="${ay}" width="${size}" height="${size}"/>`;
           svg += arrow;
           svgRaw += arrow;
         }
