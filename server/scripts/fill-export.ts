@@ -55,6 +55,7 @@ if (!inFile) {
     for (let c = 0; c < COLS; c++) {
       const x = c * CELL, y = r * CELL;
       const ch = solved[r][c] as Cell;
+      const orig = grid.data[r][c] as Cell
       const code = grid.codes[r][c];
       if (ch === "#") {
         const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
@@ -64,8 +65,8 @@ if (!inFile) {
         const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
         svg += rect;
         svgRaw += rect;
-        if (code === 0x30 || code === 0x18 || code === 0x28 || code === 0x29 || (code === 0x01 && ch === "↓")) {
-          const size = CELL * 0.6;
+        if (code === 0x30 || code === 0x18 || code === 0x28 || code === 0x29 || (code === 0x01 && orig === "↓")) {
+          const size = CELL * 0.8;
           if (code === 0x29) {
             const ax1 = x + CELL / 2 - size / 2;
             const ay1 = y;
