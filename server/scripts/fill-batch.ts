@@ -87,6 +87,7 @@ if (!files.length) {
 
       /* 7. SVG */
       const { rows: ROWS, cols: COLS } = grid;
+
       let svg    = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS * CELL}" height="${ROWS * CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
       let svgRaw = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS * CELL}" height="${ROWS * CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
       for (let r = 0; r < ROWS; r++) {
@@ -103,7 +104,10 @@ if (!files.length) {
             svg += rect;
             svgRaw += rect;
             if (code === 0x30) {
-              const arrow = `<image href="data:image/svg+xml;base64,${ARROW_30}" x="${x}" y="${y}" width="${CELL*0.8}" height="${CELL*0.8}"/>`;
+              const arrowSize = CELL * 0.5;
+              const arrowX = x + CELL / 2 - arrowSize / 2;
+              const arrowY = y + CELL - arrowSize;
+              const arrow = `<image href="data:image/svg+xml;base64,${ARROW_30}" x="${arrowX}" y="${arrowY}" width="${arrowSize}" height="${arrowSize}"/>`;
               svg += arrow;
               svgRaw += arrow;
             }
