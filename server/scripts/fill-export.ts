@@ -1,29 +1,76 @@
 #!/usr/bin/env ts-node
 //------------------------------------------------------------------
 import { mkdirSync, writeFileSync } from "node:fs";
+import { basename, join }           from "node:path";
 import { parseArgs }                from "node:util";
 import { parseFsh }                 from "../src/utils/parseFsh";
 import { validate, scanSlots }      from "../src/utils/grid";
 import { solve }                    from "../src/utils/solver";
-import { loadDictionary }           from "../src/services/dictionary";
+import { loadDictionary, loadDefinitions } from "../src/services/dictionary";
+import { buildCrw }                 from "../src/utils/writeCrw";
+import { buildClueEntries }         from "../src/utils/clues";
 import { Cell, Grid }               from "../src/types";
 import { arrowSvg }                 from "./arrow-utils";
+import { buildClueTextMap, renderClueText } from "./clue-svg";
+import {
+  BLOCK_CELL_FILL,
+  CELL_STROKE_COLOR,
+  CELL_STROKE_WIDTH,
+  CLUE_TEXT_FILL,
+  WORD_TEXT_FILL,
+} from "./svg-theme";
 
-const CELL = 30;                         // px
+const DEFAULT_CELL = 30;                         // px
 
 /* ---------- CLI ---------- */
 const { values, positionals } = parseArgs({
   options: {
     file:    { type: "string",  short: "f" },
     shuffle: { type: "boolean", short: "s" },
+    crw:     { type: "boolean", short: "c" },
+    dict:    { type: "string",  short: "d" },
+    template:{ type: "string",  short: "t" },
+    style:   { type: "string" },
   },
   allowPositionals: true,
 });
 const inFile    = values.file ?? positionals[0];
 const doShuffle = values.shuffle === true;
+const doCrw     = values.crw === true;
+const dictPath  = values.dict ?? "";
+const templatePath = values.template ?? inFile;
+const styleName = (values.style ?? "default").toLowerCase();
+const useCorelStyle = styleName === "corel";
+if (!["default", "corel"].includes(styleName)) {
+  console.warn(`Unknown SVG style "${values.style}", using default.`);
+}
+const CELL = useCorelStyle ? 118 : DEFAULT_CELL;
+const EMPTY_CELL_FILL = useCorelStyle ? "#FEFEFE" : "#fff";
+const GRID_OFFSET_X = useCorelStyle ? -CELL / 2 : 0;
+const GRID_OFFSET_Y = useCorelStyle ? -Math.round(CELL * 0.034) : 0;
+const STROKE_WIDTH = useCorelStyle
+  ? Math.round(CELL * 0.07 * 1000) / 1000
+  : CELL_STROKE_WIDTH;
+const WORD_FONT_SIZE = useCorelStyle
+  ? Math.round(CELL * 0.565 * 1000) / 1000
+  : CELL * 0.6;
+const WORD_FONT_WEIGHT_ATTR = useCorelStyle ? ' font-weight="bold"' : "";
+const WORD_BASELINE_ATTR = useCorelStyle ? ' dominant-baseline="alphabetic"' : "";
+const WORD_TEXT_Y = useCorelStyle ? CELL * 0.7 : CELL / 2;
+const SVG_WIDTH = useCorelStyle ? 2480 : 0;
+const SVG_HEIGHT = useCorelStyle ? 3508 : 0;
+const SVG_VIEWBOX = useCorelStyle ? ` viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}"` : "";
+const SVG_XML_SPACE = useCorelStyle ? ' xml:space="preserve"' : "";
+const SVG_STYLE_ATTR = useCorelStyle
+  ? ' style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"'
+  : "";
+const SVG_PREAMBLE = useCorelStyle
+  ? '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
+  : "";
+const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
 
 if (!inFile) {
-  console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle]");
+  console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle] [--crw] [--dict <path>] [--template <path>] [--style corel]");
   process.exit(1);
 }
 
@@ -44,45 +91,102 @@ if (!inFile) {
   }
 
   /* 4. SVG */
+  const usedWords = slots.map((s) =>
+    s.cells.map(([r, c]) => solved[r][c]).join("")
+  );
+  const used = usedWords.join("\n");
+
+  const definitions = await loadDefinitions(usedWords);
+  const clues = buildClueEntries(grid, slots, solved, definitions);
+  const clueTextMap = buildClueTextMap([...clues.down, ...clues.right]);
+
   const { rows: ROWS, cols: COLS } = grid;
-  let svg    = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS*CELL}" height="${ROWS*CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
-  let svgRaw = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS*CELL}" height="${ROWS*CELL}" font-family="monospace" text-anchor="middle" dominant-baseline="central">`;
+  const svgWidth = useCorelStyle ? SVG_WIDTH : COLS * CELL;
+  const svgHeight = useCorelStyle ? SVG_HEIGHT : ROWS * CELL;
+  const svgParts: string[] = [
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${SVG_VIEWBOX}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+  ];
+  const svgRawParts: string[] = [
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${SVG_VIEWBOX}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+  ];
+  const clueDefs: string[] = [];
+  const clueFont = Math.max(5, Math.floor(CELL * 0.22));
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const x = c * CELL, y = r * CELL;
+      const x = GRID_OFFSET_X + c * CELL, y = GRID_OFFSET_Y + r * CELL;
       const ch = solved[r][c] as Cell;
       const orig = grid.data[r][c] as Cell
       const code = grid.codes[r][c];
+      const clueKey = `${r},${c}`;
+      const clueText = clueTextMap.get(clueKey);
       if (ch === "#") {
-        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#000"/>`;
-        svg += rect;
-        svgRaw += rect;
+        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${BLOCK_CELL_FILL}"/>`;
+        svgParts.push(rect);
+        svgRawParts.push(rect);
+        if (clueText) {
+          const clipId = `clue-${r}-${c}`;
+          const clueSvg = renderClueText(
+            x,
+            y,
+            CELL,
+            clueFont,
+            clueText,
+            clipId,
+            CLUE_TEXT_FILL
+          );
+          clueDefs.push(clueSvg.defs);
+          svgParts.push(clueSvg.text);
+          svgRawParts.push(clueSvg.text);
+        }
+        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_STROKE_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
+        svgParts.push(border);
+        svgRawParts.push(border);
       } else {
-        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="#fff" stroke="#000"/>`;
-        svg += rect;
-        svgRaw += rect;
+        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${EMPTY_CELL_FILL}"/>`;
+        svgParts.push(rect);
+        svgRawParts.push(rect);
         const arrow = arrowSvg("export", code, orig, x, y, CELL, CELL * 0.8);
         if (arrow) {
-          svg += arrow;
-          svgRaw += arrow;
+          svgParts.push(arrow);
+          svgRawParts.push(arrow);
         }
-        svg += `<text x="${x + CELL/2}" y="${y + CELL/2}" font-size="${CELL*0.6}">${ch}</text>`;
+        svgParts.push(
+          `<text x="${x + CELL / 2}" y="${y + WORD_TEXT_Y}" font-size="${WORD_FONT_SIZE}" fill="${WORD_TEXT_FILL}"${WORD_FONT_WEIGHT_ATTR}${WORD_BASELINE_ATTR}>${ch}</text>`
+        );
+        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_STROKE_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
+        svgParts.push(border);
+        svgRawParts.push(border);
       }
     }
   }
-  svg    += "</svg>";
-  svgRaw += "</svg>";
+  if (clueDefs.length) {
+    svgParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
+    svgRawParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
+  }
+  svgParts.push("</svg>");
+  svgRawParts.push("</svg>");
 
-  /* 5. список использованных слов */
-  const used = slots
-    .map(s => s.cells.map(([r,c]) => solved[r][c]).join(""))
-    .join("\n");
+  const svg = svgParts.join("");
+  const svgRaw = svgRawParts.join("");
 
   /* 6. вывод */
   mkdirSync("out", { recursive: true });
   writeFileSync("out/crossword.svg", svg);
   writeFileSync("out/crossword-no-text.svg", svgRaw);
   writeFileSync("out/used-words.txt", used);
+  writeFileSync("out/definitions-down.json", JSON.stringify(clues.down, null, 2));
+  writeFileSync("out/definitions-right.json", JSON.stringify(clues.right, null, 2));
+
+  if (doCrw) {
+    const crw = buildCrw(grid, slots, solved, {
+      dictPath,
+      templatePath,
+      lowerCaseWords: true,
+    });
+    const crwOut = join("out", `${basename(inFile, ".fsh")}.crw`);
+    writeFileSync(crwOut, crw);
+    console.log(`✔ CRW  → ${crwOut}`);
+  }
 
   console.log("✔ SVG  → out/crossword.svg");
   console.log("✔ words→ out/used-words.txt");

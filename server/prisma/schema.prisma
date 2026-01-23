@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-  // output   = "../src/generated/prisma"
 }
 
 datasource db {
@@ -8,93 +7,189 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-
-model izd_name {
-  id        BigInt    @id @default(autoincrement())
-  name      String    @db.VarChar(64)
-  redakcia  String    @default("skan") @db.VarChar(16)
-  tabl_name String    @db.VarChar(32)
-  add_user  String    @db.VarChar(256)
-  add_data  DateTime? @default(now()) @db.Timestamptz(6)
+model auth_users {
+  name          String?   @unique
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?   @db.VarChar(60)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime
+  id            Int       @id @default(autoincrement())
+  created_by    Int?
+  is_deleted    Boolean   @default(false)
+  roleId        Int
+  roles         roles     @relation(fields: [roleId], references: [id])
 }
 
-model number_izd {
-  id        BigInt @id @default(autoincrement())
-  izd_id    BigInt
-  curent_id BigInt
-  pub_numb  String @default("пусто") @db.VarChar(64)
+model jp_img {
+  id         BigInt    @id @default(autoincrement())
+  w          BigInt
+  h          BigInt
+  livel      BigInt    @default(3)
+  t_8x8      String
+  t_16x16    String
+  sorc       Bytes
+  use_number String
+  tags       String
+  add_date   DateTime? @db.Date
+  add_user   String    @default("") @db.VarChar(256)
+}
+
+model language {
+  id            Int             @id(map: "Language_pkey") @default(autoincrement())
+  code          String          @unique(map: "Language_code_key") @db.VarChar(8)
+  name          String          @db.VarChar(64)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime
+  opred_v       opred_v[]
+  pending_words pending_words[]
+  word_v        word_v[]
+}
+
+model log_coment {
+  id          BigInt    @id @default(autoincrement())
+  user        String    @default("") @db.VarChar(64)
+  id_opr      BigInt
+  text_coment String    @default("") @db.VarChar(256)
+  add_data    DateTime? @db.Date
+
+  @@index([id_opr])
+}
+
+model opred_tags {
+  opredId BigInt
+  tagId   Int
+  addedBy String?  @db.VarChar(64)
+  addedAt DateTime @default(now())
+  opred_v opred_v  @relation(fields: [opredId], references: [id], onDelete: Cascade)
+  tags    tags     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([opredId, tagId])
+  @@index([tagId])
 }
 
 model opred_v {
-  id           BigInt    @id @default(autoincrement())
-  word_id      BigInt    @default(-1)
-  text_opr     String    @default("") @db.VarChar(255)
-  end_date     DateTime? @default(dbgenerated("'2317-01-01'::date")) @db.Date
-  lang         String    @default("r") @db.Char(1)
-  tema         BigInt    @default(0)
-  livel        Int       @default(1) @db.SmallInt
-  w1           Int       @default(100) @db.SmallInt
-  w2           Int       @default(100) @db.SmallInt
-  w3           Int       @default(100) @db.SmallInt
-  id_file      BigInt    @default(-1)
-  use_for_bild Int       @default(1) @db.SmallInt
-  user_add     String    @default("system") @db.VarChar(32)
-  add_data     DateTime? @default(dbgenerated("'2011-01-01'::date")) @db.Date
-  edit_user    String    @default("") @db.VarChar(32)
-  edit_data    DateTime? @default(dbgenerated("'2011-01-01'::date")) @db.Date
-  coment       String    @default("") @db.VarChar(512)
-  set_reg      BigInt    @default(0)
-  user_set     String    @default("") @db.VarChar(255)
-  back_id      BigInt    @default(-1)
+  id                   BigInt                 @id @default(autoincrement())
+  word_id              BigInt                 @default(-1)
+  text_opr             String                 @default("") @db.VarChar(255)
+  length               Int?                   @db.SmallInt
+  end_date             DateTime?              @db.Timestamp(6)
+  tema                 BigInt                 @default(0)
+  difficulty           Int                    @default(1) @db.SmallInt
+  id_file              BigInt                 @default(-1)
+  use                  Int                    @default(1) @db.SmallInt
+  user_add             String                 @default("") @db.VarChar(32)
+  create_at            DateTime?              @default(now()) @db.Timestamp(6)
+  edit_user            String                 @default("") @db.VarChar(32)
+  update_at            DateTime?              @db.Timestamp(6)
+  coment               String                 @default("") @db.VarChar(512)
+  set_reg              BigInt                 @default(3)
+  data_set             DateTime?              @db.Timestamp(6)
+  user_set             String                 @default("") @db.VarChar(255)
+  go_flag              Int                    @default(0) @db.SmallInt
+  is_deleted           Boolean                @default(false)
+  langId               Int
+  createBy             Int?                   @db.SmallInt
+  updateBy             Int?                   @db.SmallInt
+  approvedBy           Int?                   @db.SmallInt
+  opred_tags           opred_tags[]
+  language             language               @relation(fields: [langId], references: [id])
+  word_v               word_v                 @relation(fields: [word_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "word_fkey")
+  pending_descriptions pending_descriptions[]
+
+  @@index([langId], map: "idx_opred_v__langId")
+  @@index([langId, is_deleted, end_date], map: "idx_opred_v__langId_is_deleted_end_date")
+  @@index([word_id, is_deleted])
 }
 
-/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
-model publications {
-  id          BigInt    @id @default(autoincrement())
-  archive     Boolean
-  num         String
-  seq_num     BigInt
-  nameid      BigInt
-  region      String?   @default("ALL") @db.VarChar(3)
-  level       BigInt?   @default(1)
-  repeats     BigInt    @default(1)
-  replacement String?
-  date        DateTime? @default(now()) @db.Timestamptz(6)
+model pending_descriptions {
+  id              BigInt        @id @default(autoincrement())
+  pendingWordId   BigInt
+  description     String        @db.VarChar(1024)
+  note            String        @db.VarChar(512)
+  status          PendingStatus @default(PENDING)
+  is_deleted      Boolean       @default(false)
+  approvedOpredId BigInt?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime
+  langId          Int           @default(3)
+  difficulty      Int           @default(1) @db.SmallInt
+  end_date        DateTime?     @db.Timestamp(6)
+  approvedBy      Int?          @db.SmallInt
+  createBy        Int?          @db.SmallInt
+  updateBy        Int?          @db.SmallInt
+  opred_v         opred_v?      @relation(fields: [approvedOpredId], references: [id])
+  pending_words   pending_words @relation(fields: [pendingWordId], references: [id], onDelete: Cascade)
+
+  @@index([approvedOpredId], map: "idx_pending_descriptions__approvedOpredId")
+  @@index([status, createdAt], map: "idx_pending_descriptions__status_createdAt")
+  @@index([pendingWordId])
 }
 
-model shablon {
-  id        BigInt    @id @default(autoincrement())
-  w_pazl    BigInt
-  h_pazl    BigInt
-  foto      Int       @db.SmallInt
-  oprd_foto Int       @db.SmallInt
-  big_cell  BigInt
-  hide_cell Int       @db.SmallInt
-  md        String
-  type_pazl String
-  char_mask String?   @default("") @db.VarChar(1024)
-  use_year  Int       @default(0) @db.SmallInt
-  use_mon   Int       @default(0) @db.SmallInt
-  add_data  DateTime? @db.Timestamptz(6)
+model pending_words {
+  id                   BigInt                 @id @default(autoincrement())
+  word_text            String                 @db.VarChar(255)
+  length               Int                    @db.SmallInt
+  langId               Int
+  createdAt            DateTime               @default(now())
+  is_deleted           Boolean                @default(false)
+  note                 String                 @db.VarChar(512)
+  updatedAt            DateTime
+  status               PendingStatus          @default(PENDING)
+  targetWordId         BigInt?
+  approvedBy           Int?                   @db.SmallInt
+  createBy             Int?                   @db.SmallInt
+  updateBy             Int?                   @db.SmallInt
+  pending_descriptions pending_descriptions[]
+  language             language               @relation(fields: [langId], references: [id])
+  word_v               word_v?                @relation(fields: [targetWordId], references: [id])
+
+  @@index([status, createdAt], map: "idx_pending_words__status_createdAt")
+  @@index([langId, word_text])
+  @@index([targetWordId])
 }
 
-model shtat {
-  id        BigInt  @id @default(autoincrement())
-  user_id   BigInt
-  shtat     Int     @default(0) @db.SmallInt
-  market    BigInt  @default(0)
-  scan_bild String
-  red_izd   String
-  design    BigInt  @default(0)
-  lit_baz   Int     @default(0) @db.SmallInt
-  admin     Boolean
+model permissions {
+  id               Int                @id @default(autoincrement())
+  code             String             @unique @db.VarChar(64)
+  description      String?            @db.VarChar(255)
+  role_permissions role_permissions[]
 }
 
+model role_permissions {
+  roleId       Int
+  permissionId Int
+  permissions  permissions @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  roles        roles       @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
-model tems {
-  id   BigInt @id @default(autoincrement())
-  cod  BigInt
-  name String @db.VarChar(512)
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model roles {
+  id               Int                @id @default(autoincrement())
+  code             Role               @unique
+  auth_users       auth_users[]
+  role_permissions role_permissions[]
+}
+
+model shablons {
+  id       BigInt @id @default(autoincrement())
+  w        BigInt @default(0)
+  h        BigInt @default(0)
+  mask     String
+  foto     BigInt @default(0)
+  bin_data Bytes
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model tags {
+  id         Int          @id @default(autoincrement())
+  name       String       @db.VarChar(255)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime
+  opred_tags opred_tags[]
 }
 
 model user {
@@ -107,19 +202,45 @@ model user {
   end_free DateTime? @db.Date
 }
 
-model word_group {
-  id        BigInt @id @default(autoincrement())
-  text_word String @db.VarChar(255)
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model word_v {
+  id            BigInt          @id @default(autoincrement())
+  word_text     String          @db.VarChar(255)
+  length        Int             @db.SmallInt
+  file_id       BigInt          @default(-1)
+  user_add      String          @default("system") @db.VarChar(255)
+  create_at     DateTime?       @default(now()) @db.Timestamp(6)
+  using         Int             @default(1) @db.SmallInt
+  korny         String
+  data_set      DateTime?       @db.Timestamp(6)
+  user_set      String          @default("") @db.VarChar(255)
+  go_flag       Int             @default(0) @db.SmallInt
+  is_deleted    Boolean         @default(false)
+  langId        Int
+  createBy      Int?            @db.SmallInt
+  updateBy      Int?            @db.SmallInt
+  update_at     DateTime?       @db.Timestamp(6)
+  approvedBy    Int?            @db.SmallInt
+  opred_v       opred_v[]
+  pending_words pending_words[]
+  language      language        @relation(fields: [langId], references: [id])
+
+  @@index([langId], map: "idx_word_v__langId")
+  @@index([langId, word_text], map: "idx_word_v__langId_word_text")
+  @@index([is_deleted])
 }
 
-model words_v {
-  id         BigInt @id @default(autoincrement())
-  word_text  String @db.VarChar(64)
-  lingv      String @default("r") @db.VarChar(1)
-  key_word   Int    @default(0) @db.SmallInt
-  skan       Int    @default(0) @db.SmallInt
-  word_group BigInt @default(0)
-  foto       String @default("0") @db.VarChar(1)
-  back_id    BigInt @default(-1)
-  word_length Int
+enum PendingStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  USER
+  CHIEF_EDITOR_PLUS
+  CHIEF_EDITOR
+  EDITOR
 }
