@@ -171,9 +171,12 @@ if (!files.length) {
                 clueFont,
                 clueText,
                 clipId,
-                CLUE_TEXT_FILL
+                CLUE_TEXT_FILL,
+                { mode: useCorelStyle ? "corel" : "default" }
               );
-              clueDefs.push(clueSvg.defs);
+              if (clueSvg.defs) {
+                clueDefs.push(clueSvg.defs);
+              }
               svgParts.push(clueSvg.text);
               svgRawParts.push(clueSvg.text);
             }

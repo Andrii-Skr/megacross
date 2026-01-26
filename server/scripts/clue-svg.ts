@@ -138,8 +138,10 @@ export function renderClueText(
   fontSize: number,
   text: string,
   clipId: string,
-  fill = "#000"
+  fill = "#000",
+  options: { mode?: "default" | "corel" } = {}
 ): { defs: string; text: string } {
+  const mode = options.mode ?? "default";
   const padding = 1;
   const normalized = text.replace(/\s+/g, " ").trim();
   const minFloor = 5;
@@ -190,15 +192,33 @@ export function renderClueText(
   const textX = x + cell / 2;
   const textY = y + padding + offsetY;
 
+  const useClip = mode !== "corel";
+  const defs = useClip
+    ? `<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse"><rect x="${x}" y="${y}" width="${cell}" height="${cell}"/></clipPath>`
+    : "";
+
+  if (mode === "corel") {
+    const ascent = Math.round(currentSize * 0.8 * 10) / 10;
+    const baseY = Math.round((textY + ascent) * 10) / 10;
+    const textLines = lines
+      .map((line, idx) => {
+        const lineY = Math.round((baseY + idx * lineHeight) * 10) / 10;
+        return `<text x="${textX}" y="${lineY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="alphabetic" fill="${fill}">${escapeXml(line)}</text>`;
+      })
+      .join("");
+    const textSvg = useClip
+      ? `<g clip-path="url(#${clipId})">${textLines}</g>`
+      : `<g>${textLines}</g>`;
+    return { defs, text: textSvg };
+  }
+
   const tspan = lines
     .map((line, idx) => {
       const dy = idx === 0 ? 0 : lineHeight;
       return `<tspan x="${textX}" dy="${dy}">${escapeXml(line)}</tspan>`;
     })
     .join("");
-
-  const textSvg = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="hanging" clip-path="url(#${clipId})" fill="${fill}">${tspan}</text>`;
-  const defs = `<clipPath id="${clipId}"><rect x="${x}" y="${y}" width="${cell}" height="${cell}"/></clipPath>`;
+  const textSvg = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="hanging"${useClip ? ` clip-path="url(#${clipId})"` : ""} fill="${fill}">${tspan}</text>`;
 
   return { defs, text: textSvg };
 }
