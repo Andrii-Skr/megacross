@@ -161,6 +161,8 @@ if (!files.length) {
 (async () => {
   const batchStartedAt = Date.now();
   let solveTotalMs = 0;
+  let solvedCount = 0;
+  let failedCount = 0;
   const entries: {
     path: string;
     name: string;
@@ -293,6 +295,7 @@ if (!files.length) {
         const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
         const solveSec = (solveMs / 1000).toFixed(2);
         console.warn(`  ⚠ недостаточно слов (time=${elapsedSec}s solve=${solveSec}s)`);
+        failedCount += 1;
         continue;
       }
 
@@ -422,14 +425,19 @@ if (!files.length) {
       const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
       const solveSec = (solveMs / 1000).toFixed(2);
       console.log(`  ✔ готово → ${dstDir} (time=${elapsedSec}s solve=${solveSec}s)`);
+      solvedCount += 1;
     } catch (e) {
       const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
       console.error("  🛑", (e as Error).message);
       console.error(`  time=${elapsedSec}s`);
+      failedCount += 1;
     }
   }
 
   const totalSec = ((Date.now() - batchStartedAt) / 1000).toFixed(1);
   const solveSec = (solveTotalMs / 1000).toFixed(1);
+  console.log(
+    `Итог: успешно заполнены ${solvedCount}, не удалось ${failedCount} (всего ${entries.length})`
+  );
   console.log(`\nВсе файлы обработаны. time=${totalSec}s solve=${solveSec}s`);
 })();

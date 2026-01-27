@@ -42,12 +42,14 @@ export async function loadDictionary(
 
     const words = await prisma.word_v.findMany({
       where,
-      select: { word_text: true, length: true },
+      select: { word_text: true, word_text_norm: true, length: true },
     }); // модель Word из schema.prisma
     const map = new Map<number, string[]>();
-    for (const { word_text, length } of words) {
+    for (const { word_text, word_text_norm, length } of words) {
       const arr = map.get(length) ?? [];
-      arr.push(word_text.toUpperCase());
+      const normalized = word_text_norm?.trim();
+      const text = normalized && normalized.length > 0 ? normalized : word_text;
+      arr.push(text.toUpperCase());
       map.set(length, arr);
     }
     return map;
@@ -76,7 +78,10 @@ export async function loadDefinitions(
     }
 
     const where: any = {
-      word_text: { in: unique, mode: "insensitive" as const },
+      OR: [
+        { word_text_norm: { in: unique, mode: "insensitive" as const } },
+        { word_text: { in: unique, mode: "insensitive" as const } },
+      ],
     };
     if (!options.includeDeleted) where.is_deleted = false;
     if (langId !== undefined) where.langId = langId;
@@ -91,6 +96,7 @@ export async function loadDefinitions(
       where,
       select: {
         word_text: true,
+        word_text_norm: true,
         opred_v: {
           where: opredWhere,
           orderBy: { id: "asc" },
@@ -102,7 +108,9 @@ export async function loadDefinitions(
     const map = new Map<string, string>();
     for (const row of rows) {
       const def = row.opred_v.find((o) => o.text_opr.trim().length > 0);
-      map.set(row.word_text.toUpperCase(), def?.text_opr ?? "");
+      const normalized = row.word_text_norm?.trim();
+      const text = normalized && normalized.length > 0 ? normalized : row.word_text;
+      map.set(text.toUpperCase(), def?.text_opr ?? "");
     }
     return map;
   } finally {

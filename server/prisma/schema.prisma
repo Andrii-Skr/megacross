@@ -8,18 +8,19 @@ datasource db {
 }
 
 model auth_users {
-  name          String?   @unique
-  email         String?   @unique
-  emailVerified DateTime?
-  image         String?
-  passwordHash  String?   @db.VarChar(60)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime
-  id            Int       @id @default(autoincrement())
-  created_by    Int?
-  is_deleted    Boolean   @default(false)
-  roleId        Int
-  roles         roles     @relation(fields: [roleId], references: [id])
+  name                        String?                       @unique
+  email                       String?                       @unique
+  emailVerified               DateTime?
+  image                       String?
+  passwordHash                String?                       @db.VarChar(60)
+  createdAt                   DateTime                      @default(now())
+  updatedAt                   DateTime
+  id                          Int                           @id @default(autoincrement())
+  created_by                  Int?
+  is_deleted                  Boolean                       @default(false)
+  roleId                      Int
+  roles                       roles                         @relation(fields: [roleId], references: [id])
+  dictionary_filter_templates dictionary_filter_templates[]
 }
 
 model jp_img {
@@ -37,14 +38,15 @@ model jp_img {
 }
 
 model language {
-  id            Int             @id(map: "Language_pkey") @default(autoincrement())
-  code          String          @unique(map: "Language_code_key") @db.VarChar(8)
-  name          String          @db.VarChar(64)
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime
-  opred_v       opred_v[]
-  pending_words pending_words[]
-  word_v        word_v[]
+  id               Int             @id(map: "Language_pkey") @default(autoincrement())
+  code             String          @unique(map: "Language_code_key") @db.VarChar(8)
+  name             String          @db.VarChar(64)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime
+  word_replace_map Json?
+  opred_v          opred_v[]
+  pending_words    pending_words[]
+  word_v           word_v[]
 }
 
 model log_coment {
@@ -60,8 +62,8 @@ model log_coment {
 model opred_tags {
   opredId BigInt
   tagId   Int
-  addedBy String?  @db.VarChar(64)
   addedAt DateTime @default(now())
+  addedBy Int?
   opred_v opred_v  @relation(fields: [opredId], references: [id], onDelete: Cascade)
   tags    tags     @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
@@ -70,33 +72,37 @@ model opred_tags {
 }
 
 model opred_v {
-  id                   BigInt                 @id @default(autoincrement())
-  word_id              BigInt                 @default(-1)
-  text_opr             String                 @default("") @db.VarChar(255)
-  length               Int?                   @db.SmallInt
-  end_date             DateTime?              @db.Timestamp(6)
-  tema                 BigInt                 @default(0)
-  difficulty           Int                    @default(1) @db.SmallInt
-  id_file              BigInt                 @default(-1)
-  use                  Int                    @default(1) @db.SmallInt
-  user_add             String                 @default("") @db.VarChar(32)
-  create_at            DateTime?              @default(now()) @db.Timestamp(6)
-  edit_user            String                 @default("") @db.VarChar(32)
-  update_at            DateTime?              @db.Timestamp(6)
-  coment               String                 @default("") @db.VarChar(512)
-  set_reg              BigInt                 @default(3)
-  data_set             DateTime?              @db.Timestamp(6)
-  user_set             String                 @default("") @db.VarChar(255)
-  go_flag              Int                    @default(0) @db.SmallInt
-  is_deleted           Boolean                @default(false)
-  langId               Int
-  createBy             Int?                   @db.SmallInt
-  updateBy             Int?                   @db.SmallInt
-  approvedBy           Int?                   @db.SmallInt
-  opred_tags           opred_tags[]
-  language             language               @relation(fields: [langId], references: [id])
-  word_v               word_v                 @relation(fields: [word_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "word_fkey")
-  pending_descriptions pending_descriptions[]
+  id                                        BigInt                 @id @default(autoincrement())
+  word_id                                   BigInt                 @default(-1)
+  text_opr                                  String                 @default("") @db.VarChar(255)
+  length                                    Int?                   @db.SmallInt
+  end_date                                  DateTime?              @db.Timestamp(6)
+  tema                                      BigInt                 @default(0)
+  difficulty                                Int                    @default(1) @db.SmallInt
+  id_file                                   BigInt                 @default(-1)
+  use                                       Int                    @default(1) @db.SmallInt
+  user_add                                  String                 @default("") @db.VarChar(32)
+  create_at                                 DateTime?              @default(now()) @db.Timestamp(6)
+  edit_user                                 String                 @default("") @db.VarChar(32)
+  update_at                                 DateTime?              @db.Timestamp(6)
+  coment                                    String                 @default("") @db.VarChar(512)
+  set_reg                                   BigInt                 @default(3)
+  data_set                                  DateTime?              @db.Timestamp(6)
+  user_set                                  String                 @default("") @db.VarChar(255)
+  go_flag                                   Int                    @default(0) @db.SmallInt
+  is_deleted                                Boolean                @default(false)
+  langId                                    Int
+  approvedBy                                Int?                   @db.SmallInt
+  createBy                                  Int?                   @db.SmallInt
+  updateBy                                  Int?                   @db.SmallInt
+  text_updated_at                           DateTime?              @db.Timestamp(6)
+  edition_opred_stat                        edition_opred_stat[]
+  issue_opred_usage                         issue_opred_usage[]
+  opred_tags                                opred_tags[]
+  difficulty_opred_v_difficultyTodifficulty difficulty             @relation("opred_v_difficultyTodifficulty", fields: [difficulty], references: [id])
+  language                                  language               @relation(fields: [langId], references: [id])
+  word_v                                    word_v                 @relation(fields: [word_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "word_fkey")
+  pending_descriptions                      pending_descriptions[]
 
   @@index([langId], map: "idx_opred_v__langId")
   @@index([langId, is_deleted, end_date], map: "idx_opred_v__langId_is_deleted_end_date")
@@ -204,30 +210,152 @@ model user {
 
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model word_v {
-  id            BigInt          @id @default(autoincrement())
-  word_text     String          @db.VarChar(255)
-  length        Int             @db.SmallInt
-  file_id       BigInt          @default(-1)
-  user_add      String          @default("system") @db.VarChar(255)
-  create_at     DateTime?       @default(now()) @db.Timestamp(6)
-  using         Int             @default(1) @db.SmallInt
-  korny         String
-  data_set      DateTime?       @db.Timestamp(6)
-  user_set      String          @default("") @db.VarChar(255)
-  go_flag       Int             @default(0) @db.SmallInt
-  is_deleted    Boolean         @default(false)
-  langId        Int
-  createBy      Int?            @db.SmallInt
-  updateBy      Int?            @db.SmallInt
-  update_at     DateTime?       @db.Timestamp(6)
-  approvedBy    Int?            @db.SmallInt
-  opred_v       opred_v[]
-  pending_words pending_words[]
-  language      language        @relation(fields: [langId], references: [id])
+  id                BigInt              @id @default(autoincrement())
+  word_text         String              @db.VarChar(255)
+  length            Int                 @db.SmallInt
+  file_id           BigInt              @default(-1)
+  user_add          String              @default("system") @db.VarChar(255)
+  create_at         DateTime?           @default(now()) @db.Timestamp(6)
+  using             Int                 @default(1) @db.SmallInt
+  korny             String
+  data_set          DateTime?           @db.Timestamp(6)
+  user_set          String              @default("") @db.VarChar(255)
+  go_flag           Int                 @default(0) @db.SmallInt
+  is_deleted        Boolean             @default(false)
+  langId            Int
+  approvedBy        Int?                @db.SmallInt
+  createBy          Int?                @db.SmallInt
+  updateBy          Int?                @db.SmallInt
+  update_at         DateTime?           @db.Timestamp(6)
+  word_text_norm    String?             @db.VarChar(255)
+  edition_word_stat edition_word_stat[]
+  issue_word_usage  issue_word_usage[]
+  opred_v           opred_v[]
+  pending_words     pending_words[]
+  language          language            @relation(fields: [langId], references: [id])
 
   @@index([langId], map: "idx_word_v__langId")
   @@index([langId, word_text], map: "idx_word_v__langId_word_text")
   @@index([is_deleted])
+  @@index([langId, is_deleted, word_text], map: "idx_word_v_lang_del_text")
+}
+
+model dictionary_filter_templates {
+  id             Int         @id @default(autoincrement())
+  name           String      @db.VarChar(120)
+  language       String      @db.VarChar(8)
+  query          String?     @db.VarChar(255)
+  scope          String      @default("word") @db.VarChar(8)
+  searchMode     String      @default("contains") @db.VarChar(12)
+  lenFilterField String?     @db.VarChar(8)
+  lenMin         Int?
+  lenMax         Int?
+  difficultyMin  Int?
+  difficultyMax  Int?
+  tagNames       String[]    @default([])
+  createdBy      Int?
+  is_deleted     Boolean     @default(false)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime
+  auth_users     auth_users? @relation(fields: [createdBy], references: [id])
+
+  @@index([is_deleted])
+  @@index([language])
+}
+
+model difficulty {
+  id                                     Int       @id @default(autoincrement()) @db.SmallInt
+  name                                   String?   @db.VarChar(255)
+  create_at                              DateTime? @default(now()) @db.Timestamp(6)
+  update_at                              DateTime? @db.Timestamp(6)
+  opred_v_opred_v_difficultyTodifficulty opred_v[] @relation("opred_v_difficultyTodifficulty")
+}
+
+model edition_opred_stat {
+  editionId   Int
+  opredId     BigInt
+  useCount    Int       @default(0)
+  lastIssueId BigInt?
+  lastUsedAt  DateTime?
+  editions    editions  @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  opred_v     opred_v   @relation(fields: [opredId], references: [id], onDelete: Cascade)
+
+  @@id([editionId, opredId])
+  @@index([opredId])
+}
+
+model edition_word_stat {
+  editionId   Int
+  wordId      BigInt
+  useCount    Int       @default(0)
+  lastIssueId BigInt?
+  lastUsedAt  DateTime?
+  editions    editions  @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  word_v      word_v    @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@id([editionId, wordId])
+  @@index([wordId])
+}
+
+model editions {
+  id                 Int                  @id @default(autoincrement())
+  code               String               @unique @db.VarChar(32)
+  name               String               @db.VarChar(255)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime
+  edition_opred_stat edition_opred_stat[]
+  edition_word_stat  edition_word_stat[]
+  issues             issues[]
+}
+
+model issue_numbers {
+  id      Int      @id @default(autoincrement())
+  label   String   @unique @db.VarChar(64)
+  year    Int?     @db.SmallInt
+  seq     Int?     @db.SmallInt
+  series  String?  @db.VarChar(64)
+  sortKey Int?
+  issues  issues[]
+}
+
+model issue_opred_usage {
+  issueId   BigInt
+  opredId   BigInt
+  useCount  Int      @default(1)
+  createdAt DateTime @default(now())
+  issues    issues   @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  opred_v   opred_v  @relation(fields: [opredId], references: [id], onDelete: Cascade)
+
+  @@id([issueId, opredId])
+  @@index([opredId])
+}
+
+model issue_word_usage {
+  issueId   BigInt
+  wordId    BigInt
+  useCount  Int      @default(1)
+  createdAt DateTime @default(now())
+  issues    issues   @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  word_v    word_v   @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@id([issueId, wordId])
+  @@index([wordId])
+}
+
+model issues {
+  id                BigInt              @id @default(autoincrement())
+  editionId         Int
+  issueNumberId     Int
+  publishedAt       DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime
+  issue_opred_usage issue_opred_usage[]
+  issue_word_usage  issue_word_usage[]
+  editions          editions            @relation(fields: [editionId], references: [id])
+  issue_numbers     issue_numbers       @relation(fields: [issueNumberId], references: [id])
+
+  @@unique([editionId, issueNumberId])
+  @@index([editionId, issueNumberId])
 }
 
 enum PendingStatus {
