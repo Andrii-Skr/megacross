@@ -1,0 +1,12 @@
+{
+  "name": "dlx-solver",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.node",
+  "scripts": {
+    "build": "napi build --release"
+  },
+  "napi": {
+    "binaryName": "dlx_solver"
+  }
+}
