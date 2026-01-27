@@ -35,6 +35,8 @@ const CLUE_MAP: Record<number, Array<{ cluePos: number; dirKey: number }>> = {
   0x20: [{ cluePos: 7, dirKey: 6 }],
   0x28: [{ cluePos: 9, dirKey: 6 }],
   0x29: [{ cluePos: 2, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
+  0x21: [{ cluePos: 2, dirKey: 8 }, { cluePos: 7, dirKey: 6 }],
+  0x23: [{ cluePos: 4, dirKey: 8 }, { cluePos: 7, dirKey: 6 }],
   0x2a: [{ cluePos: 3, dirKey: 2 }, { cluePos: 7, dirKey: 6 }],
   0x2b: [{ cluePos: 4, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
   0x2c: [{ cluePos: 7, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],

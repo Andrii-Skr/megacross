@@ -31,12 +31,15 @@ const { values, positionals } = parseArgs({
     dict:    { type: "string",  short: "d" },
     template:{ type: "string",  short: "t" },
     style:   { type: "string" },
+    "no-defs": { type: "boolean" },
+    "no-clues": { type: "boolean" },
   },
   allowPositionals: true,
 });
 const inFile    = values.file ?? positionals[0];
 const doShuffle = values.shuffle === true;
 const doCrw     = values.crw === true;
+const writeDefsJson = !values["no-defs"] && !values["no-clues"];
 const dictPath  = values.dict ?? "";
 const templatePath = values.template ?? inFile;
 const styleName = (values.style ?? "default").toLowerCase();
@@ -46,11 +49,13 @@ if (!["default", "corel"].includes(styleName)) {
 }
 const CELL = useCorelStyle ? 118 : DEFAULT_CELL;
 const EMPTY_CELL_FILL = useCorelStyle ? "#FEFEFE" : "#fff";
-const GRID_OFFSET_X = useCorelStyle ? -CELL / 2 : 0;
-const GRID_OFFSET_Y = useCorelStyle ? -Math.round(CELL * 0.034) : 0;
 const STROKE_WIDTH = useCorelStyle
   ? Math.round(CELL * 0.07 * 1000) / 1000
   : CELL_STROKE_WIDTH;
+const SVG_PAD = STROKE_WIDTH / 2;
+const GRID_PAD = useCorelStyle ? 0 : SVG_PAD;
+const GRID_OFFSET_X = (useCorelStyle ? -CELL / 2 : 0) + GRID_PAD;
+const GRID_OFFSET_Y = (useCorelStyle ? -Math.round(CELL * 0.034) : 0) + GRID_PAD;
 const WORD_FONT_SIZE = useCorelStyle
   ? Math.round(CELL * 0.565 * 1000) / 1000
   : CELL * 0.6;
@@ -59,7 +64,6 @@ const WORD_BASELINE_ATTR = useCorelStyle ? ' dominant-baseline="alphabetic"' : "
 const WORD_TEXT_Y = useCorelStyle ? CELL * 0.7 : CELL / 2;
 const SVG_WIDTH = useCorelStyle ? 2480 : 0;
 const SVG_HEIGHT = useCorelStyle ? 3508 : 0;
-const SVG_VIEWBOX = useCorelStyle ? ` viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}"` : "";
 const SVG_XML_SPACE = useCorelStyle ? ' xml:space="preserve"' : "";
 const SVG_STYLE_ATTR = useCorelStyle
   ? ' style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"'
@@ -70,21 +74,25 @@ const SVG_PREAMBLE = useCorelStyle
 const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
 
 if (!inFile) {
-  console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle] [--crw] [--dict <path>] [--template <path>] [--style corel]");
+  console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle] [--crw] [--dict <path>] [--template <path>] [--style corel] [--no-defs|--no-clues]");
   process.exit(1);
 }
 
 (async () => {
+  const startedAt = Date.now();
   /* 1. parse + validate */
   const grid: Grid = parseFsh(inFile);   // { rows, cols, marker, data[] }
   validate(grid);
 
   /* 2. slots + dictionary */
   const slots = scanSlots(grid);
-  const dict  = await loadDictionary();
+  const lengths = [...new Set(slots.map((s) => s.len))];
+  const dict  = await loadDictionary({ langCode: "ru", lengths });
 
   /* 3. solve */
+  const solveStartedAt = Date.now();
   const solved = solve(grid.data, slots, dict, doShuffle);
+  const solveMs = Date.now() - solveStartedAt;
   if (!solved) {
     console.error("Не удалось заполнить: словаря недостаточно.");
     process.exit(1);
@@ -96,18 +104,23 @@ if (!inFile) {
   );
   const used = usedWords.join("\n");
 
-  const definitions = await loadDefinitions(usedWords);
+  const definitions = await loadDefinitions(usedWords, { langCode: "ru" });
   const clues = buildClueEntries(grid, slots, solved, definitions);
   const clueTextMap = buildClueTextMap([...clues.down, ...clues.right]);
 
   const { rows: ROWS, cols: COLS } = grid;
-  const svgWidth = useCorelStyle ? SVG_WIDTH : COLS * CELL;
-  const svgHeight = useCorelStyle ? SVG_HEIGHT : ROWS * CELL;
+  const gridWidth = COLS * CELL;
+  const gridHeight = ROWS * CELL;
+  const svgWidth = useCorelStyle ? SVG_WIDTH : gridWidth + SVG_PAD * 2;
+  const svgHeight = useCorelStyle ? SVG_HEIGHT : gridHeight + SVG_PAD * 2;
+  const svgViewBox = useCorelStyle
+    ? ` viewBox="${GRID_OFFSET_X - SVG_PAD} ${GRID_OFFSET_Y - SVG_PAD} ${Math.max(SVG_WIDTH, gridWidth + SVG_PAD * 2)} ${Math.max(SVG_HEIGHT, gridHeight + SVG_PAD * 2)}"`
+    : "";
   const svgParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${SVG_VIEWBOX}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
   ];
   const svgRawParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${SVG_VIEWBOX}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
   ];
   const clueDefs: string[] = [];
   const clueFont = Math.max(5, Math.floor(CELL * 0.22));
@@ -177,8 +190,10 @@ if (!inFile) {
   writeFileSync("out/crossword.svg", svg);
   writeFileSync("out/crossword-no-text.svg", svgRaw);
   writeFileSync("out/used-words.txt", used);
-  writeFileSync("out/definitions-down.json", JSON.stringify(clues.down, null, 2));
-  writeFileSync("out/definitions-right.json", JSON.stringify(clues.right, null, 2));
+  if (writeDefsJson) {
+    writeFileSync("out/definitions-down.json", JSON.stringify(clues.down, null, 2));
+    writeFileSync("out/definitions-right.json", JSON.stringify(clues.right, null, 2));
+  }
 
   if (doCrw) {
     const crw = buildCrw(grid, slots, solved, {
@@ -191,6 +206,9 @@ if (!inFile) {
     console.log(`✔ CRW  → ${crwOut}`);
   }
 
+  const solveSec = (solveMs / 1000).toFixed(2);
+  const totalSec = ((Date.now() - startedAt) / 1000).toFixed(2);
   console.log("✔ SVG  → out/crossword.svg");
   console.log("✔ words→ out/used-words.txt");
+  console.log(`✔ timing → time=${totalSec}s solve=${solveSec}s`);
 })();

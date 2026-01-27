@@ -28,7 +28,8 @@ import { Grid }                from "../src/types";
   console.log("slots:", slots.length);
 
   /* ---- 3. dictionary + solve ---- */
-  const dict = await loadDictionary();
+  const lengths = [...new Set(slots.map((s) => s.len))];
+  const dict = await loadDictionary({ langCode: "ru", lengths });
   const solved = solve(grid.data, slots, dict);   // grid.data = массив строк
 
   if (!solved) {

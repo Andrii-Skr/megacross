@@ -5,3 +5,10 @@ node_modules
 *.patch
 **/out/*
 **/sample/*
+
+# Rust / native build artifacts
+**/target/
+**/*.node
+**/*.dylib
+**/*.so
+**/*.dll

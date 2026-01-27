@@ -42,7 +42,8 @@ const doShuffle = values.shuffle === true;
 
   /* 2. slots + dictionary */
   const slots = scanSlots(grid);
-  const dict = await loadDictionary();
+  const lengths = [...new Set(slots.map((s) => s.len))];
+  const dict = await loadDictionary({ langCode: "ru", lengths });
 
   /* 3. solve */
   const solved = solve(grid.data, slots, dict, doShuffle);
