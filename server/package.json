@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "preinstall": "npx only-allow pnpm",
     "fsh": "ts-node scripts/fsh.ts",
     "length-stats": "ts-node scripts/length-stats.ts",
     "fill-crw": "ts-node scripts/fill-crw.ts",

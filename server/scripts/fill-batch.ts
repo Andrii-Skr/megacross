@@ -10,12 +10,12 @@ import { parseArgs }                             from "node:util";
 
 import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
-import { solve, type SolveProgress }               from "../src/utils/solver";
-import { isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
+import { solve, type SolveFailInfo, type SolveProgress } from "../src/utils/solver";
+import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
 import { loadDictionary, loadDefinitions } from "../src/services/dictionary";
 import { buildCrw }            from "../src/utils/writeCrw";
 import { buildClueEntries }    from "../src/utils/clues";
-import { Cell, Grid }          from "../src/types";
+import { Cell, Grid, Slot }    from "../src/types";
 import { arrowSvg }            from "./arrow-utils";
 import { buildClueTextMap, renderClueText } from "./clue-svg";
 import {
@@ -57,6 +57,190 @@ function formatLenCountsAligned(
   );
 }
 
+function formatLenCountsSimple(
+  lengths: number[],
+  counts: Map<number, number>
+): string {
+  if (!lengths.length) return "";
+  const lenWidth = Math.max(1, ...lengths.map((len) => String(len).length));
+  const countWidth = Math.max(1, ...lengths.map((len) => String(counts.get(len) ?? 0).length));
+  return lengths
+    .map((len) => {
+      const count = counts.get(len) ?? 0;
+      const lenStr = String(len).padStart(lenWidth, " ");
+      const countStr = String(count).padStart(countWidth, " ");
+      return `${lenStr}:${countStr}`;
+    })
+    .join("  ");
+}
+
+type TemplateStats = {
+  slots: number;
+  letters: number;
+  uniqueCells: number;
+  intersections: number;
+  density: number;
+  maxDegree: number;
+  avgDegree: number;
+  degreeSqSum: number;
+  pressure?: number;
+};
+
+function buildLenCounts(slots: Slot[]): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const slot of slots) {
+    counts.set(slot.len, (counts.get(slot.len) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function analyzeTemplate(slots: Slot[]): TemplateStats {
+  const cellUse = new Map<string, number>();
+  const cellSlots = new Map<string, number[]>();
+  const adjacency = new Map<number, Set<number>>();
+  for (const slot of slots) {
+    adjacency.set(slot.id, new Set());
+  }
+  let letters = 0;
+  for (const slot of slots) {
+    letters += slot.len;
+    for (const [r, c] of slot.cells) {
+      const key = `${r},${c}`;
+      cellUse.set(key, (cellUse.get(key) ?? 0) + 1);
+      const list = cellSlots.get(key);
+      if (list) {
+        list.push(slot.id);
+      } else {
+        cellSlots.set(key, [slot.id]);
+      }
+    }
+  }
+  let intersections = 0;
+  for (const list of cellSlots.values()) {
+    if (list.length > 1) {
+      intersections += 1;
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          adjacency.get(list[i])?.add(list[j]);
+          adjacency.get(list[j])?.add(list[i]);
+        }
+      }
+    }
+  }
+  const uniqueCells = cellUse.size;
+  const density = uniqueCells ? intersections / uniqueCells : 0;
+  const degrees = slots.map((slot) => adjacency.get(slot.id)?.size ?? 0);
+  const maxDegree = degrees.length ? Math.max(...degrees) : 0;
+  const avgDegree = degrees.length
+    ? degrees.reduce((sum, d) => sum + d, 0) / degrees.length
+    : 0;
+  const degreeSqSum = degrees.reduce((sum, d) => sum + d * d, 0);
+  return {
+    slots: slots.length,
+    letters,
+    uniqueCells,
+    intersections,
+    density,
+    maxDegree,
+    avgDegree,
+    degreeSqSum,
+  };
+}
+
+function computePressure(
+  lenCounts: Map<number, number>,
+  dictCounts: Map<number, number>
+): number {
+  let pressure = 0;
+  for (const [len, need] of lenCounts) {
+    const have = dictCounts.get(len) ?? 0;
+    if (have <= 0) return Number.POSITIVE_INFINITY;
+    pressure += need / have;
+  }
+  return pressure;
+}
+
+function formatComplexity(stats: TemplateStats): string {
+  const pressure = stats.pressure ?? 0;
+  const pressureStr = Number.isFinite(pressure) ? pressure.toFixed(4) : "inf";
+  const densityStr = stats.density.toFixed(2);
+  const avgDegStr = stats.avgDegree.toFixed(2);
+  return `degMax=${stats.maxDegree} degAvg=${avgDegStr} degSq=${stats.degreeSqSum} press=${pressureStr} slots=${stats.slots} cells=${stats.uniqueCells} cross=${stats.intersections} dens=${densityStr}`;
+}
+
+function compareByComplexity(a: TemplateStats, b: TemplateStats): number {
+  if (a.maxDegree !== b.maxDegree) return b.maxDegree - a.maxDegree;
+  if (a.avgDegree !== b.avgDegree) return b.avgDegree - a.avgDegree;
+  if (a.degreeSqSum !== b.degreeSqSum) return b.degreeSqSum - a.degreeSqSum;
+  const ap = a.pressure ?? 0;
+  const bp = b.pressure ?? 0;
+  if (ap !== bp) {
+    if (!Number.isFinite(ap)) return -1;
+    if (!Number.isFinite(bp)) return 1;
+    return bp - ap;
+  }
+  if (b.slots !== a.slots) return b.slots - a.slots;
+  if (b.intersections !== a.intersections) return b.intersections - a.intersections;
+  if (b.letters !== a.letters) return b.letters - a.letters;
+  return 0;
+}
+
+type FailSlot = NonNullable<NonNullable<SolveFailInfo["detail"]>["slot"]>;
+type FailColumn = NonNullable<NonNullable<SolveFailInfo["detail"]>["column"]>;
+
+function formatDir(dir: "down" | "right"): string {
+  return dir === "down" ? "↓" : "→";
+}
+
+function formatSlotRef(slot?: FailSlot): string {
+  if (!slot) return "slot=—";
+  return `slot#${slot.id} (r=${slot.r} c=${slot.c} ${formatDir(slot.dir)} len=${slot.len})`;
+}
+
+function formatFail(info: SolveFailInfo): string {
+  switch (info.reason) {
+    case "aborted": {
+      const limit = info.detail?.limit ?? "limit";
+      return `aborted (${limit})`;
+    }
+    case "forward-check": {
+      const patt = info.detail?.pattern ?? "";
+      return `forward-check: ${formatSlotRef(info.detail?.slot)} patt=${patt}`;
+    }
+    case "zero-pick": {
+      const col: FailColumn | undefined = info.detail?.column;
+      if (col) {
+        if (col.type === "slot") {
+          return `zero-pick: ${formatSlotRef(col.slot)} candidates=0`;
+        }
+        if (col.type === "cell") {
+          const cell = col.cell;
+          if (cell) return `zero-pick: cell r=${cell.r} c=${cell.c} candidates=0`;
+          return "zero-pick: cell candidates=0";
+        }
+        if (col.type === "word") {
+          return `zero-pick: word "${col.word ?? ""}" candidates=0`;
+        }
+        return `zero-pick: column "${col.name}" candidates=0`;
+      }
+      const patt = info.detail?.pattern ?? "";
+      return `zero-pick: ${formatSlotRef(info.detail?.slot)} patt=${patt}`;
+    }
+    default:
+      return "no-solution";
+  }
+}
+
+async function waitForNativeFail(timeoutMs = 200): Promise<SolveFailInfo | null> {
+  const started = Date.now();
+  let info = consumeLastNativeFail();
+  while (!info && Date.now() - started < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    info = consumeLastNativeFail();
+  }
+  return info;
+}
+
 /* ---------- CLI ---------- */
 const { values } = parseArgs({
   args: process.argv.slice(2).filter((arg) => arg !== "--"),
@@ -84,6 +268,12 @@ const { values } = parseArgs({
     style:   { type: "string" },
     "no-defs": { type: "boolean" },
     "no-clues": { type: "boolean" },
+    hardFirst: { type: "boolean" },
+    "hard-first": { type: "boolean" },
+    keepOrder: { type: "boolean" },
+    "keep-order": { type: "boolean" },
+    explainFail: { type: "boolean" },
+    "explain-fail": { type: "boolean" },
   },
 });
 const shuffleOpt = values.shuffle === true ? true : undefined;
@@ -116,6 +306,9 @@ const parallelRestarts = Number.isFinite(parallelRaw) && parallelRaw && parallel
 const dictPath  = values.dict ?? "";
 const templatePath = values.template ?? "";
 const styleName = (values.style ?? "default").toLowerCase();
+const hardFirst = !!values.hardFirst || !!values["hard-first"];
+const keepOrder = !!values.keepOrder || !!values["keep-order"];
+const explainFail = !!values.explainFail || !!values["explain-fail"];
 const writeDefsJson = !values["no-defs"] && !values["no-clues"];
 const useCorelStyle = styleName === "corel";
 if (!["default", "corel"].includes(styleName)) {
@@ -167,7 +360,9 @@ if (!files.length) {
     path: string;
     name: string;
     grid: Grid;
-    slots: ReturnType<typeof scanSlots>;
+    slots: Slot[];
+    lenCounts: Map<number, number>;
+    stats: TemplateStats;
   }[] = [];
   const lengthsSet = new Set<number>();
 
@@ -177,8 +372,10 @@ if (!files.length) {
       const grid: Grid = parseFsh(path);
       validate(grid);
       const slots = scanSlots(grid);
-      entries.push({ path, name, grid, slots });
-      for (const s of slots) lengthsSet.add(s.len);
+      const lenCounts = buildLenCounts(slots);
+      const stats = analyzeTemplate(slots);
+      entries.push({ path, name, grid, slots, lenCounts, stats });
+      for (const len of lenCounts.keys()) lengthsSet.add(len);
     } catch (e) {
       console.error(`  🛑 ${name}:`, (e as Error).message);
     }
@@ -195,6 +392,9 @@ if (!files.length) {
   const dictCounts = new Map<number, number>();
   for (const len of lengths) {
     dictCounts.set(len, masterDict.get(len)?.length ?? 0);
+  }
+  for (const entry of entries) {
+    entry.stats.pressure = computePressure(entry.lenCounts, dictCounts);
   }
   const totalSlotCounts = new Map<number, number>();
   for (const entry of entries) {
@@ -216,13 +416,15 @@ if (!files.length) {
   console.log(
     formatLenCountsAligned(totalSlotLengths, dictCounts, totalSlotCounts, `${prefixDict}${prefixPad}`)
   );
-  const useNativeStdout = doProgress && nativeAvailable && parallelRestarts > 1;
+  const useProgressStdout = doProgress && nativeAvailable && parallelRestarts > 1;
   const progressLabel = doProgress
-    ? `on (logMs=${logEveryMs}${useNativeStdout ? " stdout" : ""})`
+    ? `on (logMs=${logEveryMs}${useProgressStdout ? " stdout" : ""})`
     : "off";
   console.log(
-    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"}`
+    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFail ? "on" : "off"}`
   );
+  const orderMode = hardFirst || (unique && !keepOrder) ? "complex" : "file";
+  console.log(`🧭 order=${orderMode === "complex" ? "complexity" : "file"}`);
   if (unique) {
     const deficits = totalSlotLengths
       .map((len) => {
@@ -239,15 +441,37 @@ if (!files.length) {
     }
   }
 
+  const orderedEntries =
+    orderMode === "complex"
+      ? [...entries].sort((a, b) => {
+          const cmp = compareByComplexity(a.stats, b.stats);
+          if (cmp !== 0) return cmp;
+          return a.name.localeCompare(b.name);
+        })
+      : entries;
+  if (orderMode === "complex") {
+    console.log("\nСложность шаблонов (hard→easy):");
+    for (const entry of orderedEntries) {
+      console.log(`  ${entry.name}: ${formatComplexity(entry.stats)}`);
+    }
+  }
+
   /* если уникальный режим — будем прямо мутировать глобальный экземпляр */
   const globalDict = unique
     ? new Map<number, string[]>([...masterDict].map(([l, a]) => [l, [...a]]))
     : masterDict;
 
-  for (const entry of entries) {
+  for (const entry of orderedEntries) {
     const { path, name, grid, slots } = entry;
     console.log(`\n● ${name} …`);
+    const perTemplateCounts = entry.lenCounts;
+    const perTemplateLengths = [...perTemplateCounts.keys()].sort((a, b) => a - b);
+    console.log(`  нужно → ${formatLenCountsSimple(perTemplateLengths, perTemplateCounts)}`);
+    console.log(`  сложность → ${formatComplexity(entry.stats)}`);
     const startedAt = Date.now();
+    let failInfo: SolveFailInfo | null = null;
+    let nativeActive = false;
+    const useFailStdout = explainFail && nativeAvailable && parallelRestarts > 1;
 
     try {
       /* 2. словарь для решения */
@@ -256,8 +480,10 @@ if (!files.length) {
         : new Map<number, string[]>([...masterDict].map(([l, a]) => [l, [...a]]));
 
       /* 3. solve */
-      const onProgress = doProgress
+      const logProgress = doProgress;
+      const onProgress = logProgress
         ? (info: SolveProgress) => {
+          if (nativeActive && useProgressStdout) return;
           if (info.elapsedMs < progressMinMs) return;
           const sec = (info.elapsedMs / 1000).toFixed(1);
           const pick = info.lastPick
@@ -271,30 +497,63 @@ if (!files.length) {
         : undefined;
 
       const solveStartedAt = Date.now();
-      const baseOptions = { shuffle: shuffleOpt, lcv: doLcv, restarts, parallelRestarts, maxMs, maxNodes, label: name, debugDlx, nativeDlx };
-      const solveOptions = doProgress
+      const onFail = explainFail
+        ? (info: SolveFailInfo) => {
+            failInfo = info;
+            if (!(nativeActive && useFailStdout)) {
+              console.warn(`  fail → ${formatFail(info)}`);
+            }
+          }
+        : undefined;
+      const baseOptions = {
+        shuffle: shuffleOpt,
+        lcv: doLcv,
+        restarts,
+        parallelRestarts,
+        maxMs,
+        maxNodes,
+        label: name,
+        debugDlx,
+        nativeDlx,
+        onFail,
+      };
+      const solveOptions = logProgress
         ? { ...baseOptions, logEveryMs, onProgress }
         : baseOptions;
-      const nativeOptions = doProgress && parallelRestarts > 1
-        ? { ...baseOptions, logEveryMs, progressStdout: true }
+      const nativeOptions = (doProgress || explainFail) && parallelRestarts > 1
+        ? {
+          ...solveOptions,
+          logEveryMs: logProgress ? logEveryMs : 0,
+          progressStdout: useProgressStdout,
+          failStdout: useFailStdout,
+        }
         : solveOptions;
       let solved: string[] | null = null;
-      if (nativeDlx && doProgress && parallelRestarts > 1) {
+      if (nativeDlx && (doProgress || explainFail) && parallelRestarts > 1) {
+        nativeActive = true;
         const nativeSolved = await solveDlxNativeAsync(grid.data, slots, dict, nativeOptions);
         if (nativeSolved !== undefined) {
           solved = nativeSolved;
         } else {
+          nativeActive = false;
           solved = solve(grid.data, slots, dict, { ...solveOptions, nativeDlx: false });
         }
+        nativeActive = false;
       } else {
         solved = solve(grid.data, slots, dict, solveOptions);
       }
       const solveMs = Date.now() - solveStartedAt;
       solveTotalMs += solveMs;
       if (!solved) {
+        if (explainFail && !failInfo && nativeDlx) {
+          failInfo = await waitForNativeFail();
+        }
         const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
         const solveSec = (solveMs / 1000).toFixed(2);
         console.warn(`  ⚠ недостаточно слов (time=${elapsedSec}s solve=${solveSec}s)`);
+        if (explainFail && failInfo) {
+          console.warn(`  причина → ${formatFail(failInfo)}`);
+        }
         failedCount += 1;
         continue;
       }
@@ -434,10 +693,10 @@ if (!files.length) {
     }
   }
 
-  const totalSec = ((Date.now() - batchStartedAt) / 1000).toFixed(1);
-  const solveSec = (solveTotalMs / 1000).toFixed(1);
+  const totalMin = ((Date.now() - batchStartedAt) / 60000).toFixed(1);
+  const solveMin = (solveTotalMs / 60000).toFixed(1);
   console.log(
     `Итог: успешно заполнены ${solvedCount}, не удалось ${failedCount} (всего ${entries.length})`
   );
-  console.log(`\nВсе файлы обработаны. time=${totalSec}s solve=${solveSec}s`);
+  console.log(`\nВсе файлы обработаны. time=${totalMin}m solve=${solveMin}m`);
 })();

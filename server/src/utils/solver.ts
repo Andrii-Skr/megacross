@@ -36,6 +36,37 @@ export type SolveProgress = {
   };
 };
 
+export type SolveFailInfo = {
+  label?: string;
+  attempt: number;
+  engine: "csp" | "dlx";
+  reason: "zero-pick" | "forward-check" | "aborted" | "no-solution";
+  detail?: {
+    slot?: {
+      id: number;
+      r: number;
+      c: number;
+      len: number;
+      dir: "down" | "right";
+    };
+    pattern?: string;
+    column?: {
+      name: string;
+      type: "slot" | "cell" | "word" | "other";
+      slot?: {
+        id: number;
+        r: number;
+        c: number;
+        len: number;
+        dir: "down" | "right";
+      };
+      cell?: { r: number; c: number };
+      word?: string;
+    };
+    limit?: "maxMs" | "maxNodes";
+  };
+};
+
 export type SolveOptions = {
   shuffle?: boolean;
   lcv?: boolean;
@@ -52,7 +83,9 @@ export type SolveOptions = {
   logEveryNodes?: number;
   label?: string;
   progressStdout?: boolean;
+  failStdout?: boolean;
   onProgress?: (info: SolveProgress) => void;
+  onFail?: (info: SolveFailInfo) => void;
 };
 
 type ResolvedOptions = {
@@ -71,6 +104,7 @@ type ResolvedOptions = {
   logEveryNodes: number;
   label?: string;
   onProgress?: (info: SolveProgress) => void;
+  onFail?: (info: SolveFailInfo) => void;
 };
 
 /* ------------------ helpers ------------------------------------------------ */
@@ -274,6 +308,16 @@ function runAttemptCsp(
   let rejectForward = 0;
   let zeroPick = 0;
   let backtracks = 0;
+  let abortReason: "maxMs" | "maxNodes" | null = null;
+  let lastFail: SolveFailInfo | null = null;
+
+  const slotRef = (slot: Slot): NonNullable<SolveFailInfo["detail"]>["slot"] => ({
+    id: slot.id,
+    r: slot.r,
+    c: slot.c,
+    len: slot.len,
+    dir: slot.dir.dr === 1 ? "down" : "right",
+  });
 
   const startedAt = Date.now();
   let aborted = false;
@@ -307,10 +351,12 @@ function runAttemptCsp(
   function shouldAbort(): boolean {
     if (aborted) return true;
     if (options.maxMs !== undefined && Date.now() - startedAt >= options.maxMs) {
+      abortReason = "maxMs";
       aborted = true;
       return true;
     }
     if (options.maxNodes !== undefined && nodes >= options.maxNodes) {
+      abortReason = "maxNodes";
       aborted = true;
       return true;
     }
@@ -399,6 +445,13 @@ function runAttemptCsp(
     const { slot, candidates, pattern, degree } = choice;
     if (candidates.length === 0) {
       zeroPick++;
+      lastFail = {
+        label: options.label,
+        attempt,
+        engine: "csp",
+        reason: "zero-pick",
+        detail: { slot: slotRef(slot), pattern },
+      };
       weights.set(slot.id, (weights.get(slot.id) ?? 1) + 1);
       return false;
     }
@@ -450,6 +503,13 @@ function runAttemptCsp(
           ? candAll.filter(w => !usedWords.has(w))
           : candAll;
         if (cand2.length === 0) {
+          lastFail = {
+            label: options.label,
+            attempt,
+            engine: "csp",
+            reason: "forward-check",
+            detail: { slot: slotRef(otherSlot), pattern: patt },
+          };
           ok = false;
           weights.set(other, (weights.get(other) ?? 1) + 1);
           break;
@@ -473,6 +533,26 @@ function runAttemptCsp(
   }
 
   const solved = backtrack() ? grid.map(r => r.join("")) : null;
+  if (!solved && options.onFail) {
+    if (aborted && abortReason) {
+      options.onFail({
+        label: options.label,
+        attempt,
+        engine: "csp",
+        reason: "aborted",
+        detail: { limit: abortReason },
+      });
+    } else if (lastFail) {
+      options.onFail(lastFail);
+    } else {
+      options.onFail({
+        label: options.label,
+        attempt,
+        engine: "csp",
+        reason: "no-solution",
+      });
+    }
+  }
   return { solved, aborted };
 }
 
@@ -721,6 +801,8 @@ function runAttemptDlx(
   const rejectForward = 0;
   let zeroPick = 0;
   let backtracks = 0;
+  let abortReason: "maxMs" | "maxNodes" | null = null;
+  let lastFail: SolveFailInfo | null = null;
   const startedAt = Date.now();
   let aborted = false;
   let nextLogAt = options.logEveryMs > 0 ? startedAt + options.logEveryMs : Number.POSITIVE_INFINITY;
@@ -755,14 +837,63 @@ function runAttemptDlx(
   function shouldAbort(): boolean {
     if (aborted) return true;
     if (options.maxMs !== undefined && Date.now() - startedAt >= options.maxMs) {
+      abortReason = "maxMs";
       aborted = true;
       return true;
     }
     if (options.maxNodes !== undefined && nodes >= options.maxNodes) {
+      abortReason = "maxNodes";
       aborted = true;
       return true;
     }
     return false;
+  }
+
+  const slotRef = (slot: Slot): NonNullable<SolveFailInfo["detail"]>["slot"] => ({
+    id: slot.id,
+    r: slot.r,
+    c: slot.c,
+    len: slot.len,
+    dir: slot.dir.dr === 1 ? "down" : "right",
+  });
+
+  function parseColumn(col: DlxColumn): SolveFailInfo["detail"] {
+    const name = col.name;
+    if (name.startsWith("slot:")) {
+      const id = Number(name.slice(5));
+      const slot = slots.find((s) => s.id === id);
+      return {
+        column: {
+          name,
+          type: "slot",
+          slot: slot ? slotRef(slot) : undefined,
+        },
+      };
+    }
+    if (name.startsWith("cell:")) {
+      const coord = name.slice(5);
+      const [rRaw, cRaw] = coord.split(",");
+      const r = Number(rRaw);
+      const c = Number(cRaw);
+      return {
+        column: {
+          name,
+          type: "cell",
+          cell: Number.isFinite(r) && Number.isFinite(c) ? { r, c } : undefined,
+        },
+      };
+    }
+    if (name.startsWith("word:")) {
+      const word = name.slice(5);
+      return {
+        column: {
+          name,
+          type: "word",
+          word,
+        },
+      };
+    }
+    return { column: { name, type: "other" } };
   }
 
   function chooseColumn(): DlxColumn | null {
@@ -784,7 +915,17 @@ function runAttemptDlx(
 
     const col = chooseColumn();
     if (!col) return false;
-    if (col.size === 0) { zeroPick++; return false; }
+    if (col.size === 0) {
+      zeroPick++;
+      lastFail = {
+        label: options.label,
+        attempt,
+        engine: "dlx",
+        reason: "zero-pick",
+        detail: parseColumn(col),
+      };
+      return false;
+    }
     cover(col, debugDlx);
 
     for (let r = col.down; r !== (col as unknown as DlxNode); r = r.down) {
@@ -863,6 +1004,27 @@ function runAttemptDlx(
       })()
     : null;
 
+  if (!solved && options.onFail) {
+    if (aborted && abortReason) {
+      options.onFail({
+        label: options.label,
+        attempt,
+        engine: "dlx",
+        reason: "aborted",
+        detail: { limit: abortReason },
+      });
+    } else if (lastFail) {
+      options.onFail(lastFail);
+    } else {
+      options.onFail({
+        label: options.label,
+        attempt,
+        engine: "dlx",
+        reason: "no-solution",
+      });
+    }
+  }
+
   return { solved, aborted };
 }
 
@@ -904,6 +1066,7 @@ export function solve(
     logEveryNodes: optionsRaw.logEveryNodes ?? 0,
     label: optionsRaw.label,
     onProgress: optionsRaw.onProgress,
+    onFail: optionsRaw.onFail,
   };
 
   const { adjacency } = buildCrossData(slots);

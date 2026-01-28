@@ -8,5 +8,9 @@
   },
   "napi": {
     "binaryName": "dlx_solver"
-  }
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.5.1"
+  },
+  "packageManager": "pnpm@10.28.1"
 }

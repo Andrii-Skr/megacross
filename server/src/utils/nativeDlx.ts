@@ -16,6 +16,7 @@ type NativeSolveOptions = {
   label?: string;
   debugDlx?: boolean;
   progressStdout?: boolean;
+  failStdout?: boolean;
 };
 
 type NativeModule = {
@@ -33,6 +34,15 @@ let loggedCallError = false;
 let loggedAsyncMissing = false;
 let loggedAsyncError = false;
 let lastTriedPaths: string[] | null = null;
+let lastFail: Parameters<NonNullable<SolveOptions["onFail"]>>[0] | null = null;
+
+export function consumeLastNativeFail():
+  | Parameters<NonNullable<SolveOptions["onFail"]>>[0]
+  | null {
+  const out = lastFail;
+  lastFail = null;
+  return out;
+}
 
 function loadNative(): NativeModule | null {
   if (nativeModule !== undefined) return nativeModule;
@@ -68,6 +78,7 @@ export function solveDlxNative(
   dict: Dict,
   options?: SolveOptions
 ): string[] | null | undefined {
+  lastFail = null;
   const native = loadNative();
   if (!native) {
     if (!loggedMissing) {
@@ -91,8 +102,9 @@ export function solveDlxNative(
     return undefined;
   }
   const onProgress = options?.onProgress;
+  const onFail = options?.onFail;
   let progressSeen = false;
-  const progressWrapper = onProgress
+  const progressWrapper = onProgress || onFail
     ? (payload: unknown) => {
         try {
           const data = typeof payload === "string" ? JSON.parse(payload) : payload;
@@ -103,7 +115,12 @@ export function solveDlxNative(
                 console.log("[native-dlx] progress callback fired");
               }
             }
-            onProgress(data as Parameters<NonNullable<SolveOptions["onProgress"]>>[0]);
+            if ((data as { type?: string }).type === "fail") {
+              lastFail = data as Parameters<NonNullable<SolveOptions["onFail"]>>[0];
+              onFail?.(lastFail);
+              return;
+            }
+            onProgress?.(data as Parameters<NonNullable<SolveOptions["onProgress"]>>[0]);
           }
         } catch {
           // ignore malformed progress payloads
@@ -132,6 +149,7 @@ export function solveDlxNative(
       label: options?.label,
       debugDlx: options?.debugDlx,
       progressStdout: options?.progressStdout,
+      failStdout: options?.failStdout,
     } satisfies NativeSolveOptions,
   };
 
@@ -159,6 +177,7 @@ export async function solveDlxNativeAsync(
   dict: Dict,
   options?: SolveOptions
 ): Promise<string[] | null | undefined> {
+  lastFail = null;
   const native = loadNative();
   if (!native) {
     if (!loggedMissing) {
@@ -183,8 +202,9 @@ export async function solveDlxNativeAsync(
   }
 
   const onProgress = options?.onProgress;
+  const onFail = options?.onFail;
   let progressSeen = false;
-  const progressWrapper = onProgress
+  const progressWrapper = onProgress || onFail
     ? (payload: unknown) => {
         try {
           const data = typeof payload === "string" ? JSON.parse(payload) : payload;
@@ -195,7 +215,12 @@ export async function solveDlxNativeAsync(
                 console.log("[native-dlx] progress callback fired");
               }
             }
-            onProgress(data as Parameters<NonNullable<SolveOptions["onProgress"]>>[0]);
+            if ((data as { type?: string }).type === "fail") {
+              lastFail = data as Parameters<NonNullable<SolveOptions["onFail"]>>[0];
+              onFail?.(lastFail);
+              return;
+            }
+            onProgress?.(data as Parameters<NonNullable<SolveOptions["onProgress"]>>[0]);
           }
         } catch {
           // ignore malformed progress payloads
@@ -224,6 +249,7 @@ export async function solveDlxNativeAsync(
       label: options?.label,
       debugDlx: options?.debugDlx,
       progressStdout: options?.progressStdout,
+      failStdout: options?.failStdout,
     } satisfies NativeSolveOptions,
   };
 

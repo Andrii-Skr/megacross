@@ -32,6 +32,7 @@ struct SolveOptionsInput {
   label: Option<String>,
   debug_dlx: Option<bool>,
   progress_stdout: Option<bool>,
+  fail_stdout: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +66,7 @@ struct ResolveOptions {
   label: Option<String>,
   debug_dlx: bool,
   progress_stdout: bool,
+  fail_stdout: bool,
 }
 
 #[derive(Clone)]
@@ -130,6 +132,8 @@ struct SearchState {
   reject_intersect: u64,
   start: Instant,
   aborted: bool,
+  abort_reason: Option<&'static str>,
+  last_fail: Option<FailInfo>,
 }
 
 #[derive(Clone, Serialize)]
@@ -165,6 +169,120 @@ struct ProgressPayload {
   depth: usize,
   last_pick: Option<ProgressLastPick>,
   stats: ProgressStats,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailSlot {
+  id: usize,
+  r: usize,
+  c: usize,
+  len: usize,
+  dir: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailDetail {
+  slot: Option<FailSlot>,
+  limit: Option<String>,
+  column: Option<FailColumn>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailPayload {
+  #[serde(rename = "type")]
+  kind: String,
+  label: Option<String>,
+  attempt: usize,
+  engine: String,
+  reason: String,
+  detail: Option<FailDetail>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailCell {
+  r: usize,
+  c: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FailColumn {
+  name: String,
+  #[serde(rename = "type")]
+  kind: String,
+  slot: Option<FailSlot>,
+  cell: Option<FailCell>,
+  word: Option<String>,
+}
+
+#[derive(Clone)]
+struct FailInfo {
+  reason: &'static str,
+  slot: Option<FailSlot>,
+  column: Option<FailColumn>,
+  limit: Option<&'static str>,
+}
+
+#[derive(Clone)]
+enum ColumnMeta {
+  Other(String),
+  Slot(FailSlot),
+  Cell(usize, usize),
+  Word(String),
+}
+
+fn slot_to_fail(slot: &Slot) -> FailSlot {
+  let (r0, c0) = slot.cells.get(0).copied().unwrap_or((0, 0));
+  let dir = if slot.cells.len() > 1 {
+    let (r1, c1) = slot.cells[1];
+    if r1 == r0 && c1 != c0 { "right" } else { "down" }
+  } else {
+    "right"
+  };
+  FailSlot {
+    id: slot.id,
+    r: r0,
+    c: c0,
+    len: slot.len,
+    dir: dir.to_string(),
+  }
+}
+
+fn meta_to_fail_column(meta: &ColumnMeta) -> FailColumn {
+  match meta {
+    ColumnMeta::Slot(slot) => FailColumn {
+      name: format!("slot:{}", slot.id),
+      kind: "slot".to_string(),
+      slot: Some(slot.clone()),
+      cell: None,
+      word: None,
+    },
+    ColumnMeta::Cell(r, c) => FailColumn {
+      name: format!("cell:{},{}", r, c),
+      kind: "cell".to_string(),
+      slot: None,
+      cell: Some(FailCell { r: *r, c: *c }),
+      word: None,
+    },
+    ColumnMeta::Word(word) => FailColumn {
+      name: format!("word:{}", word),
+      kind: "word".to_string(),
+      slot: None,
+      cell: None,
+      word: Some(word.clone()),
+    },
+    ColumnMeta::Other(name) => FailColumn {
+      name: name.clone(),
+      kind: "other".to_string(),
+      slot: None,
+      cell: None,
+      word: None,
+    },
+  }
 }
 
 trait ProgressEmitter {
@@ -217,6 +335,7 @@ struct ProgressCtx<'a> {
   log_every_nodes: u64,
   last_pick: Option<ProgressLastPick>,
   stdout: bool,
+  fail_stdout: bool,
 }
 
 struct Rng {
@@ -262,7 +381,7 @@ pub fn solve_dlx(env: Env, input_json: String, progress: Option<JsFunction>) -> 
     .map_err(|e| Error::from_reason(format!("invalid input: {e}")))?;
   let options = resolve_options(input.options.take().unwrap_or_default());
   let _parallel_restarts = options.parallel_restarts.min(options.restarts).max(1);
-  let use_tsfn = false;
+  let use_tsfn = progress.is_some() && options.parallel_restarts > 1;
   let progress_tsfn = if use_tsfn {
     let cb = progress.as_ref().expect("progress callback missing");
     let tsfn: ThreadsafeFunction<String> = cb.create_threadsafe_function(1024, |ctx: ThreadSafeCallContext<String>| {
@@ -610,7 +729,7 @@ fn solve_attempt_no_progress(
       DictRef::Borrowed(dict)
     };
 
-    let solved = if options.progress_stdout {
+    let solved = if options.progress_stdout || options.fail_stdout {
       run_attempt_dlx(
         None,
         rows,
@@ -654,6 +773,8 @@ fn solve_attempt_no_progress(
 fn resolve_options(raw: SolveOptionsInput) -> ResolveOptions {
   let restarts = raw.restarts.unwrap_or(1).max(1);
   let shuffle = raw.shuffle.unwrap_or(restarts > 1);
+  let progress_stdout = raw.progress_stdout.unwrap_or(false);
+  let fail_stdout = raw.fail_stdout.unwrap_or(progress_stdout);
   ResolveOptions {
     shuffle,
     lcv: raw.lcv.unwrap_or(false),
@@ -667,7 +788,8 @@ fn resolve_options(raw: SolveOptionsInput) -> ResolveOptions {
     log_every_nodes: raw.log_every_nodes.unwrap_or(0),
     label: raw.label,
     debug_dlx: raw.debug_dlx.unwrap_or(false),
-    progress_stdout: raw.progress_stdout.unwrap_or(false),
+    progress_stdout,
+    fail_stdout,
   }
 }
 
@@ -940,20 +1062,34 @@ fn run_attempt_dlx<'a>(
 
   let mut columns: Vec<DlxColumn> = Vec::new();
   let mut nodes: Vec<DlxNode> = Vec::new();
+  let mut col_meta: Vec<ColumnMeta> = Vec::new();
 
   let header = create_column(&mut columns, &mut nodes, true);
+  col_meta.push(ColumnMeta::Other("root".to_string()));
 
   let mut slot_cols: Vec<usize> = vec![0; slots.len()];
+  let mut slot_fail: Vec<Option<FailSlot>> = vec![None; slots.len()];
+  for slot in slots {
+    if slot.id < slot_fail.len() {
+      slot_fail[slot.id] = Some(slot_to_fail(slot));
+    }
+  }
   for slot in slots {
     let col = create_column(&mut columns, &mut nodes, true);
     link_column(&mut columns, header, col);
     slot_cols[slot.id] = col;
+    let meta = slot_fail
+      .get(slot.id)
+      .and_then(|s| s.clone())
+      .unwrap_or_else(|| slot_to_fail(slot));
+    col_meta.push(ColumnMeta::Slot(meta));
   }
 
   let mut cell_cols: HashMap<(usize, usize), usize> = HashMap::new();
   for key in intersection_cells.iter() {
     let col = create_column(&mut columns, &mut nodes, false);
     cell_cols.insert(*key, col);
+    col_meta.push(ColumnMeta::Cell(key.0, key.1));
   }
 
   let mut word_cols: HashMap<String, usize> = HashMap::new();
@@ -1012,7 +1148,9 @@ fn run_attempt_dlx<'a>(
       if options.unique_words {
         let word = &word_list[word_idx];
         let wcol = *word_cols.entry(word.clone()).or_insert_with(|| {
-          create_column(&mut columns, &mut nodes, false)
+          let col = create_column(&mut columns, &mut nodes, false);
+          col_meta.push(ColumnMeta::Word(word.clone()));
+          col
         });
         items.push((wcol, None));
       }
@@ -1042,6 +1180,8 @@ fn run_attempt_dlx<'a>(
     reject_intersect: 0,
     start: attempt_start,
     aborted: false,
+    abort_reason: None,
+    last_fail: None,
   };
 
   let mut progress_ctx = ProgressCtx {
@@ -1056,6 +1196,7 @@ fn run_attempt_dlx<'a>(
     log_every_nodes: options.log_every_nodes,
     last_pick: None,
     stdout: options.progress_stdout,
+    fail_stdout: options.fail_stdout,
   };
   if options.debug_dlx {
     eprintln!(
@@ -1077,6 +1218,7 @@ fn run_attempt_dlx<'a>(
     &adjacency,
     dict,
     &mut progress_ctx,
+    &col_meta,
     abort_flag,
   );
   if options.log_every_ms > 0 {
@@ -1084,6 +1226,7 @@ fn run_attempt_dlx<'a>(
   }
 
   if !solved || state.aborted {
+    emit_fail(&state, &mut progress_ctx);
     return None;
   }
 
@@ -1217,6 +1360,8 @@ fn run_attempt_dlx_no_progress(
     reject_intersect: 0,
     start: attempt_start,
     aborted: false,
+    abort_reason: None,
+    last_fail: None,
   };
 
   let mut solution: Vec<usize> = Vec::new();
@@ -1280,6 +1425,7 @@ fn should_abort(
   if let Some(flag) = abort_flag {
     if flag.load(Ordering::Acquire) {
       state.aborted = true;
+      state.abort_reason = Some("found");
       return true;
     }
   }
@@ -1287,12 +1433,14 @@ fn should_abort(
     let elapsed = state.start.elapsed().as_millis() as u64;
     if elapsed >= max_ms {
       state.aborted = true;
+      state.abort_reason = Some("maxMs");
       return true;
     }
   }
   if let Some(max_nodes) = options.max_nodes {
     if state.nodes >= max_nodes {
       state.aborted = true;
+      state.abort_reason = Some("maxNodes");
       return true;
     }
   }
@@ -1323,6 +1471,7 @@ fn search(
   adjacency: &[HashSet<usize>],
   dict: &Dict,
   progress_ctx: &mut ProgressCtx<'_>,
+  col_meta: &[ColumnMeta],
   abort_flag: Option<&AtomicBool>,
 ) -> bool {
   if matrix.columns[matrix.header].right == matrix.header {
@@ -1338,6 +1487,31 @@ fn search(
   };
   if matrix.columns[col].size == 0 {
     state.zero_pick += 1;
+    let (slot, column) = match col_meta.get(col) {
+      Some(meta) => {
+        let slot = match meta {
+          ColumnMeta::Slot(s) => Some(s.clone()),
+          _ => None,
+        };
+        (slot, Some(meta_to_fail_column(meta)))
+      }
+      None => (
+        None,
+        Some(FailColumn {
+          name: format!("col:{}", col),
+          kind: "other".to_string(),
+          slot: None,
+          cell: None,
+          word: None,
+        }),
+      ),
+    };
+    state.last_fail = Some(FailInfo {
+      reason: "zero-pick",
+      slot,
+      column,
+      limit: None,
+    });
     return false;
   }
 
@@ -1405,7 +1579,7 @@ fn search(
     }
 
     if !should_abort(state, options, abort_flag)
-      && search(matrix, state, solution, options, adjacency, dict, progress_ctx, abort_flag)
+      && search(matrix, state, solution, options, adjacency, dict, progress_ctx, col_meta, abort_flag)
     {
       return true;
     }
@@ -1614,6 +1788,86 @@ fn maybe_report(
   }
   if ctx.log_every_nodes > 0 {
     ctx.next_log_node = state.nodes + ctx.log_every_nodes;
+  }
+}
+
+fn emit_fail(state: &SearchState, ctx: &mut ProgressCtx<'_>) {
+  if ctx.emitter.is_none() && !ctx.fail_stdout {
+    return;
+  }
+  if state.aborted && matches!(state.abort_reason, Some("found")) {
+    return;
+  }
+  let (reason, detail) = if state.aborted {
+    let limit = state.abort_reason.map(|s| s.to_string());
+    (
+      "aborted",
+      limit.map(|l| FailDetail {
+        slot: None,
+        limit: Some(l),
+        column: None,
+      }),
+    )
+  } else if let Some(info) = &state.last_fail {
+    (
+      info.reason,
+      Some(FailDetail {
+        slot: info.slot.clone(),
+        limit: info.limit.map(|s| s.to_string()),
+        column: info.column.clone(),
+      }),
+    )
+  } else {
+    ("no-solution", None)
+  };
+
+  let payload = FailPayload {
+    kind: "fail".to_string(),
+    label: ctx.label.clone(),
+    attempt: ctx.attempt,
+    engine: "dlx".to_string(),
+    reason: reason.to_string(),
+    detail,
+  };
+
+  if ctx.fail_stdout {
+    let label = payload.label.clone().unwrap_or_else(|| "solve".to_string());
+    let detail_str = payload
+      .detail
+      .as_ref()
+      .and_then(|d| {
+        if let Some(col) = &d.column {
+          match col.kind.as_str() {
+            "slot" => col.slot.as_ref().map(|s| {
+              format!("slot#{} r={} c={} dir={} len={}", s.id, s.r, s.c, s.dir, s.len)
+            }),
+            "cell" => col.cell.as_ref().map(|c| format!("cell r={} c={}", c.r, c.c)),
+            "word" => col.word.as_ref().map(|w| format!("word {}", w)),
+            _ => Some(format!("column {}", col.name)),
+          }
+        } else if let Some(slot) = &d.slot {
+          Some(format!("slot#{} r={} c={} dir={} len={}", slot.id, slot.r, slot.c, slot.dir, slot.len))
+        } else if let Some(limit) = &d.limit {
+          Some(format!("limit {}", limit))
+        } else {
+          None
+        }
+      })
+      .unwrap_or_default();
+    if detail_str.is_empty() {
+      println!("[fail][{}#{}] {}", label, payload.attempt, payload.reason);
+    } else {
+      println!(
+        "[fail][{}#{}] {} ({})",
+        label, payload.attempt, payload.reason, detail_str
+      );
+    }
+  }
+
+  if let Ok(json) = serde_json::to_string(&payload) {
+    if let Some(emitter) = ctx.emitter.as_mut() {
+      emitter.emit(json);
+    }
   }
 }
 
