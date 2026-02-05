@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 
 export type DictionaryOptions = {
   lengths?: number[];
@@ -111,6 +111,173 @@ export async function loadDefinitions(
       const normalized = row.word_text_norm?.trim();
       const text = normalized && normalized.length > 0 ? normalized : row.word_text;
       map.set(text.toUpperCase(), def?.text_opr ?? "");
+    }
+    return map;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+export type DictionaryFilterTemplate = {
+  language: string;
+  query?: string | null;
+  scope?: "word" | "def" | "both" | string | null;
+  searchMode?: "contains" | "startsWith" | "exact" | string | null;
+  lenFilterField?: "word" | "def" | string | null;
+  lenMin?: number | null;
+  lenMax?: number | null;
+  difficultyMin?: number | null;
+  difficultyMax?: number | null;
+  tagNames?: string[] | null;
+  excludeTagNames?: string[] | null;
+};
+
+type DictionaryTemplateOptions = {
+  lengths?: number[];
+};
+
+export async function loadDictionaryByTemplate(
+  template: DictionaryFilterTemplate,
+  options: DictionaryTemplateOptions = {}
+): Promise<Map<number, string[]>> {
+  const prisma = new PrismaClient();
+  try {
+    const langCode = (template.language || "ru").toLowerCase();
+    const query = template.query?.trim() || "";
+    const scopeRaw = (template.scope || "word").toLowerCase();
+    const scope = scopeRaw === "def" || scopeRaw === "both" ? scopeRaw : "word";
+    const modeRaw = (template.searchMode || "contains").toLowerCase();
+    const searchMode: "contains" | "startsWith" | "exact" =
+      modeRaw === "startsWith" ? "startsWith" : modeRaw === "exact" ? "exact" : "contains";
+    let lenFilterField =
+      template.lenFilterField === "def" || template.lenFilterField === "word"
+        ? template.lenFilterField
+        : null;
+    const lenMin = Number.isFinite(template.lenMin as number) ? Math.trunc(template.lenMin as number) : undefined;
+    const lenMax = Number.isFinite(template.lenMax as number) ? Math.trunc(template.lenMax as number) : undefined;
+    if (!lenFilterField && (lenMin !== undefined || lenMax !== undefined)) {
+      lenFilterField = "word";
+    }
+    const difficultyMin = Number.isFinite(template.difficultyMin as number)
+      ? Math.trunc(template.difficultyMin as number)
+      : undefined;
+    const difficultyMax = Number.isFinite(template.difficultyMax as number)
+      ? Math.trunc(template.difficultyMax as number)
+      : undefined;
+    const tagNames = (template.tagNames ?? []).map((t) => t.trim()).filter(Boolean);
+    const excludeTagNames = (template.excludeTagNames ?? []).map((t) => t.trim()).filter(Boolean);
+
+    const textFilter =
+      query.length > 0
+        ? searchMode === "contains"
+          ? { contains: query, mode: "insensitive" as const }
+          : searchMode === "startsWith"
+            ? { startsWith: query, mode: "insensitive" as const }
+            : { equals: query, mode: "insensitive" as const }
+        : null;
+
+    const now = new Date();
+    const lengthFilter: Prisma.IntFilter = {};
+    if (lenFilterField === "word" && (lenMin !== undefined || lenMax !== undefined)) {
+      if (lenMin !== undefined) lengthFilter.gte = lenMin;
+      if (lenMax !== undefined) lengthFilter.lte = lenMax;
+    }
+
+    const opredSomeBase: Record<string, unknown> = {
+      language: { is: { code: langCode } },
+      is_deleted: false,
+    };
+    if (tagNames.length) {
+      opredSomeBase.opred_tags = {
+        some: {
+          tags: {
+            OR: tagNames.map((name) => ({
+              name: { contains: name, mode: "insensitive" as const },
+            })),
+          },
+        },
+      };
+    }
+    if (excludeTagNames.length) {
+      opredSomeBase.NOT = {
+        opred_tags: {
+          some: {
+            tags: {
+              OR: excludeTagNames.map((name) => ({
+                name: { contains: name, mode: "insensitive" as const },
+              })),
+            },
+          },
+        },
+      };
+    }
+    if (difficultyMin !== undefined || difficultyMax !== undefined) {
+      opredSomeBase.difficulty = {
+        ...(difficultyMin !== undefined ? { gte: difficultyMin } : {}),
+        ...(difficultyMax !== undefined ? { lte: difficultyMax } : {}),
+      };
+    }
+    if (lenFilterField === "def" && (lenMin !== undefined || lenMax !== undefined)) {
+      opredSomeBase.length = {
+        ...(lenMin !== undefined ? { gte: lenMin } : {}),
+        ...(lenMax !== undefined ? { lte: lenMax } : {}),
+      };
+    }
+    if (Object.keys(opredSomeBase).length > 0) {
+      opredSomeBase.OR = [{ end_date: null }, { end_date: { gte: now } }];
+    }
+
+    const opredWithSearch =
+      query.length > 0 && (scope === "def" || scope === "both") && textFilter
+        ? {
+            ...opredSomeBase,
+            text_opr: textFilter,
+          }
+        : null;
+
+    const wordSearch =
+      query.length > 0 && (scope === "word" || scope === "both") && textFilter
+        ? { word_text: textFilter }
+        : undefined;
+
+    const where: Prisma.word_vWhereInput =
+      scope === "both" && wordSearch && opredWithSearch
+        ? {
+            is_deleted: false,
+            language: { is: { code: langCode } },
+            OR: [wordSearch, { opred_v: { some: opredWithSearch } }],
+          }
+        : {
+            is_deleted: false,
+            language: { is: { code: langCode } },
+            ...(Object.keys(opredSomeBase).length > 0 ? { opred_v: { some: opredSomeBase } } : {}),
+            ...(wordSearch ?? {}),
+            ...(opredWithSearch && scope !== "both" ? { opred_v: { some: opredWithSearch } } : {}),
+          };
+
+    const lengths = options.lengths
+      ? [...new Set(options.lengths)].map((n) => Math.trunc(n)).filter((n) => Number.isFinite(n) && n > 0)
+      : undefined;
+    if (lengths && lengths.length === 0) return new Map<number, string[]>();
+    if (lengths && lengths.length > 0) {
+      lengthFilter.in = lengths;
+    }
+    if (Object.keys(lengthFilter).length > 0) {
+      where.length = lengthFilter;
+    }
+
+    const rows = await prisma.word_v.findMany({
+      where,
+      select: { word_text: true, word_text_norm: true, length: true },
+    });
+
+    const map = new Map<number, string[]>();
+    for (const row of rows) {
+      const normalized = row.word_text_norm?.trim();
+      const text = normalized && normalized.length > 0 ? normalized : row.word_text;
+      const arr = map.get(row.length) ?? [];
+      arr.push(text.toUpperCase());
+      map.set(row.length, arr);
     }
     return map;
   } finally {

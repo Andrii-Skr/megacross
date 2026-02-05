@@ -50,6 +50,7 @@ const IMG: Record<number, ArrowAsset> = {
   0x28: readArrow("28.svg"),
   0x30: readArrow("30.svg"),
   0x38: readArrow("38.svg"),
+  0x3d: readArrow("3d.svg"),
 };
 
 interface Arrow {
@@ -74,6 +75,7 @@ const exportMap: Record<number, PosFn> = {
   0x10: (x, y, s, c) => [{ asset: IMG[0x10], ax: x + c - s, ay: y }],
   0x20: (x, y, s, c) => [{ asset: IMG[0x20], ax: x + c - s, ay: y + c - s }],
   0x38: (x, y, s, c) => [{ asset: IMG[0x38], ax: x + c - s, ay: y }],
+  0x3d: (x, y, s, c) => [{ asset: IMG[0x3d], ax: x + c - s, ay: y }],
   0x29: (x, y, s, c) => [
     { asset: IMG[0x01], ax: x + c / 2 - s / 2, ay: y },
     { asset: IMG[0x28], ax: x + c / 2 - s / 2, ay: y + c - s },
@@ -94,6 +96,7 @@ const batchMap: Record<number, PosFn> = {
   0x10: (x, y, s, c) => [{ asset: IMG[0x10], ax: x, ay: y }],
   0x20: (x, y, s, c) => [{ asset: IMG[0x20], ax: x, ay: y + c - s }],
   0x38: (x, y, s, c) => [{ asset: IMG[0x38], ax: x + c - s, ay: y }],
+  0x3d: (x, y, s, c) => [{ asset: IMG[0x3d], ax: x + c - s, ay: y }],
   0x29: (x, y, s, c) => [
     { asset: IMG[0x01], ax: x + c / 2 - s / 2, ay: y },
     { asset: IMG[0x28], ax: x + c - s + 2, ay: y + c - s },

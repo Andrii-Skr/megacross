@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "preinstall": "npx only-allow pnpm",
+    "start": "pnpm exec ts-node src/index.ts",
     "fsh": "ts-node scripts/fsh.ts",
     "length-stats": "ts-node scripts/length-stats.ts",
     "fill-crw": "ts-node scripts/fill-crw.ts",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.3.11",
     "@napi-rs/cli": "^3.5.1",
+    "@types/archiver": "^6.0.2",
     "@types/node": "^24.0.12",
     "prisma": "^6.11.1",
     "ts-node": "^10.9.2",
@@ -39,6 +41,7 @@
   "dependencies": {
     "@prisma/client": "^6.11.1",
     "@types/express": "^5.0.3",
+    "archiver": "^7.0.1",
     "express": "^5.1.0",
     "hyphenation.ru": "^0.2.1",
     "hypher": "^0.2.5"

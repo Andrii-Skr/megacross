@@ -1,38 +1,47 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const prisma = globalForPrisma.prisma ?? new PrismaClient();
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+
+type WordPayload = Prisma.word_vGetPayload<{
+  include: {
+    opred_v: { include: { opred_tags: { include: { tags: true } } } };
+  };
+}>;
+
+type WordWithTagNames = Omit<WordPayload, "opred_v"> & {
+  opred_v: Array<
+    Omit<WordPayload["opred_v"][number], "opred_tags"> & { tags: string[] }
+  >;
+};
+
+const containsInsensitive = (value?: string) =>
+  value ? { contains: value, mode: "insensitive" as const } : undefined;
 
 export async function getWordsAndDefinitions(
   wordTextFilter?: string,
   definitionTextFilter?: string,
   tagNames?: string[]
-) {
-  const whereClause: any = {
+): Promise<WordWithTagNames[]> {
+  const wordWhere: Prisma.word_vWhereInput = {
     is_deleted: false,
   };
 
-  if (wordTextFilter) {
-    whereClause.word_text = {
-      contains: wordTextFilter,
-      mode: "insensitive",
-    };
-  }
+  const wordText = containsInsensitive(wordTextFilter);
+  if (wordText) wordWhere.word_text = wordText;
 
-  const opredWhereClause: any = {
+  const opredWhere: Prisma.opred_vWhereInput = {
     is_deleted: false,
   };
 
-  if (definitionTextFilter) {
-    opredWhereClause.text_opr = {
-      contains: definitionTextFilter,
-      mode: "insensitive",
-    };
-  }
+  const definitionText = containsInsensitive(definitionTextFilter);
+  if (definitionText) opredWhere.text_opr = definitionText;
 
   if (tagNames && tagNames.length > 0) {
-    opredWhereClause.tags = {
+    opredWhere.opred_tags = {
       some: {
-        tag: {
+        tags: {
           name: {
             in: tagNames,
             mode: "insensitive",
@@ -42,35 +51,52 @@ export async function getWordsAndDefinitions(
     };
   }
 
-  const words = (await prisma.word_v.findMany({
-    where: whereClause,
+  if (definitionText || (tagNames && tagNames.length > 0)) {
+    wordWhere.opred_v = {
+      some: opredWhere,
+    };
+  }
+
+  const words = await prisma.word_v.findMany({
+    where: wordWhere,
     include: {
       opred_v: {
-        where: opredWhereClause,
+        where: opredWhere,
         include: {
-          tags: {
+          opred_tags: {
             include: {
-              tag: true,
+              tags: true,
             },
           },
         },
       },
     },
-  } as any)) as any[];
+  });
 
   return words.map((word) => ({
     ...word,
-    opred_v: (word.opred_v ?? []).map((opred: any) => ({
+    opred_v: (word.opred_v ?? []).map((opred) => ({
       ...opred,
-      tags: Array.isArray(opred.tags)
-        ? opred.tags.map((opredTag: any) => opredTag.tag?.name ?? "")
-        : [],
+      tags: (opred.opred_tags ?? []).map(
+        (opredTag) => opredTag.tags?.name ?? ""
+      ),
     })),
   }));
 }
 
 export async function getAllTags() {
-  const prismaAny = prisma as any;
+  type TagRow = { id: number | string; name: string };
+  type TagModel = {
+    findMany: (args: {
+      select: { id: true; name: true };
+      orderBy: { name: "asc" };
+    }) => Promise<TagRow[]>;
+  };
+
+  const prismaAny = prisma as unknown as {
+    tag?: TagModel;
+    tags?: TagModel;
+  };
   const tagModel = prismaAny.tag ?? prismaAny.tags;
   if (!tagModel) return [];
   return tagModel.findMany({
