@@ -241,23 +241,25 @@ model word_v {
 }
 
 model dictionary_filter_templates {
-  id             Int         @id @default(autoincrement())
-  name           String      @db.VarChar(120)
-  language       String      @db.VarChar(8)
-  query          String?     @db.VarChar(255)
-  scope          String      @default("word") @db.VarChar(8)
-  searchMode     String      @default("contains") @db.VarChar(12)
-  lenFilterField String?     @db.VarChar(8)
-  lenMin         Int?
-  lenMax         Int?
-  difficultyMin  Int?
-  difficultyMax  Int?
-  tagNames       String[]    @default([])
-  createdBy      Int?
-  is_deleted     Boolean     @default(false)
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime
-  auth_users     auth_users? @relation(fields: [createdBy], references: [id])
+  id              Int         @id @default(autoincrement())
+  name            String      @db.VarChar(120)
+  language        String      @db.VarChar(8)
+  query           String?     @db.VarChar(255)
+  scope           String      @default("word") @db.VarChar(8)
+  searchMode      String      @default("contains") @db.VarChar(12)
+  lenFilterField  String?     @db.VarChar(8)
+  lenMin          Int?
+  lenMax          Int?
+  difficultyMin   Int?
+  difficultyMax   Int?
+  tagNames        String[]    @default([])
+  createdBy       Int?
+  is_deleted      Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime
+  excludeTagNames String[]    @default([])
+  auth_users      auth_users? @relation(fields: [createdBy], references: [id])
+  issues          issues[]
 
   @@index([is_deleted])
   @@index([language])
@@ -303,6 +305,8 @@ model editions {
   name               String               @db.VarChar(255)
   createdAt          DateTime             @default(now())
   updatedAt          DateTime
+  deletedAt          DateTime?
+  hidden             Boolean              @default(false)
   edition_opred_stat edition_opred_stat[]
   edition_word_stat  edition_word_stat[]
   issues             issues[]
@@ -343,19 +347,42 @@ model issue_word_usage {
 }
 
 model issues {
-  id                BigInt              @id @default(autoincrement())
-  editionId         Int
-  issueNumberId     Int
-  publishedAt       DateTime?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime
-  issue_opred_usage issue_opred_usage[]
-  issue_word_usage  issue_word_usage[]
-  editions          editions            @relation(fields: [editionId], references: [id])
-  issue_numbers     issue_numbers       @relation(fields: [issueNumberId], references: [id])
+  id                          BigInt                       @id @default(autoincrement())
+  editionId                   Int
+  issueNumberId               Int
+  publishedAt                 DateTime?
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime
+  deletedAt                   DateTime?
+  filterTemplateId            Int?
+  hidden                      Boolean                      @default(false)
+  issue_opred_usage           issue_opred_usage[]
+  issue_word_usage            issue_word_usage[]
+  editions                    editions                     @relation(fields: [editionId], references: [id])
+  dictionary_filter_templates dictionary_filter_templates? @relation(fields: [filterTemplateId], references: [id])
+  issue_numbers               issue_numbers                @relation(fields: [issueNumberId], references: [id])
+  scanword_upload_snapshots   scanword_upload_snapshots?
 
   @@unique([editionId, issueNumberId])
   @@index([editionId, issueNumberId])
+  @@index([filterTemplateId])
+}
+
+model scanword_upload_snapshots {
+  id           BigInt   @id @default(autoincrement())
+  issueId      BigInt   @unique
+  templateId   Int?
+  templateName String?  @db.VarChar(120)
+  fileCount    Int      @default(0)
+  errorCount   Int      @default(0)
+  neededStats  Json?
+  files        Json?
+  errors       Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime
+  issues       issues   @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([updatedAt])
 }
 
 enum PendingStatus {
