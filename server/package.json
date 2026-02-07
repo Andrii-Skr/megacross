@@ -23,6 +23,19 @@
     "prisma:seed": "prisma db seed",
     "prisma:studio": "BROWSER=none prisma studio"
   },
+  "pnpm": {
+    "overrides": {
+      "qs": "^6.14.1",
+      "body-parser": "^2.2.1",
+      "diff": "^4.0.4"
+    },
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "@swc/core",
+      "prisma"
+    ]
+  },
   "ts-node": {
     "files": true
   },
