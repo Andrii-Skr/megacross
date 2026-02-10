@@ -2,7 +2,10 @@ import express from "express";
 import { existsSync } from "node:fs";
 import { getWordsAndDefinitions, getAllTags } from "./services/wordDefinitionService";
 import {
+  finalizeFillJob,
   getFillJob,
+  getFillJobReview,
+  getFillWordCandidates,
   getJobArchivePath,
   getLatestFillJob,
   startFillJob,
@@ -23,6 +26,7 @@ function parseFillOverrides(input: unknown) {
     restarts?: number;
     parallelRestarts?: number;
     writeCrw?: boolean;
+    usageStats?: boolean;
   } = {};
   const maxNodes = Number(raw.maxNodes);
   if (Number.isFinite(maxNodes) && maxNodes > 0) overrides.maxNodes = Math.floor(maxNodes);
@@ -35,6 +39,7 @@ function parseFillOverrides(input: unknown) {
     overrides.parallelRestarts = Math.floor(parallelRestarts);
   }
   if (typeof raw.writeCrw === "boolean") overrides.writeCrw = raw.writeCrw;
+  if (typeof raw.usageStats === "boolean") overrides.usageStats = raw.usageStats;
   if (
     overrides.restarts !== undefined &&
     overrides.parallelRestarts !== undefined &&
@@ -136,6 +141,49 @@ app.get("/api/fill/:jobId", async (req, res) => {
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to fetch job";
     res.status(500).json({ error: msg });
+  }
+});
+
+app.get("/api/fill/:jobId/review", async (req, res) => {
+  try {
+    const jobId = BigInt(req.params.jobId);
+    const review = await getFillJobReview(jobId);
+    if (!review) {
+      res.status(404).json({ error: "Review data not found" });
+      return;
+    }
+    res.json(review);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Failed to fetch review";
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post("/api/fill/:jobId/candidates", async (req, res) => {
+  try {
+    const jobId = BigInt(req.params.jobId);
+    const payload = req.body ?? {};
+    const result = await getFillWordCandidates(jobId, {
+      templateKey: typeof payload.templateKey === "string" ? payload.templateKey : undefined,
+      slotId: Number(payload.slotId),
+      mask: typeof payload.mask === "string" ? payload.mask : undefined,
+      limit: Number.isFinite(Number(payload.limit)) ? Number(payload.limit) : undefined,
+    });
+    res.json(result);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Failed to load candidates";
+    res.status(400).json({ error: msg });
+  }
+});
+
+app.post("/api/fill/:jobId/finalize", async (req, res) => {
+  try {
+    const jobId = BigInt(req.params.jobId);
+    const job = await finalizeFillJob(jobId, req.body ?? {});
+    res.json(job);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Failed to finalize job";
+    res.status(400).json({ error: msg });
   }
 });
 

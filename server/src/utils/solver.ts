@@ -82,6 +82,7 @@ export type SolveOptions = {
   logEveryMs?: number;
   logEveryNodes?: number;
   label?: string;
+  wordPriority?: Map<string, number>;
   progressStdout?: boolean;
   failStdout?: boolean;
   onProgress?: (info: SolveProgress) => void;
@@ -103,6 +104,7 @@ type ResolvedOptions = {
   logEveryMs: number;
   logEveryNodes: number;
   label?: string;
+  wordPriority?: Map<string, number>;
   onProgress?: (info: SolveProgress) => void;
   onFail?: (info: SolveFailInfo) => void;
 };
@@ -421,13 +423,24 @@ function runAttemptCsp(
     if (candidates.length <= 1) return candidates;
     let ordered = candidates;
     if (options.shuffle || options.lcv) ordered = candidates.slice();
+    const priorityOf = (word: string) => options.wordPriority?.get(word) ?? 0;
     if (options.lcv) {
       const scored = ordered.map((w, i) => ({
         word: w,
         score: scoreWord(slotId, w),
+        priority: priorityOf(w),
         tie: options.shuffle ? Math.random() : i,
       }));
-      scored.sort((a, b) => (b.score - a.score) || (a.tie - b.tie));
+      scored.sort((a, b) => (b.score - a.score) || (a.priority - b.priority) || (a.tie - b.tie));
+      return scored.map(s => s.word);
+    }
+    if (options.wordPriority) {
+      const scored = ordered.map((w, i) => ({
+        word: w,
+        priority: priorityOf(w),
+        tie: options.shuffle ? Math.random() : i,
+      }));
+      scored.sort((a, b) => (a.priority - b.priority) || (a.tie - b.tie));
       return scored.map(s => s.word);
     }
     if (options.shuffle) shuffleInPlace(ordered);
@@ -760,13 +773,23 @@ function runAttemptDlx(
   for (const slot of slots) {
     const pattern = slot.cells.map(() => ".").join("");
     let candidates = getCandidates(pattern, slot.len, index, patternCache);
+    const priorityOf = (word: string) => options.wordPriority?.get(word) ?? 0;
     if (options.lcv && candidates.length > 1) {
       const scored = candidates.map((w, i) => ({
         word: w,
         score: scoreWord(slot.id, w),
+        priority: priorityOf(w),
         tie: options.shuffle ? Math.random() : i,
       }));
-      scored.sort((a, b) => (b.score - a.score) || (a.tie - b.tie));
+      scored.sort((a, b) => (b.score - a.score) || (a.priority - b.priority) || (a.tie - b.tie));
+      candidates = scored.map(s => s.word);
+    } else if (options.wordPriority && candidates.length > 1) {
+      const scored = candidates.map((w, i) => ({
+        word: w,
+        priority: priorityOf(w),
+        tie: options.shuffle ? Math.random() : i,
+      }));
+      scored.sort((a, b) => (a.priority - b.priority) || (a.tie - b.tie));
       candidates = scored.map(s => s.word);
     } else if (options.shuffle && candidates.length > 1) {
       candidates = candidates.slice();
@@ -1065,6 +1088,7 @@ export function solve(
     logEveryMs: optionsRaw.logEveryMs ?? 0,
     logEveryNodes: optionsRaw.logEveryNodes ?? 0,
     label: optionsRaw.label,
+    wordPriority: optionsRaw.wordPriority,
     onProgress: optionsRaw.onProgress,
     onFail: optionsRaw.onFail,
   };

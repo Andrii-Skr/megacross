@@ -3,14 +3,14 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createWriteStream } from "node:fs";
 import path from "node:path";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { buildClueEntries } from "../utils/clues";
 import { parseFsh } from "../utils/parseFsh";
 import { validate, scanSlots } from "../utils/grid";
 import { solve, type SolveFailInfo, type SolveProgress } from "../utils/solver";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../utils/nativeDlx";
 import { buildCrw } from "../utils/writeCrw";
-import type { Cell, Grid, Slot } from "../types";
+import { DIRS, type Cell, type Grid, type Slot } from "../types";
 import { loadDefinitions, loadDictionaryByTemplate, type DictionaryFilterTemplate } from "./dictionary";
 import { arrowSvg } from "../../scripts/arrow-utils";
 import { buildClueTextMap, renderClueText } from "../../scripts/clue-svg";
@@ -24,7 +24,7 @@ import {
 
 const prisma = new PrismaClient();
 
-type FillJobStatus = "queued" | "running" | "done" | "error";
+type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
 
 type FillTemplateStatus = {
   key?: string | null;
@@ -61,10 +61,110 @@ type FillJobOptions = {
   noDefs: boolean;
   requireNative: boolean;
   writeCrw: boolean;
+  usageStats: boolean;
+};
+
+type ReviewDefinitionOption = {
+  opredId: string | null;
+  text: string;
+};
+
+type ReviewSlotIntersection = {
+  slotId: number;
+  index: number;
+  otherIndex: number;
+  row: number;
+  col: number;
+  letter: string;
+};
+
+type ReviewSlot = {
+  slotId: number;
+  r: number;
+  c: number;
+  dir: "down" | "right";
+  len: number;
+  cells: [number, number][];
+  word: string;
+  wordId: string | null;
+  opredId: string | null;
+  definition: string;
+  definitionOptions: ReviewDefinitionOption[];
+  intersections: ReviewSlotIntersection[];
+  clueCell: { key: string; row: number; col: number } | null;
+};
+
+type ReviewClueGroup = {
+  key: string;
+  row: number;
+  col: number;
+  slotIds: number[];
+};
+
+type ReviewTemplate = {
+  key: string;
+  name: string;
+  sourceName: string;
+  order: number;
+  path: string;
+  language: string;
+  langId: number | null;
+  grid: Grid;
+  slots: ReviewSlot[];
+  clueGroups: ReviewClueGroup[];
+};
+
+export type FillReviewPayload = {
+  version: 1;
+  issue: {
+    issueId: string;
+    editionId: number;
+    editionCode: string;
+    issueLabel: string;
+  };
+  options: {
+    style: "default" | "corel";
+    writeCrw: boolean;
+    usageStats: boolean;
+  };
+  templates: ReviewTemplate[];
+};
+
+type FinalizeSlotInput = {
+  slotId: number;
+  word?: string | null;
+  definition?: string | null;
+  wordId?: string | null;
+  opredId?: string | null;
+};
+
+type FinalizeTemplateInput = {
+  key: string;
+  slots?: FinalizeSlotInput[] | null;
+};
+
+type FinalizePayload = {
+  templates?: FinalizeTemplateInput[] | null;
+};
+
+export type FillMaskCandidate = {
+  wordId: string;
+  word: string;
+  definitions: ReviewDefinitionOption[];
+};
+
+type FinalSlotState = {
+  slotId: number;
+  len: number;
+  word: string;
+  definition: string;
+  wordId: bigint | null;
+  opredId: bigint | null;
 };
 
 type IssueContext = {
   issueId: bigint;
+  editionId: number;
   editionCode: string;
   issueLabel: string;
   filterTemplateId: number | null;
@@ -124,6 +224,7 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   noDefs: true,
   requireNative: false,
   writeCrw: false,
+  usageStats: true,
 };
 
 const ARCHIVE_TTL_MS = 1000 * 60 * 60 * 24 * 30 * 6;
@@ -139,6 +240,430 @@ type TemplateStats = {
   degreeSqSum: number;
   pressure?: number;
 };
+
+type WordPriorityRow = {
+  word: string | null;
+  useCount: number | bigint | null;
+};
+
+type WordDefinitionCandidate = {
+  id: bigint;
+  word_text: string;
+  word_text_norm: string | null;
+  opred_v: Array<{
+    id: bigint;
+    text_opr: string;
+  }>;
+};
+
+type WordSelection = {
+  wordId: bigint;
+  opredId: bigint | null;
+  definition: string;
+  definitions: Array<{
+    opredId: bigint | null;
+    text: string;
+  }>;
+};
+
+type UsageCountMap = Map<bigint, number>;
+
+const WORD_USE_PRIORITY_MULTIPLIER = 1_000_000;
+
+function normalizeWordKey(word: string): string {
+  return word.trim().toUpperCase();
+}
+
+function toNumber(value: number | bigint | null | undefined): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "bigint") return Number(value);
+  return 0;
+}
+
+function addCount(target: UsageCountMap, id: bigint, value: number) {
+  if (!Number.isFinite(value) || value <= 0) return;
+  target.set(id, (target.get(id) ?? 0) + value);
+}
+
+function countWords(words: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const rawWord of words) {
+    const word = normalizeWordKey(rawWord);
+    if (!word) continue;
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function getWordPriority(priorityByWord: Map<string, number>, word: string): number {
+  return priorityByWord.get(normalizeWordKey(word)) ?? 0;
+}
+
+function sortDictionaryByUsagePriority(dict: Map<number, string[]>, priorityByWord: Map<string, number>) {
+  if (!priorityByWord.size) return;
+  for (const words of dict.values()) {
+    words.sort((a, b) => {
+      const scoreDiff = getWordPriority(priorityByWord, a) - getWordPriority(priorityByWord, b);
+      if (scoreDiff !== 0) return scoreDiff;
+      return a.localeCompare(b, "ru");
+    });
+  }
+}
+
+async function resolveLanguageId(langCode: string): Promise<number | null> {
+  const rows = await prisma.$queryRaw<Array<{ id: number | null }>>`
+    SELECT id
+    FROM language
+    WHERE LOWER(code) = LOWER(${langCode})
+    LIMIT 1
+  `;
+  const id = rows[0]?.id;
+  return typeof id === "number" ? id : null;
+}
+
+async function loadEditionUsagePriority(
+  editionId: number,
+  excludeIssueId?: bigint
+): Promise<Map<string, number>> {
+  const [wordRows, opredRows] = await Promise.all([
+    excludeIssueId === undefined
+      ? prisma.$queryRaw<WordPriorityRow[]>`
+          SELECT
+            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
+            SUM(iwu."useCount")::int AS "useCount"
+          FROM issue_word_usage iwu
+          JOIN issues i ON i.id = iwu."issueId"
+          JOIN word_v w ON w.id = iwu."wordId"
+          WHERE i."editionId" = ${editionId}
+          GROUP BY 1
+        `
+      : prisma.$queryRaw<WordPriorityRow[]>`
+          SELECT
+            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
+            SUM(iwu."useCount")::int AS "useCount"
+          FROM issue_word_usage iwu
+          JOIN issues i ON i.id = iwu."issueId"
+          JOIN word_v w ON w.id = iwu."wordId"
+          WHERE i."editionId" = ${editionId}
+            AND iwu."issueId" <> ${excludeIssueId}
+          GROUP BY 1
+        `,
+    excludeIssueId === undefined
+      ? prisma.$queryRaw<WordPriorityRow[]>`
+          SELECT
+            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
+            SUM(iou."useCount")::int AS "useCount"
+          FROM issue_opred_usage iou
+          JOIN issues i ON i.id = iou."issueId"
+          JOIN opred_v o ON o.id = iou."opredId"
+          JOIN word_v w ON w.id = o.word_id
+          WHERE i."editionId" = ${editionId}
+          GROUP BY 1, iou."opredId"
+        `
+      : prisma.$queryRaw<WordPriorityRow[]>`
+          SELECT
+            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
+            SUM(iou."useCount")::int AS "useCount"
+          FROM issue_opred_usage iou
+          JOIN issues i ON i.id = iou."issueId"
+          JOIN opred_v o ON o.id = iou."opredId"
+          JOIN word_v w ON w.id = o.word_id
+          WHERE i."editionId" = ${editionId}
+            AND iou."issueId" <> ${excludeIssueId}
+          GROUP BY 1, iou."opredId"
+        `,
+  ]);
+
+  const wordUse = new Map<string, number>();
+  for (const row of wordRows) {
+    if (!row.word) continue;
+    wordUse.set(normalizeWordKey(row.word), toNumber(row.useCount));
+  }
+
+  const minOpredUse = new Map<string, number>();
+  for (const row of opredRows) {
+    if (!row.word) continue;
+    const key = normalizeWordKey(row.word);
+    const usage = toNumber(row.useCount);
+    const current = minOpredUse.get(key);
+    if (current === undefined || usage < current) {
+      minOpredUse.set(key, usage);
+    }
+  }
+
+  const priority = new Map<string, number>();
+  for (const [word, usage] of wordUse) {
+    const minDefUsage = minOpredUse.get(word) ?? 0;
+    priority.set(word, usage * WORD_USE_PRIORITY_MULTIPLIER + minDefUsage);
+  }
+  for (const [word, minDefUsage] of minOpredUse) {
+    if (!priority.has(word)) {
+      priority.set(word, minDefUsage);
+    }
+  }
+  return priority;
+}
+
+function pickBestOpred(
+  opreds: Array<{ id: bigint; text_opr: string }>,
+  opredUseCount: Map<bigint, number>
+): { id: bigint; text: string } | null {
+  let best: { id: bigint; text: string; usage: number } | null = null;
+  for (const opred of opreds) {
+    const usage = opredUseCount.get(opred.id) ?? 0;
+    if (
+      !best ||
+      usage < best.usage ||
+      (usage === best.usage && opred.id < best.id)
+    ) {
+      best = {
+        id: opred.id,
+        text: opred.text_opr,
+        usage,
+      };
+    }
+  }
+  return best ? { id: best.id, text: best.text } : null;
+}
+
+function pickBestWordCandidate(
+  candidates: WordDefinitionCandidate[],
+  wordUseCount: Map<bigint, number>
+): WordDefinitionCandidate | null {
+  let best: WordDefinitionCandidate | null = null;
+  let bestUsage = 0;
+  for (const candidate of candidates) {
+    const usage = wordUseCount.get(candidate.id) ?? 0;
+    if (
+      !best ||
+      usage < bestUsage ||
+      (usage === bestUsage && candidate.id < best.id)
+    ) {
+      best = candidate;
+      bestUsage = usage;
+    }
+  }
+  return best;
+}
+
+async function selectWordsAndDefinitionsForEdition(
+  words: string[],
+  params: { langId: number; editionId: number; preferUsageStats: boolean }
+): Promise<Map<string, WordSelection>> {
+  const uniqueWords = [...new Set(words.map(normalizeWordKey).filter(Boolean))];
+  if (!uniqueWords.length) return new Map();
+
+  const rows = await prisma.word_v.findMany({
+    where: {
+      is_deleted: false,
+      langId: params.langId,
+      OR: [
+        { word_text_norm: { in: uniqueWords, mode: "insensitive" as const } },
+        { word_text: { in: uniqueWords, mode: "insensitive" as const } },
+      ],
+    },
+    select: {
+      id: true,
+      word_text: true,
+      word_text_norm: true,
+      opred_v: {
+        where: {
+          is_deleted: false,
+          langId: params.langId,
+          text_opr: { not: "" },
+        },
+        orderBy: {
+          id: "asc",
+        },
+        select: {
+          id: true,
+          text_opr: true,
+        },
+      },
+    },
+  });
+  if (!rows.length) return new Map();
+
+  const wordIds = rows.map((row) => row.id);
+  const opredIds = rows.flatMap((row) => row.opred_v.map((opred) => opred.id));
+
+  const [editionWordStats, editionOpredStats] = params.preferUsageStats
+    ? await Promise.all([
+        wordIds.length
+          ? prisma.edition_word_stat.findMany({
+              where: {
+                editionId: params.editionId,
+                wordId: { in: wordIds },
+              },
+              select: {
+                wordId: true,
+                useCount: true,
+              },
+            })
+          : Promise.resolve([]),
+        opredIds.length
+          ? prisma.edition_opred_stat.findMany({
+              where: {
+                editionId: params.editionId,
+                opredId: { in: opredIds },
+              },
+              select: {
+                opredId: true,
+                useCount: true,
+              },
+            })
+          : Promise.resolve([]),
+      ])
+    : [[], []];
+
+  const wordUseCount = new Map<bigint, number>();
+  for (const row of editionWordStats) {
+    wordUseCount.set(row.wordId, row.useCount);
+  }
+
+  const opredUseCount = new Map<bigint, number>();
+  for (const row of editionOpredStats) {
+    opredUseCount.set(row.opredId, row.useCount);
+  }
+
+  const byWord = new Map<string, WordDefinitionCandidate[]>();
+  for (const row of rows) {
+    const normalized = row.word_text_norm?.trim();
+    const word = normalizeWordKey(
+      normalized && normalized.length > 0 ? normalized : row.word_text
+    );
+    if (!word) continue;
+    const list = byWord.get(word) ?? [];
+    list.push(row);
+    byWord.set(word, list);
+  }
+
+  const selected = new Map<string, WordSelection>();
+  for (const [word, candidates] of byWord) {
+    const bestWord = pickBestWordCandidate(candidates, wordUseCount);
+    if (!bestWord) continue;
+    const bestOpred = pickBestOpred(bestWord.opred_v, opredUseCount);
+    const definitions = bestWord.opred_v
+      .map((item) => ({
+        opredId: item.id,
+        text: item.text_opr.trim(),
+      }))
+      .filter((item) => item.text.length > 0)
+      .map((item) => ({
+        opredId: item.opredId,
+        text: item.text,
+      }));
+    selected.set(word, {
+      wordId: bestWord.id,
+      opredId: bestOpred?.id ?? null,
+      definition: bestOpred?.text ?? "",
+      definitions,
+    });
+  }
+  return selected;
+}
+
+async function persistUsageStatsForIssue(
+  issueId: bigint,
+  editionId: number,
+  wordUsage: UsageCountMap,
+  opredUsage: UsageCountMap
+) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`
+      DELETE FROM issue_word_usage
+      WHERE "issueId" = ${issueId}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM issue_opred_usage
+      WHERE "issueId" = ${issueId}
+    `;
+
+    for (const [wordId, useCount] of wordUsage) {
+      if (useCount <= 0) continue;
+      await tx.$executeRaw`
+        INSERT INTO issue_word_usage ("issueId", "wordId", "useCount", "createdAt")
+        VALUES (${issueId}, ${wordId}, ${useCount}, now())
+      `;
+    }
+
+    for (const [opredId, useCount] of opredUsage) {
+      if (useCount <= 0) continue;
+      await tx.$executeRaw`
+        INSERT INTO issue_opred_usage ("issueId", "opredId", "useCount", "createdAt")
+        VALUES (${issueId}, ${opredId}, ${useCount}, now())
+      `;
+    }
+
+    await tx.$executeRaw`
+      DELETE FROM edition_word_stat
+      WHERE "editionId" = ${editionId}
+    `;
+    await tx.$executeRaw`
+      INSERT INTO edition_word_stat ("editionId", "wordId", "useCount", "lastIssueId", "lastUsedAt")
+      SELECT
+        ${editionId} AS "editionId",
+        agg."wordId",
+        agg."useCount",
+        last_use."issueId" AS "lastIssueId",
+        last_use."createdAt" AS "lastUsedAt"
+      FROM (
+        SELECT
+          iwu."wordId",
+          SUM(iwu."useCount")::int AS "useCount"
+        FROM issue_word_usage iwu
+        JOIN issues i ON i.id = iwu."issueId"
+        WHERE i."editionId" = ${editionId}
+        GROUP BY iwu."wordId"
+      ) agg
+      LEFT JOIN LATERAL (
+        SELECT
+          iwu2."issueId",
+          iwu2."createdAt"
+        FROM issue_word_usage iwu2
+        JOIN issues i2 ON i2.id = iwu2."issueId"
+        WHERE i2."editionId" = ${editionId}
+          AND iwu2."wordId" = agg."wordId"
+        ORDER BY iwu2."createdAt" DESC, iwu2."issueId" DESC
+        LIMIT 1
+      ) last_use ON true
+    `;
+
+    await tx.$executeRaw`
+      DELETE FROM edition_opred_stat
+      WHERE "editionId" = ${editionId}
+    `;
+    await tx.$executeRaw`
+      INSERT INTO edition_opred_stat ("editionId", "opredId", "useCount", "lastIssueId", "lastUsedAt")
+      SELECT
+        ${editionId} AS "editionId",
+        agg."opredId",
+        agg."useCount",
+        last_use."issueId" AS "lastIssueId",
+        last_use."createdAt" AS "lastUsedAt"
+      FROM (
+        SELECT
+          iou."opredId",
+          SUM(iou."useCount")::int AS "useCount"
+        FROM issue_opred_usage iou
+        JOIN issues i ON i.id = iou."issueId"
+        WHERE i."editionId" = ${editionId}
+        GROUP BY iou."opredId"
+      ) agg
+      LEFT JOIN LATERAL (
+        SELECT
+          iou2."issueId",
+          iou2."createdAt"
+        FROM issue_opred_usage iou2
+        JOIN issues i2 ON i2.id = iou2."issueId"
+        WHERE i2."editionId" = ${editionId}
+          AND iou2."opredId" = agg."opredId"
+        ORDER BY iou2."createdAt" DESC, iou2."issueId" DESC
+        LIMIT 1
+      ) last_use ON true
+    `;
+  });
+}
 
 function buildLenCounts(slots: Slot[]): Map<number, number> {
   const counts = new Map<number, number>();
@@ -266,6 +791,196 @@ function normalizeTemplateDisplayName(name: string): string {
   return base || sanitized;
 }
 
+function slotDirName(slot: Slot): "down" | "right" {
+  return slot.dir === DIRS.right ? "right" : "down";
+}
+
+function resolveDirFromName(name: "down" | "right") {
+  return name === "right" ? DIRS.right : DIRS.down;
+}
+
+function parseReviewPayload(value: unknown): FillReviewPayload | null {
+  if (!value) return null;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parseReviewPayload(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== "object") return null;
+  const payload = value as Partial<FillReviewPayload>;
+  if (!payload || payload.version !== 1) return null;
+  if (!payload.issue || !payload.options || !Array.isArray(payload.templates)) return null;
+  return payload as FillReviewPayload;
+}
+
+function normalizeDefinitionText(value: string | null | undefined): string {
+  return (value ?? "").trim();
+}
+
+function isLettersOnlyWord(word: string): boolean {
+  return /^\p{L}+$/u.test(word);
+}
+
+function parseOptionalBigInt(value: string | null | undefined): bigint | null {
+  if (!value) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+function buildSlotIntersections(
+  slots: Slot[],
+  wordsBySlot: Map<number, string>
+): Map<number, ReviewSlotIntersection[]> {
+  const cellUsage = new Map<string, Array<{ slotId: number; index: number; row: number; col: number }>>();
+  for (const slot of slots) {
+    slot.cells.forEach(([row, col], index) => {
+      const key = `${row},${col}`;
+      const list = cellUsage.get(key) ?? [];
+      list.push({ slotId: slot.id, index, row, col });
+      cellUsage.set(key, list);
+    });
+  }
+
+  const bySlot = new Map<number, ReviewSlotIntersection[]>();
+  for (const list of cellUsage.values()) {
+    if (list.length < 2) continue;
+    for (let i = 0; i < list.length; i += 1) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        const left = list[i];
+        const right = list[j];
+        const leftWord = wordsBySlot.get(left.slotId) ?? "";
+        const rightWord = wordsBySlot.get(right.slotId) ?? "";
+        const leftLetter = leftWord[left.index] ?? "";
+        const rightLetter = rightWord[right.index] ?? "";
+
+        const leftList = bySlot.get(left.slotId) ?? [];
+        leftList.push({
+          slotId: right.slotId,
+          index: left.index,
+          otherIndex: right.index,
+          row: left.row,
+          col: left.col,
+          letter: rightLetter || leftLetter,
+        });
+        bySlot.set(left.slotId, leftList);
+
+        const rightList = bySlot.get(right.slotId) ?? [];
+        rightList.push({
+          slotId: left.slotId,
+          index: right.index,
+          otherIndex: left.index,
+          row: right.row,
+          col: right.col,
+          letter: leftLetter || rightLetter,
+        });
+        bySlot.set(right.slotId, rightList);
+      }
+    }
+  }
+
+  for (const intersections of bySlot.values()) {
+    intersections.sort((a, b) => {
+      if (a.index !== b.index) return a.index - b.index;
+      return a.slotId - b.slotId;
+    });
+  }
+  return bySlot;
+}
+
+function buildClueMaps(grid: Grid, slots: Slot[], solved: string[]) {
+  const slotByArrow = new Map<string, number>();
+  for (const slot of slots) {
+    slotByArrow.set(`${slot.r},${slot.c}:${slotDirName(slot)}`, slot.id);
+  }
+
+  const clues = buildClueEntries(grid, slots, solved, new Map());
+  const bySlot = new Map<number, { key: string; row: number; col: number }>();
+  const groupByKey = new Map<string, ReviewClueGroup>();
+
+  for (const clue of [...clues.down, ...clues.right]) {
+    const slotId = slotByArrow.get(`${clue.arrowR},${clue.arrowC}:${clue.dir}`);
+    if (slotId === undefined) continue;
+    const key = `${clue.clueR},${clue.clueC}`;
+    bySlot.set(slotId, { key, row: clue.clueR, col: clue.clueC });
+    const group = groupByKey.get(key) ?? {
+      key,
+      row: clue.clueR,
+      col: clue.clueC,
+      slotIds: [],
+    };
+    if (!group.slotIds.includes(slotId)) group.slotIds.push(slotId);
+    groupByKey.set(key, group);
+  }
+
+  const clueGroups = [...groupByKey.values()].map((group) => ({
+    ...group,
+    slotIds: [...group.slotIds].sort((a, b) => a - b),
+  }));
+  clueGroups.sort((a, b) => {
+    if (a.row !== b.row) return a.row - b.row;
+    return a.col - b.col;
+  });
+
+  return { clueBySlot: bySlot, clueGroups };
+}
+
+function convertReviewSlotToSlot(input: ReviewSlot): Slot {
+  return {
+    id: input.slotId,
+    r: input.r,
+    c: input.c,
+    dir: resolveDirFromName(input.dir),
+    len: input.len,
+    cells: input.cells,
+  };
+}
+
+function buildSolvedGridFromSlots(template: ReviewTemplate, states: Map<number, FinalSlotState>): string[] {
+  const rows: string[][] = Array.from({ length: template.grid.rows }, (_, row) =>
+    Array.from({ length: template.grid.cols }, (_, col) => (template.grid.data[row]?.[col] === "#" ? "#" : "."))
+  );
+
+  const slotMap = new Map(template.slots.map((slot) => [slot.slotId, slot]));
+  for (const [slotId, state] of states) {
+    const slot = slotMap.get(slotId);
+    if (!slot) {
+      throw new Error(`Unknown slot ${slotId} for template ${template.name}`);
+    }
+    slot.cells.forEach(([row, col], index) => {
+      const letter = state.word[index] ?? "";
+      if (!letter) {
+        throw new Error(`Word length mismatch for slot ${slotId} (${template.name})`);
+      }
+      const current = rows[row]?.[col];
+      if (!current || current === "#") {
+        throw new Error(`Slot ${slotId} points to blocked cell (${row},${col}) in ${template.name}`);
+      }
+      if (current !== "." && current !== letter) {
+        throw new Error(
+          `Intersection mismatch in ${template.name} at (${row},${col}): '${current}' vs '${letter}'`
+        );
+      }
+      rows[row][col] = letter;
+    });
+  }
+
+  for (let row = 0; row < rows.length; row += 1) {
+    for (let col = 0; col < rows[row].length; col += 1) {
+      if (rows[row][col] === ".") {
+        throw new Error(`Unfilled cell in ${template.name} at (${row},${col})`);
+      }
+    }
+  }
+
+  return rows.map((row) => row.join(""));
+}
+
 function emitJobUpdate(jobId: string, update: FillJobUpdate) {
   const runtime = jobRuntimes.get(jobId);
   if (!runtime) return;
@@ -293,6 +1008,7 @@ async function ensureFillJobsTable() {
       "outputPath" TEXT,
       "outputSize" BIGINT,
       templates JSONB,
+      "reviewData" JSONB,
       options JSONB,
       "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
       "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -309,7 +1025,8 @@ async function ensureFillJobsTable() {
   `);
   await prisma.$executeRawUnsafe(`
     ALTER TABLE scanword_fill_jobs
-      ADD COLUMN IF NOT EXISTS templates JSONB;
+      ADD COLUMN IF NOT EXISTS templates JSONB,
+      ADD COLUMN IF NOT EXISTS "reviewData" JSONB;
   `);
   fillTableReady = true;
 }
@@ -371,6 +1088,7 @@ async function loadIssueContext(issueId: bigint): Promise<IssueContext | null> {
   const rows = await prisma.$queryRaw<any[]>`
     SELECT
       i.id,
+      i."editionId" as "editionId",
       i."filterTemplateId" as "filterTemplateId",
       e.code as "editionCode",
       n.label as "issueLabel",
@@ -386,6 +1104,7 @@ async function loadIssueContext(issueId: bigint): Promise<IssueContext | null> {
   const row = rows[0];
   return {
     issueId,
+    editionId: Number(row.editionId),
     editionCode: row.editionCode,
     issueLabel: row.issueLabel,
     filterTemplateId: row.filterTemplateId ?? null,
@@ -655,10 +1374,12 @@ async function updateJob(jobId: bigint, data: Partial<Omit<FillJobUpdate, "id" |
   totalTemplates?: number | null;
   error?: string | null;
   templates?: FillTemplateStatus[] | null;
+  reviewData?: FillReviewPayload | null;
   outputPath?: string | null;
   outputSize?: number | null;
 }) {
   const templatesJson = data.templates ? JSON.stringify(data.templates) : null;
+  const reviewJson = data.reviewData ? JSON.stringify(data.reviewData) : null;
   await prisma.$executeRaw`
     UPDATE scanword_fill_jobs
     SET
@@ -669,6 +1390,7 @@ async function updateJob(jobId: bigint, data: Partial<Omit<FillJobUpdate, "id" |
       "totalTemplates" = COALESCE(${data.totalTemplates ?? null}, "totalTemplates"),
       error = COALESCE(${data.error ?? null}, error),
       templates = COALESCE(${templatesJson}::jsonb, templates),
+      "reviewData" = COALESCE(${reviewJson}::jsonb, "reviewData"),
       "outputPath" = COALESCE(${data.outputPath ?? null}, "outputPath"),
       "outputSize" = COALESCE(${data.outputSize ?? null}, "outputSize"),
       "updatedAt" = now()
@@ -681,6 +1403,299 @@ function formatFail(info: SolveFailInfo): string {
   if (info.reason === "forward-check") return "forward-check";
   if (info.reason === "zero-pick") return "zero-pick";
   return "no-solution";
+}
+
+function buildReviewTemplate(
+  entry: TemplateEntry,
+  solved: string[],
+  language: string,
+  langId: number | null,
+  selections: Map<string, WordSelection>,
+  fallbackDefinitions: Map<string, string>
+): ReviewTemplate {
+  const wordsBySlot = new Map<number, string>();
+  entry.slots.forEach((slot, index) => {
+    const word = slot.cells.map(([row, col]) => solved[row]?.[col] ?? "").join("");
+    wordsBySlot.set(slot.id, normalizeWordKey(word));
+  });
+
+  const intersectionsBySlot = buildSlotIntersections(entry.slots, wordsBySlot);
+  const { clueBySlot, clueGroups } = buildClueMaps(entry.grid, entry.slots, solved);
+
+  const slots: ReviewSlot[] = entry.slots.map((slot, index) => {
+    const word = wordsBySlot.get(slot.id) ?? "";
+    const selection = selections.get(word);
+    const fallbackDefinition = normalizeDefinitionText(fallbackDefinitions.get(word));
+    const selectedDefinition = normalizeDefinitionText(selection?.definition) || fallbackDefinition;
+    const optionMap = new Map<string, ReviewDefinitionOption>();
+    for (const def of selection?.definitions ?? []) {
+      const text = normalizeDefinitionText(def.text);
+      if (!text) continue;
+      const key = `${def.opredId?.toString() ?? "custom"}:${text}`;
+      optionMap.set(key, {
+        opredId: def.opredId ? String(def.opredId) : null,
+        text,
+      });
+    }
+    if (selectedDefinition.length > 0) {
+      const selectedKey = `${selection?.opredId ? String(selection.opredId) : "custom"}:${selectedDefinition}`;
+      optionMap.set(selectedKey, {
+        opredId: selection?.opredId ? String(selection.opredId) : null,
+        text: selectedDefinition,
+      });
+    }
+    const options = [...optionMap.values()];
+    options.sort((a, b) => a.text.localeCompare(b.text, "ru"));
+
+    return {
+      slotId: slot.id,
+      r: slot.r,
+      c: slot.c,
+      dir: slotDirName(slot),
+      len: slot.len,
+      cells: slot.cells,
+      word,
+      wordId: selection ? String(selection.wordId) : null,
+      opredId: selection?.opredId ? String(selection.opredId) : null,
+      definition: selectedDefinition,
+      definitionOptions: options,
+      intersections: intersectionsBySlot.get(slot.id) ?? [],
+      clueCell: clueBySlot.get(slot.id) ?? null,
+    };
+  });
+
+  return {
+    key: entry.key,
+    name: entry.name,
+    sourceName: entry.sourceName,
+    order: entry.order,
+    path: entry.path,
+    language,
+    langId,
+    grid: entry.grid,
+    slots,
+    clueGroups,
+  };
+}
+
+function normalizeMask(input: string): string {
+  return input.trim().toUpperCase();
+}
+
+function escapeLikeChar(value: string): string {
+  return value.replace(/[%_\\]/g, (char) => `\\${char}`);
+}
+
+async function findWordsByMask(
+  mask: string,
+  langId: number,
+  limit: number
+): Promise<Array<{ wordId: string; word: string; definitions: ReviewDefinitionOption[] }>> {
+  const normalized = normalizeMask(mask);
+  if (!normalized) return [];
+  if (!/^[\p{L}.]+$/u.test(normalized)) {
+    throw new Error("Mask must contain letters and dots only");
+  }
+
+  const likeMask = escapeLikeChar(normalized).replaceAll(".", "_");
+  const parsedLimit = Number.isFinite(limit) ? Math.trunc(limit) : 80;
+  const safeLimit = Math.max(1, Math.min(200, parsedLimit));
+  const rows = await prisma.$queryRaw<Array<{ id: bigint; word: string | null }>>(Prisma.sql`
+    SELECT
+      w.id,
+      UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word
+    FROM word_v w
+    WHERE w.is_deleted = false
+      AND w."langId" = ${langId}
+      AND w.length = ${normalized.length}
+      AND UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) LIKE ${likeMask} ESCAPE '\'
+    ORDER BY w.id ASC
+    LIMIT ${safeLimit}
+  `);
+  if (!rows.length) return [];
+
+  const ids = rows.map((row) => row.id);
+  const opreds = await prisma.opred_v.findMany({
+    where: {
+      word_id: { in: ids },
+      langId,
+      is_deleted: false,
+      text_opr: { not: "" },
+    },
+    orderBy: { id: "asc" },
+    select: {
+      id: true,
+      word_id: true,
+      text_opr: true,
+    },
+  });
+
+  const defsByWord = new Map<bigint, ReviewDefinitionOption[]>();
+  for (const row of opreds) {
+    const text = normalizeDefinitionText(row.text_opr);
+    if (!text) continue;
+    const list = defsByWord.get(row.word_id) ?? [];
+    list.push({ opredId: String(row.id), text });
+    defsByWord.set(row.word_id, list);
+  }
+
+  return rows
+    .map((row) => ({
+      wordId: String(row.id),
+      word: normalizeWordKey(row.word ?? ""),
+      definitions: defsByWord.get(row.id) ?? [],
+    }))
+    .filter((row) => row.word.length > 0);
+}
+
+function buildFinalSlotState(
+  slot: ReviewSlot,
+  input: FinalizeSlotInput | null | undefined
+): { state: FinalSlotState; errors: string[] } {
+  const rawWord = normalizeWordKey(input?.word ?? slot.word);
+  const definition = normalizeDefinitionText(input?.definition ?? slot.definition);
+  const wordId = parseOptionalBigInt(input?.wordId ?? slot.wordId);
+  const opredId = parseOptionalBigInt(input?.opredId ?? slot.opredId);
+  const errors: string[] = [];
+
+  if (!rawWord) {
+    errors.push(`Template ${slot.slotId}: word is empty`);
+  } else {
+    if (rawWord.length !== slot.len) {
+      errors.push(`Slot ${slot.slotId}: word length ${rawWord.length} does not match ${slot.len}`);
+    }
+    if (!isLettersOnlyWord(rawWord)) {
+      errors.push(`Slot ${slot.slotId}: word must contain letters only`);
+    }
+  }
+
+  if (!definition) {
+    errors.push(`Slot ${slot.slotId}: definition is required`);
+  }
+
+  return {
+    state: {
+      slotId: slot.slotId,
+      len: slot.len,
+      word: rawWord,
+      definition,
+      wordId,
+      opredId,
+    },
+    errors,
+  };
+}
+
+function buildDefinitionClueGroups(template: ReviewTemplate): ReviewClueGroup[] {
+  const byKey = new Map<string, ReviewClueGroup>();
+  for (const slot of template.slots) {
+    const clue = slot.clueCell;
+    if (!clue) continue;
+    const group = byKey.get(clue.key) ?? {
+      key: clue.key,
+      row: clue.row,
+      col: clue.col,
+      slotIds: [],
+    };
+    if (!group.slotIds.includes(slot.slotId)) {
+      group.slotIds.push(slot.slotId);
+    }
+    byKey.set(clue.key, group);
+  }
+  const groups = [...byKey.values()].map((group) => ({
+    ...group,
+    slotIds: [...group.slotIds].sort((a, b) => a - b),
+  }));
+  groups.sort((a, b) => {
+    if (a.row !== b.row) return a.row - b.row;
+    return a.col - b.col;
+  });
+  return groups;
+}
+
+function validateTemplateDefinitions(template: ReviewTemplate, states: Map<number, FinalSlotState>): string[] {
+  const errors: string[] = [];
+  const clueGroups = buildDefinitionClueGroups(template);
+  for (const group of clueGroups) {
+    const definitions = group.slotIds
+      .map((slotId) => states.get(slotId))
+      .filter((item): item is FinalSlotState => Boolean(item))
+      .map((item) => ({
+        slotId: item.slotId,
+        length: item.definition.length,
+      }));
+    if (!definitions.length) continue;
+
+    if (group.slotIds.length === 2) {
+      for (const item of definitions) {
+        if (item.length > 15) {
+          errors.push(
+            `Template ${template.name}: definition for slot ${item.slotId} exceeds 15 symbols for shared clue cell ${group.key}`
+          );
+        }
+      }
+      const total = definitions.reduce((sum, item) => sum + item.length, 0);
+      if (total > 30) {
+        errors.push(`Template ${template.name}: definitions total exceeds 30 symbols for clue cell ${group.key}`);
+      }
+    } else {
+      for (const item of definitions) {
+        if (item.length > 30) {
+          errors.push(`Template ${template.name}: definition for slot ${item.slotId} exceeds 30 symbols`);
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+function validateDefinitionConsistency(template: ReviewTemplate, states: Map<number, FinalSlotState>): string[] {
+  const errors: string[] = [];
+  const defByWord = new Map<string, string>();
+  for (const state of states.values()) {
+    const existing = defByWord.get(state.word);
+    if (existing === undefined) {
+      defByWord.set(state.word, state.definition);
+      continue;
+    }
+    if (existing !== state.definition) {
+      errors.push(`Template ${template.name}: word ${state.word} has conflicting definitions`);
+    }
+  }
+  return errors;
+}
+
+async function loadJobRow(jobId: bigint): Promise<any | null> {
+  const rows = await prisma.$queryRaw<any[]>`
+    SELECT * FROM scanword_fill_jobs WHERE id = ${jobId} LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+async function emitCurrentJob(jobId: bigint) {
+  const row = await loadJobRow(jobId);
+  if (!row) return;
+  const update = mapJobRow(row);
+  ensureRuntime(update.id);
+  emitJobUpdate(update.id, update);
+}
+
+function parseFillJobOptions(value: unknown): FillJobOptions {
+  const defaults = { ...DEFAULT_OPTIONS };
+  if (!value) return defaults;
+  if (typeof value === "string") {
+    try {
+      return parseFillJobOptions(JSON.parse(value));
+    } catch {
+      return defaults;
+    }
+  }
+  if (typeof value !== "object") return defaults;
+  const raw = value as Partial<FillJobOptions>;
+  return {
+    ...defaults,
+    ...raw,
+  };
 }
 
 async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOptions) {
@@ -732,6 +1747,17 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const { entries, lengths, invalid } = buildEntries(resolved);
     const dict = await loadDictionaryByTemplate(template, { lengths });
     if (!dict.size) throw new Error("Dictionary is empty for selected template");
+    const usagePriorityByWord = new Map<string, number>();
+    if (options.usageStats) {
+      const mainLangId = await resolveLanguageId(template.language);
+      if (mainLangId !== null) {
+        const loadedPriority = await loadEditionUsagePriority(issue.editionId, issue.issueId);
+        for (const [word, priority] of loadedPriority) {
+          usagePriorityByWord.set(word, priority);
+        }
+        sortDictionaryByUsagePriority(dict, usagePriorityByWord);
+      }
+    }
 
     const dictCounts = new Map<number, number>();
     for (const [len, words] of dict) dictCounts.set(len, words.length);
@@ -785,6 +1811,8 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const totalTemplates = templatesState.length;
     let completedTemplates = 0;
     let failedTemplates = templatesState.filter((t) => t.status === "error").length;
+    const reviewTemplates: ReviewTemplate[] = [];
+    const langIdCache = new Map<string, number | null>();
 
     const pushTemplateUpdate = async (extra: Partial<FillJobUpdate> = {}) => {
       const finished = completedTemplates + failedTemplates;
@@ -826,15 +1854,6 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const globalDict = options.unique
       ? new Map<number, string[]>([...dict].map(([l, a]) => [l, [...a]]))
       : dict;
-
-    const outputRoot = getOutputDir();
-    const issueRoot = path.join(
-      outputRoot,
-      sanitizeName(issue.editionCode),
-      sanitizeName(issue.issueLabel)
-    );
-    const issueDir = path.join(issueRoot, `job-${jobIdStr}`);
-    mkdirSync(issueDir, { recursive: true });
 
     const nativeAvailable = isNativeDlxAvailable();
     if (options.requireNative && !nativeAvailable) {
@@ -884,6 +1903,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           maxMs: options.maxMs,
           nativeDlx: true,
           label: entry.name,
+          wordPriority: options.usageStats ? usagePriorityByWord : undefined,
           onProgress,
           onFail,
         });
@@ -897,6 +1917,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
             maxMs: options.maxMs,
             nativeDlx: false,
             label: entry.name,
+            wordPriority: options.usageStats ? usagePriorityByWord : undefined,
             onProgress,
             onFail,
           });
@@ -911,6 +1932,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           maxMs: options.maxMs,
           nativeDlx: false,
           label: entry.name,
+          wordPriority: options.usageStats ? usagePriorityByWord : undefined,
           onProgress,
           onFail,
         });
@@ -945,25 +1967,24 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       }
 
       const usedWordsList = entry.slots.map((s) => s.cells.map(([r, c]) => solved![r][c]).join(""));
-      const definitions = await loadDefinitions(usedWordsList, { langCode: template.language });
-
-      const { svg, svgRaw, usedWords } = buildSvg(entry.grid, entry.slots, solved!, definitions, {
-        style: options.style,
-      });
-
-      const templateDir = path.join(issueDir, sanitizeName(entry.name));
-      mkdirSync(templateDir, { recursive: true });
-      writeFileSync(path.join(templateDir, "crossword.svg"), svg);
-      writeFileSync(path.join(templateDir, "crossword-no-text.svg"), svgRaw);
-      writeFileSync(path.join(templateDir, "used-words.txt"), usedWords);
-
-      if (options.writeCrw) {
-        const crw = buildCrw(entry.grid, entry.slots, solved!, {
-          templatePath: entry.path,
-          lowerCaseWords: true,
-        });
-        writeFileSync(path.join(templateDir, `${entry.name}.crw`), crw);
+      const langCode = template.language.toLowerCase();
+      let langId = langIdCache.get(langCode);
+      if (langId === undefined) {
+        langId = await resolveLanguageId(langCode);
+        langIdCache.set(langCode, langId);
       }
+      const selectedWords =
+        typeof langId === "number"
+          ? await selectWordsAndDefinitionsForEdition(usedWordsList, {
+              langId,
+              editionId: issue.editionId,
+              preferUsageStats: options.usageStats,
+            })
+          : new Map<string, WordSelection>();
+      const fallbackDefinitions = await loadDefinitions(usedWordsList, { langCode: template.language });
+      reviewTemplates.push(
+        buildReviewTemplate(entry, solved!, langCode, langId ?? null, selectedWords, fallbackDefinitions)
+      );
 
       if (idx !== undefined) {
         templatesState[idx] = {
@@ -975,33 +1996,61 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       await pushTemplateUpdate({ currentTemplate: entry.name });
     }
 
-    const archivePath = path.join(issueRoot, `scanwords_${jobIdStr}.zip`);
-    const size = await zipDirectory(issueDir, archivePath);
-    if (failedTemplates > 0) {
-      const failures = templatesState.filter((t) => t.status === "error");
-      writeFileSync(
-        path.join(issueDir, "failures.json"),
-        JSON.stringify(failures, null, 2)
-      );
+    if (completedTemplates <= 0) {
+      const msg = "No templates were solved";
+      await updateJob(jobId, {
+        status: "error",
+        error: msg,
+        templates: templatesState,
+        completedTemplates,
+        totalTemplates,
+      });
+      updateLocal({
+        status: "error",
+        error: msg,
+        templates: templatesState,
+        completedTemplates,
+        totalTemplates,
+      });
+      return;
     }
+
+    reviewTemplates.sort((a, b) => {
+      if (a.order !== b.order) return a.order - b.order;
+      return a.name.localeCompare(b.name, "ru");
+    });
+    const reviewData: FillReviewPayload = {
+      version: 1,
+      issue: {
+        issueId: String(issue.issueId),
+        editionId: issue.editionId,
+        editionCode: issue.editionCode,
+        issueLabel: issue.issueLabel,
+      },
+      options: {
+        style: options.style,
+        writeCrw: options.writeCrw,
+        usageStats: options.usageStats,
+      },
+      templates: reviewTemplates,
+    };
     await updateJob(jobId, {
-      status: "done",
+      status: "review",
       progress: 100,
-      outputPath: archivePath,
-      outputSize: size,
       currentTemplate: null,
       templates: templatesState,
       completedTemplates,
       totalTemplates,
+      reviewData,
     });
     updateLocal({
-      status: "done",
+      status: "review",
       progress: 100,
       currentTemplate: null,
       templates: templatesState,
       completedTemplates,
       totalTemplates,
-      archiveReady: true,
+      archiveReady: false,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1016,6 +2065,18 @@ export async function startFillJob(
 ): Promise<FillJobUpdate> {
   await ensureFillJobsTable();
   await cleanupOldArchives();
+  const reviewRows = await prisma.$queryRaw<any[]>`
+    SELECT *
+    FROM scanword_fill_jobs
+    WHERE "issueId" = ${issueId} AND status = 'review'
+    ORDER BY id DESC
+    LIMIT 1
+  `;
+  if (reviewRows.length) {
+    const reviewJob = mapJobRow(reviewRows[0]);
+    ensureRuntime(reviewJob.id);
+    return reviewJob;
+  }
   const options = { ...DEFAULT_OPTIONS, ...overrides };
   const rows = await prisma.$queryRaw<any[]>`
     INSERT INTO scanword_fill_jobs ("issueId", status, progress, options)
@@ -1091,6 +2152,238 @@ export async function getJobArchivePath(jobId: bigint): Promise<string | null> {
   `;
   if (!rows.length) return null;
   return rows[0]?.outputPath ?? null;
+}
+
+export async function getFillJobReview(jobId: bigint): Promise<FillReviewPayload | null> {
+  await ensureFillJobsTable();
+  const rows = await prisma.$queryRaw<any[]>`
+    SELECT "reviewData" FROM scanword_fill_jobs WHERE id = ${jobId} LIMIT 1
+  `;
+  if (!rows.length) return null;
+  return parseReviewPayload(rows[0]?.reviewData);
+}
+
+export async function getFillWordCandidates(
+  jobId: bigint,
+  payload: { templateKey?: string; slotId?: number; mask?: string; limit?: number }
+): Promise<{ mask: string; slotId: number; candidates: FillMaskCandidate[] }> {
+  const review = await getFillJobReview(jobId);
+  if (!review) throw new Error("Review data not found");
+
+  const templateKey = typeof payload.templateKey === "string" ? payload.templateKey : "";
+  const slotIdRaw = Number(payload.slotId);
+  const maskRaw = typeof payload.mask === "string" ? payload.mask : "";
+  if (!templateKey) throw new Error("templateKey is required");
+  if (!Number.isFinite(slotIdRaw)) throw new Error("slotId is required");
+  const slotId = Math.trunc(slotIdRaw);
+  const mask = normalizeMask(maskRaw);
+  if (!mask) throw new Error("mask is required");
+
+  const template = review.templates.find((item) => item.key === templateKey);
+  if (!template) throw new Error("Template not found");
+  const slot = template.slots.find((item) => item.slotId === slotId);
+  if (!slot) throw new Error("Slot not found");
+  if (slot.len !== mask.length) {
+    throw new Error(`Mask length ${mask.length} does not match slot length ${slot.len}`);
+  }
+  if (template.langId == null) {
+    throw new Error(`Language is not configured for template ${template.name}`);
+  }
+
+  const candidates = await findWordsByMask(mask, template.langId, payload.limit ?? 80);
+  return {
+    slotId,
+    mask,
+    candidates,
+  };
+}
+
+export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promise<FillJobUpdate> {
+  await ensureFillJobsTable();
+  const row = await loadJobRow(jobId);
+  if (!row) throw new Error("Job not found");
+  const status = String(row.status ?? "");
+  if (status !== "review") throw new Error("Job is not waiting for review");
+
+  const review = parseReviewPayload(row.reviewData);
+  if (!review) throw new Error("Review data not found for this job");
+  const payload = (payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {}) as FinalizePayload;
+  const templateInputMap = new Map<string, FinalizeTemplateInput>();
+  for (const item of payload.templates ?? []) {
+    if (!item || typeof item !== "object") continue;
+    if (typeof item.key !== "string" || item.key.length === 0) continue;
+    templateInputMap.set(item.key, item);
+  }
+
+  const options = parseFillJobOptions(row.options);
+  const outputRoot = getOutputDir();
+  const issueRoot = path.join(
+    outputRoot,
+    sanitizeName(review.issue.editionCode),
+    sanitizeName(review.issue.issueLabel)
+  );
+  const issueDir = path.join(issueRoot, `job-${jobId.toString()}`);
+  mkdirSync(issueDir, { recursive: true });
+
+  const templatesState = parseTemplatesPayload(row.templates) ?? review.templates.map((template) => ({
+    key: template.key,
+    name: template.name,
+    status: "pending" as const,
+    error: null,
+    order: template.order,
+    sourceName: template.sourceName,
+  }));
+  const indexByKey = new Map<string, number>();
+  templatesState.forEach((item, idx) => {
+    if (item.key) indexByKey.set(item.key, idx);
+  });
+
+  const issueWordUsage = new Map<bigint, number>();
+  const issueOpredUsage = new Map<bigint, number>();
+  const finalizeErrors: string[] = [];
+  let completedTemplates = 0;
+  const totalTemplates = templatesState.length || review.templates.length;
+
+  await updateJob(jobId, {
+    status: "running",
+    progress: 0,
+    currentTemplate: null,
+    completedTemplates: 0,
+    totalTemplates,
+  });
+  await emitCurrentJob(jobId);
+
+  for (const template of review.templates) {
+    const idx = indexByKey.get(template.key);
+    if (idx !== undefined) {
+      templatesState[idx] = {
+        ...templatesState[idx],
+        status: "running",
+        error: null,
+      };
+    }
+
+    const inputTemplate = templateInputMap.get(template.key);
+    const slotInputMap = new Map<number, FinalizeSlotInput>();
+    for (const item of inputTemplate?.slots ?? []) {
+      if (!item || typeof item !== "object") continue;
+      const slotIdRaw = Number(item.slotId);
+      if (!Number.isFinite(slotIdRaw)) continue;
+      slotInputMap.set(Math.trunc(slotIdRaw), item);
+    }
+
+    const states = new Map<number, FinalSlotState>();
+    const errors: string[] = [];
+    for (const slot of template.slots) {
+      const built = buildFinalSlotState(slot, slotInputMap.get(slot.slotId));
+      states.set(slot.slotId, built.state);
+      errors.push(...built.errors.map((msg) => `Template ${template.name}: ${msg}`));
+    }
+    errors.push(...validateTemplateDefinitions(template, states));
+    errors.push(...validateDefinitionConsistency(template, states));
+
+    let solvedRows: string[] | null = null;
+    if (!errors.length) {
+      try {
+        solvedRows = buildSolvedGridFromSlots(template, states);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`Template ${template.name}: ${msg}`);
+      }
+    }
+
+    if (errors.length || !solvedRows) {
+      finalizeErrors.push(...errors);
+      if (idx !== undefined) {
+        templatesState[idx] = {
+          ...templatesState[idx],
+          status: "error",
+          error: errors[0] ?? "Failed to finalize template",
+        };
+      }
+      continue;
+    }
+
+    const slotStatesInOrder = template.slots
+      .map((slot) => states.get(slot.slotId))
+      .filter((item): item is FinalSlotState => Boolean(item));
+
+    const definitions = new Map<string, string>();
+    for (const state of slotStatesInOrder) {
+      if (!definitions.has(state.word)) {
+        definitions.set(state.word, state.definition);
+      }
+      if (state.wordId !== null) addCount(issueWordUsage, state.wordId, 1);
+      if (state.opredId !== null) addCount(issueOpredUsage, state.opredId, 1);
+    }
+
+    const slots = template.slots.map((slot) => convertReviewSlotToSlot(slot));
+    const { svg, svgRaw, usedWords } = buildSvg(template.grid, slots, solvedRows, definitions, {
+      style: review.options.style,
+    });
+
+    const templateDir = path.join(issueDir, sanitizeName(template.name));
+    mkdirSync(templateDir, { recursive: true });
+    writeFileSync(path.join(templateDir, "crossword.svg"), svg);
+    writeFileSync(path.join(templateDir, "crossword-no-text.svg"), svgRaw);
+    writeFileSync(path.join(templateDir, "used-words.txt"), usedWords);
+
+    if (options.writeCrw && template.path) {
+      const crw = buildCrw(template.grid, slots, solvedRows, {
+        templatePath: template.path,
+        lowerCaseWords: true,
+      });
+      writeFileSync(path.join(templateDir, `${template.name}.crw`), crw);
+    }
+
+    if (idx !== undefined) {
+      templatesState[idx] = {
+        ...templatesState[idx],
+        status: "done",
+        error: null,
+      };
+    }
+    completedTemplates += 1;
+  }
+
+  if (finalizeErrors.length > 0) {
+    writeFileSync(path.join(issueDir, "failures.json"), JSON.stringify(finalizeErrors, null, 2));
+  }
+
+  if (options.usageStats && completedTemplates > 0) {
+    await persistUsageStatsForIssue(
+      BigInt(review.issue.issueId),
+      review.issue.editionId,
+      issueWordUsage,
+      issueOpredUsage
+    );
+  }
+
+  const archivePath = path.join(issueRoot, `scanwords_${jobId.toString()}.zip`);
+  const archiveSize = await zipDirectory(issueDir, archivePath);
+  const finalStatus: FillJobStatus = completedTemplates > 0 ? "done" : "error";
+  const finalError =
+    completedTemplates > 0
+      ? null
+      : finalizeErrors[0] ?? "No templates were finalized successfully";
+
+  await updateJob(jobId, {
+    status: finalStatus,
+    progress: 100,
+    currentTemplate: null,
+    templates: templatesState,
+    completedTemplates,
+    totalTemplates,
+    outputPath: archivePath,
+    outputSize: archiveSize,
+    reviewData: review,
+    ...(finalError ? { error: finalError } : {}),
+  });
+  await emitCurrentJob(jobId);
+
+  const updated = await getFillJob(jobId);
+  if (!updated) throw new Error("Failed to load updated job");
+  return updated;
 }
 
 export function subscribeFillJob(jobId: string, listener: (update: FillJobUpdate) => void): () => void {
