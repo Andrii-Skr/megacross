@@ -285,16 +285,6 @@ function addCount(target: UsageCountMap, id: bigint, value: number) {
   target.set(id, (target.get(id) ?? 0) + value);
 }
 
-function countWords(words: string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const rawWord of words) {
-    const word = normalizeWordKey(rawWord);
-    if (!word) continue;
-    counts.set(word, (counts.get(word) ?? 0) + 1);
-  }
-  return counts;
-}
-
 function getWordPriority(priorityByWord: Map<string, number>, word: string): number {
   return priorityByWord.get(normalizeWordKey(word)) ?? 0;
 }
@@ -446,9 +436,98 @@ function pickBestWordCandidate(
   return best;
 }
 
+function buildDefinitionWhereFromTemplate(template: DictionaryFilterTemplate): Prisma.opred_vWhereInput {
+  const langCode = (template.language || "ru").toLowerCase();
+  const query = template.query?.trim() || "";
+  const scopeRaw = (template.scope || "word").toLowerCase();
+  const scope = scopeRaw === "def" || scopeRaw === "both" ? scopeRaw : "word";
+  const modeRaw = (template.searchMode || "contains").toLowerCase();
+  const searchMode: "contains" | "startsWith" | "exact" =
+    modeRaw === "startsWith" ? "startsWith" : modeRaw === "exact" ? "exact" : "contains";
+  let lenFilterField =
+    template.lenFilterField === "def" || template.lenFilterField === "word"
+      ? template.lenFilterField
+      : null;
+  const lenMin = Number.isFinite(template.lenMin as number) ? Math.trunc(template.lenMin as number) : undefined;
+  const lenMax = Number.isFinite(template.lenMax as number) ? Math.trunc(template.lenMax as number) : undefined;
+  if (!lenFilterField && (lenMin !== undefined || lenMax !== undefined)) {
+    lenFilterField = "word";
+  }
+  const difficultyMin = Number.isFinite(template.difficultyMin as number)
+    ? Math.trunc(template.difficultyMin as number)
+    : undefined;
+  const difficultyMax = Number.isFinite(template.difficultyMax as number)
+    ? Math.trunc(template.difficultyMax as number)
+    : undefined;
+  const tagNames = (template.tagNames ?? []).map((tag) => tag.trim()).filter(Boolean);
+  const excludeTagNames = (template.excludeTagNames ?? []).map((tag) => tag.trim()).filter(Boolean);
+
+  const textFilter =
+    query.length > 0
+      ? searchMode === "contains"
+        ? { contains: query, mode: "insensitive" as const }
+        : searchMode === "startsWith"
+          ? { startsWith: query, mode: "insensitive" as const }
+          : { equals: query, mode: "insensitive" as const }
+      : null;
+
+  const where: Prisma.opred_vWhereInput = {
+    is_deleted: false,
+    language: { is: { code: langCode } },
+    text_opr: { not: "" },
+    OR: [{ end_date: null }, { end_date: { gte: new Date() } }],
+  };
+
+  if (tagNames.length) {
+    where.opred_tags = {
+      some: {
+        tags: {
+          OR: tagNames.map((name) => ({
+            name: { contains: name, mode: "insensitive" as const },
+          })),
+        },
+      },
+    };
+  }
+  if (excludeTagNames.length) {
+    where.NOT = {
+      opred_tags: {
+        some: {
+          tags: {
+            OR: excludeTagNames.map((name) => ({
+              name: { contains: name, mode: "insensitive" as const },
+            })),
+          },
+        },
+      },
+    };
+  }
+  if (difficultyMin !== undefined || difficultyMax !== undefined) {
+    where.difficulty = {
+      ...(difficultyMin !== undefined ? { gte: difficultyMin } : {}),
+      ...(difficultyMax !== undefined ? { lte: difficultyMax } : {}),
+    };
+  }
+  if (lenFilterField === "def" && (lenMin !== undefined || lenMax !== undefined)) {
+    where.length = {
+      ...(lenMin !== undefined ? { gte: lenMin } : {}),
+      ...(lenMax !== undefined ? { lte: lenMax } : {}),
+    };
+  }
+  if (textFilter && scope === "def") {
+    where.text_opr = textFilter;
+  }
+  return where;
+}
+
 async function selectWordsAndDefinitionsForEdition(
   words: string[],
-  params: { langId: number; editionId: number; preferUsageStats: boolean }
+  params: {
+    langId: number;
+    editionId: number;
+    preferUsageStats: boolean;
+    definitionWhere: Prisma.opred_vWhereInput;
+  }
 ): Promise<Map<string, WordSelection>> {
   const uniqueWords = [...new Set(words.map(normalizeWordKey).filter(Boolean))];
   if (!uniqueWords.length) return new Map();
@@ -468,9 +547,7 @@ async function selectWordsAndDefinitionsForEdition(
       word_text_norm: true,
       opred_v: {
         where: {
-          is_deleted: false,
-          langId: params.langId,
-          text_opr: { not: "" },
+          AND: [{ langId: params.langId }, params.definitionWhere],
         },
         orderBy: {
           id: "asc",
@@ -1758,6 +1835,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         sortDictionaryByUsagePriority(dict, usagePriorityByWord);
       }
     }
+    const definitionWhere = buildDefinitionWhereFromTemplate(template);
 
     const dictCounts = new Map<number, number>();
     for (const [len, words] of dict) dictCounts.set(len, words.length);
@@ -1979,9 +2057,13 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
               langId,
               editionId: issue.editionId,
               preferUsageStats: options.usageStats,
+              definitionWhere,
             })
           : new Map<string, WordSelection>();
-      const fallbackDefinitions = await loadDefinitions(usedWordsList, { langCode: template.language });
+      const fallbackDefinitions = await loadDefinitions(usedWordsList, {
+        langCode: template.language,
+        definitionWhere,
+      });
       reviewTemplates.push(
         buildReviewTemplate(entry, solved!, langCode, langId ?? null, selectedWords, fallbackDefinitions)
       );

@@ -11,6 +11,7 @@ export type DefinitionOptions = {
   langCode?: string;
   langId?: number;
   includeDeleted?: boolean;
+  definitionWhere?: Prisma.opred_vWhereInput;
 };
 
 export async function loadDictionary(
@@ -86,11 +87,15 @@ export async function loadDefinitions(
     if (!options.includeDeleted) where.is_deleted = false;
     if (langId !== undefined) where.langId = langId;
 
-    const opredWhere: any = {
+    const opredWhereBase: Prisma.opred_vWhereInput = {
       text_opr: { not: "" },
     };
-    if (!options.includeDeleted) opredWhere.is_deleted = false;
-    if (langId !== undefined) opredWhere.langId = langId;
+    if (!options.includeDeleted) opredWhereBase.is_deleted = false;
+    if (langId !== undefined) opredWhereBase.langId = langId;
+
+    const opredWhere: Prisma.opred_vWhereInput = options.definitionWhere
+      ? { AND: [opredWhereBase, options.definitionWhere] }
+      : opredWhereBase;
 
     const rows = await prisma.word_v.findMany({
       where,
@@ -240,17 +245,20 @@ export async function loadDictionaryByTemplate(
         ? { word_text: textFilter }
         : undefined;
 
+    const baseWhere: Prisma.word_vWhereInput = {
+      is_deleted: false,
+      language: { is: { code: langCode } },
+      ...(Object.keys(opredSomeBase).length > 0 ? { opred_v: { some: opredSomeBase } } : {}),
+    };
+
     const where: Prisma.word_vWhereInput =
       scope === "both" && wordSearch && opredWithSearch
         ? {
-            is_deleted: false,
-            language: { is: { code: langCode } },
+            ...baseWhere,
             OR: [wordSearch, { opred_v: { some: opredWithSearch } }],
           }
         : {
-            is_deleted: false,
-            language: { is: { code: langCode } },
-            ...(Object.keys(opredSomeBase).length > 0 ? { opred_v: { some: opredSomeBase } } : {}),
+            ...baseWhere,
             ...(wordSearch ?? {}),
             ...(opredWithSearch && scope !== "both" ? { opred_v: { some: opredWithSearch } } : {}),
           };
