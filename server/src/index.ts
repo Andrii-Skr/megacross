@@ -25,6 +25,7 @@ function parseFillOverrides(input: unknown) {
     maxMs?: number;
     restarts?: number;
     parallelRestarts?: number;
+    requireNative?: boolean;
     writeCrw?: boolean;
     usageStats?: boolean;
   } = {};
@@ -40,6 +41,7 @@ function parseFillOverrides(input: unknown) {
   }
   if (typeof raw.writeCrw === "boolean") overrides.writeCrw = raw.writeCrw;
   if (typeof raw.usageStats === "boolean") overrides.usageStats = raw.usageStats;
+  if (typeof raw.requireNative === "boolean") overrides.requireNative = raw.requireNative;
   if (
     overrides.restarts !== undefined &&
     overrides.parallelRestarts !== undefined &&

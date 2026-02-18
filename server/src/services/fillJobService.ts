@@ -269,6 +269,7 @@ type WordSelection = {
 type UsageCountMap = Map<bigint, number>;
 
 const WORD_USE_PRIORITY_MULTIPLIER = 1_000_000;
+const SHORT_DEFINITION_LIMIT = 30;
 
 function normalizeWordKey(word: string): string {
   return word.trim().toUpperCase();
@@ -396,21 +397,29 @@ async function loadEditionUsagePriority(
 
 function pickBestOpred(
   opreds: Array<{ id: bigint; text_opr: string }>,
-  opredUseCount: Map<bigint, number>
+  opredUseCount: Map<bigint, number>,
+  usedDefinitions?: Set<string>
 ): { id: bigint; text: string } | null {
-  let best: { id: bigint; text: string; usage: number } | null = null;
+  let best: { id: bigint; text: string; usage: number; bucket: number } | null = null;
   for (const opred of opreds) {
+    const text = normalizeDefinitionText(opred.text_opr);
+    if (!text) continue;
     const usage = opredUseCount.get(opred.id) ?? 0;
+    const bucket = definitionSelectionBucket(text, usedDefinitions);
+    if (!Number.isFinite(bucket)) continue;
+    const next = {
+      id: opred.id,
+      text,
+      usage,
+      bucket,
+    };
     if (
       !best ||
-      usage < best.usage ||
-      (usage === best.usage && opred.id < best.id)
+      next.bucket < best.bucket ||
+      (next.bucket === best.bucket &&
+        (usage < best.usage || (usage === best.usage && opred.id < best.id)))
     ) {
-      best = {
-        id: opred.id,
-        text: opred.text_opr,
-        usage,
-      };
+      best = next;
     }
   }
   return best ? { id: best.id, text: best.text } : null;
@@ -527,6 +536,7 @@ async function selectWordsAndDefinitionsForEdition(
     editionId: number;
     preferUsageStats: boolean;
     definitionWhere: Prisma.opred_vWhereInput;
+    usedDefinitions?: Set<string>;
   }
 ): Promise<Map<string, WordSelection>> {
   const uniqueWords = [...new Set(words.map(normalizeWordKey).filter(Boolean))];
@@ -619,7 +629,7 @@ async function selectWordsAndDefinitionsForEdition(
   for (const [word, candidates] of byWord) {
     const bestWord = pickBestWordCandidate(candidates, wordUseCount);
     if (!bestWord) continue;
-    const bestOpred = pickBestOpred(bestWord.opred_v, opredUseCount);
+    const bestOpred = pickBestOpred(bestWord.opred_v, opredUseCount, params.usedDefinitions);
     const definitions = bestWord.opred_v
       .map((item) => ({
         opredId: item.id,
@@ -636,6 +646,9 @@ async function selectWordsAndDefinitionsForEdition(
       definition: bestOpred?.text ?? "",
       definitions,
     });
+    if (bestOpred?.text) {
+      params.usedDefinitions?.add(normalizeDefinitionKey(bestOpred.text));
+    }
   }
   return selected;
 }
@@ -830,6 +843,76 @@ function compareByComplexity(a: TemplateStats, b: TemplateStats): number {
   return 0;
 }
 
+function extractTemplateNumber(value: string): number | null {
+  const match = value.trim().match(/^(\d{1,6})(?=\D|$)/u);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
+
+function resolveTemplatePageNumber(template: ResolvedTemplate): number {
+  const fromName = extractTemplateNumber(template.name);
+  if (fromName !== null) return fromName;
+  const fromSource = extractTemplateNumber(template.sourceName);
+  if (fromSource !== null) return fromSource;
+  return template.order + 1;
+}
+
+function resolveSpreadIndex(page: number): number {
+  return Math.floor((page - 1) / 2);
+}
+
+function buildTemplateNeighbors(templates: ResolvedTemplate[]): Map<string, Set<string>> {
+  const spreadByKey = new Map<string, number>();
+  const keysBySpread = new Map<number, string[]>();
+
+  for (const template of templates) {
+    const spread = resolveSpreadIndex(resolveTemplatePageNumber(template));
+    spreadByKey.set(template.key, spread);
+    const list = keysBySpread.get(spread) ?? [];
+    list.push(template.key);
+    keysBySpread.set(spread, list);
+  }
+
+  const neighbors = new Map<string, Set<string>>();
+  for (const template of templates) {
+    const spread = spreadByKey.get(template.key);
+    if (spread === undefined) continue;
+    const set = new Set<string>();
+    for (const candidateSpread of [spread - 1, spread, spread + 1]) {
+      const keys = keysBySpread.get(candidateSpread);
+      if (!keys) continue;
+      for (const key of keys) {
+        if (key !== template.key) set.add(key);
+      }
+    }
+    neighbors.set(template.key, set);
+  }
+  return neighbors;
+}
+
+function filterDictionaryByBlockedWords(
+  dict: Map<number, string[]>,
+  blockedWords: Set<string>
+): Map<number, string[]> {
+  if (!blockedWords.size) return dict;
+  const blocked = new Set<string>();
+  for (const word of blockedWords) {
+    const key = normalizeWordKey(word);
+    if (key) blocked.add(key);
+  }
+  if (!blocked.size) return dict;
+
+  const filtered = new Map<number, string[]>();
+  for (const [len, words] of dict) {
+    filtered.set(
+      len,
+      words.filter((word) => !blocked.has(normalizeWordKey(word)))
+    );
+  }
+  return filtered;
+}
+
 function getSamplesDir(): string {
   return (
     process.env.CROSS_SAMPLES_DIR ||
@@ -895,6 +978,21 @@ function parseReviewPayload(value: unknown): FillReviewPayload | null {
 
 function normalizeDefinitionText(value: string | null | undefined): string {
   return (value ?? "").trim();
+}
+
+function normalizeDefinitionKey(value: string | null | undefined): string {
+  const normalized = normalizeDefinitionText(value);
+  return normalized.toLocaleLowerCase("ru");
+}
+
+function definitionSelectionBucket(text: string, usedDefinitions?: Set<string>): number {
+  const key = normalizeDefinitionKey(text);
+  const isUnique = !usedDefinitions?.has(key);
+  if (!isUnique) return Number.POSITIVE_INFINITY;
+  const isShort = normalizeDefinitionText(text).length < SHORT_DEFINITION_LIMIT;
+  if (isUnique && isShort) return 0;
+  if (isUnique) return 1;
+  return Number.POSITIVE_INFINITY;
 }
 
 function isLettersOnlyWord(word: string): boolean {
@@ -1005,6 +1103,36 @@ function buildClueMaps(grid: Grid, slots: Slot[], solved: string[]) {
   });
 
   return { clueBySlot: bySlot, clueGroups };
+}
+
+function pickPreferredDefinitionOption(
+  options: ReviewDefinitionOption[],
+  usedDefinitionKeys?: Set<string>
+): ReviewDefinitionOption | null {
+  let best: { option: ReviewDefinitionOption; bucket: number; len: number } | null = null;
+  for (const option of options) {
+    const text = normalizeDefinitionText(option.text);
+    if (!text) continue;
+    const bucket = definitionSelectionBucket(text, usedDefinitionKeys);
+    if (!Number.isFinite(bucket)) continue;
+    const len = text.length;
+    if (
+      !best ||
+      bucket < best.bucket ||
+      (bucket === best.bucket &&
+        (len < best.len || (len === best.len && text.localeCompare(best.option.text, "ru") < 0)))
+    ) {
+      best = {
+        option: {
+          opredId: option.opredId,
+          text,
+        },
+        bucket,
+        len,
+      };
+    }
+  }
+  return best?.option ?? null;
 }
 
 function convertReviewSlotToSlot(input: ReviewSlot): Slot {
@@ -1488,10 +1616,11 @@ function buildReviewTemplate(
   language: string,
   langId: number | null,
   selections: Map<string, WordSelection>,
-  fallbackDefinitions: Map<string, string>
+  fallbackDefinitions: Map<string, string>,
+  usedDefinitionKeys?: Set<string>
 ): ReviewTemplate {
   const wordsBySlot = new Map<number, string>();
-  entry.slots.forEach((slot, index) => {
+  entry.slots.forEach((slot) => {
     const word = slot.cells.map(([row, col]) => solved[row]?.[col] ?? "").join("");
     wordsBySlot.set(slot.id, normalizeWordKey(word));
   });
@@ -1499,11 +1628,12 @@ function buildReviewTemplate(
   const intersectionsBySlot = buildSlotIntersections(entry.slots, wordsBySlot);
   const { clueBySlot, clueGroups } = buildClueMaps(entry.grid, entry.slots, solved);
 
-  const slots: ReviewSlot[] = entry.slots.map((slot, index) => {
+  const slots: ReviewSlot[] = entry.slots.map((slot) => {
     const word = wordsBySlot.get(slot.id) ?? "";
     const selection = selections.get(word);
     const fallbackDefinition = normalizeDefinitionText(fallbackDefinitions.get(word));
     const selectedDefinition = normalizeDefinitionText(selection?.definition) || fallbackDefinition;
+    let selectedOpredId: string | null = null;
     const optionMap = new Map<string, ReviewDefinitionOption>();
     for (const def of selection?.definitions ?? []) {
       const text = normalizeDefinitionText(def.text);
@@ -1524,6 +1654,16 @@ function buildReviewTemplate(
     const options = [...optionMap.values()];
     options.sort((a, b) => a.text.localeCompare(b.text, "ru"));
 
+    let definition = "";
+    const preferred = pickPreferredDefinitionOption(options, usedDefinitionKeys);
+    if (preferred) {
+      definition = preferred.text;
+      selectedOpredId = preferred.opredId;
+    }
+    if (definition.length > 0) {
+      usedDefinitionKeys?.add(normalizeDefinitionKey(definition));
+    }
+
     return {
       slotId: slot.id,
       r: slot.r,
@@ -1533,8 +1673,8 @@ function buildReviewTemplate(
       cells: slot.cells,
       word,
       wordId: selection ? String(selection.wordId) : null,
-      opredId: selection?.opredId ? String(selection.opredId) : null,
-      definition: selectedDefinition,
+      opredId: selectedOpredId,
+      definition,
       definitionOptions: options,
       intersections: intersectionsBySlot.get(slot.id) ?? [],
       clueCell: clueBySlot.get(slot.id) ?? null,
@@ -1742,6 +1882,106 @@ function validateDefinitionConsistency(template: ReviewTemplate, states: Map<num
   return errors;
 }
 
+function collectTemplateWords(states: Map<number, FinalSlotState>): Map<string, number> {
+  const words = new Map<string, number>();
+  for (const state of states.values()) {
+    const key = normalizeWordKey(state.word);
+    if (!key) continue;
+    if (!words.has(key)) words.set(key, state.slotId);
+  }
+  return words;
+}
+
+function validateWordUniqueness(template: ReviewTemplate, states: Map<number, FinalSlotState>): string[] {
+  const errors: string[] = [];
+  const slotByWord = new Map<string, number>();
+  for (const state of states.values()) {
+    const key = normalizeWordKey(state.word);
+    if (!key) continue;
+    const existingSlot = slotByWord.get(key);
+    if (existingSlot !== undefined && existingSlot !== state.slotId) {
+      errors.push(`Template ${template.name}: word ${key} duplicates slot ${existingSlot}`);
+      continue;
+    }
+    slotByWord.set(key, state.slotId);
+  }
+  return errors;
+}
+
+function validateDefinitionUniqueness(template: ReviewTemplate, states: Map<number, FinalSlotState>): string[] {
+  const errors: string[] = [];
+  const slotByDefinition = new Map<string, number>();
+  for (const state of states.values()) {
+    const key = normalizeDefinitionKey(state.definition);
+    if (!key) continue;
+    const existingSlot = slotByDefinition.get(key);
+    if (existingSlot !== undefined && existingSlot !== state.slotId) {
+      errors.push(
+        `Template ${template.name}: definition for slot ${state.slotId} duplicates slot ${existingSlot}`
+      );
+      continue;
+    }
+    slotByDefinition.set(key, state.slotId);
+  }
+  return errors;
+}
+
+function validateDefinitionReuseAcrossTemplates(
+  template: ReviewTemplate,
+  states: Map<number, FinalSlotState>,
+  usedDefinitions: Map<string, { templateName: string; slotId: number }>
+): string[] {
+  const errors: string[] = [];
+  for (const state of states.values()) {
+    const key = normalizeDefinitionKey(state.definition);
+    if (!key) continue;
+    const existing = usedDefinitions.get(key);
+    if (!existing) continue;
+    errors.push(
+      `Template ${template.name}: definition for slot ${state.slotId} duplicates template ${existing.templateName} slot ${existing.slotId}`
+    );
+  }
+  return errors;
+}
+
+function registerUsedDefinitions(
+  template: ReviewTemplate,
+  states: Map<number, FinalSlotState>,
+  usedDefinitions: Map<string, { templateName: string; slotId: number }>
+) {
+  for (const state of states.values()) {
+    const key = normalizeDefinitionKey(state.definition);
+    if (!key || usedDefinitions.has(key)) continue;
+    usedDefinitions.set(key, { templateName: template.name, slotId: state.slotId });
+  }
+}
+
+function validateNeighborWordReuse(
+  template: ReviewTemplate,
+  wordsInTemplate: Map<string, number>,
+  neighborsByTemplate: Map<string, Set<string>>,
+  usedWordsByTemplate: Map<string, Map<string, number>>,
+  templateNameByKey: Map<string, string>
+): string[] {
+  const errors: string[] = [];
+  const neighbors = neighborsByTemplate.get(template.key);
+  if (!neighbors || !wordsInTemplate.size) return errors;
+
+  for (const neighborKey of neighbors) {
+    const neighborWords = usedWordsByTemplate.get(neighborKey);
+    if (!neighborWords || !neighborWords.size) continue;
+    const neighborName = templateNameByKey.get(neighborKey) ?? neighborKey;
+    for (const [word, slotId] of wordsInTemplate) {
+      const neighborSlotId = neighborWords.get(word);
+      if (neighborSlotId === undefined) continue;
+      errors.push(
+        `Template ${template.name}: word ${word} in slot ${slotId} duplicates neighboring template ${neighborName} slot ${neighborSlotId}`
+      );
+    }
+  }
+  return errors;
+}
+
 async function loadJobRow(jobId: bigint): Promise<any | null> {
   const rows = await prisma.$queryRaw<any[]>`
     SELECT * FROM scanword_fill_jobs WHERE id = ${jobId} LIMIT 1
@@ -1885,12 +2125,16 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     templatesState.forEach((item, idx) => {
       if (item.key) indexByKey.set(item.key, idx);
     });
+    const templateNeighbors = buildTemplateNeighbors(resolved);
 
     const totalTemplates = templatesState.length;
     let completedTemplates = 0;
     let failedTemplates = templatesState.filter((t) => t.status === "error").length;
     const reviewTemplates: ReviewTemplate[] = [];
     const langIdCache = new Map<string, number | null>();
+    const solvedWordsByTemplate = new Map<string, Set<string>>();
+    const usedWordsInJob = new Set<string>();
+    const usedDefinitionKeys = new Set<string>();
 
     const pushTemplateUpdate = async (extra: Partial<FillJobUpdate> = {}) => {
       const finished = completedTemplates + failedTemplates;
@@ -1929,10 +2173,6 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       return;
     }
 
-    const globalDict = options.unique
-      ? new Map<number, string[]>([...dict].map(([l, a]) => [l, [...a]]))
-      : dict;
-
     const nativeAvailable = isNativeDlxAvailable();
     if (options.requireNative && !nativeAvailable) {
       throw new Error("Native DLX solver is not available");
@@ -1948,10 +2188,6 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         };
       }
       await pushTemplateUpdate({ currentTemplate: entry.name });
-
-      const dictForTemplate = options.unique
-        ? globalDict
-        : new Map<number, string[]>([...dict].map(([l, a]) => [l, [...a]]));
 
       let lastFail: SolveFailInfo | null = null;
       const onFail = options.explainFail
@@ -1970,38 +2206,24 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         updateLocal({ progress, currentTemplate: entry.name });
       };
 
-      let solved: string[] | null | undefined;
-      if (nativeAvailable) {
-        solved = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForTemplate, {
-          shuffle: options.shuffle,
-          lcv: options.lcv,
-          restarts: options.restarts,
-          parallelRestarts: options.parallelRestarts,
-          maxNodes: options.maxNodes,
-          maxMs: options.maxMs,
-          nativeDlx: true,
-          label: entry.name,
-          wordPriority: options.usageStats ? usagePriorityByWord : undefined,
-          onProgress,
-          onFail,
-        });
-        if (solved === undefined) {
-          solved = solve(entry.grid.data, entry.slots, dictForTemplate, {
+      const solveWithDictionary = async (dictForSolve: Map<number, string[]>) => {
+        if (nativeAvailable) {
+          const solvedNative = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, {
             shuffle: options.shuffle,
             lcv: options.lcv,
             restarts: options.restarts,
             parallelRestarts: options.parallelRestarts,
             maxNodes: options.maxNodes,
             maxMs: options.maxMs,
-            nativeDlx: false,
+            nativeDlx: true,
             label: entry.name,
             wordPriority: options.usageStats ? usagePriorityByWord : undefined,
             onProgress,
             onFail,
           });
+          if (solvedNative !== undefined) return solvedNative;
         }
-      } else {
-        solved = solve(entry.grid.data, entry.slots, dictForTemplate, {
+        return solve(entry.grid.data, entry.slots, dictForSolve, {
           shuffle: options.shuffle,
           lcv: options.lcv,
           restarts: options.restarts,
@@ -2014,6 +2236,30 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           onProgress,
           onFail,
         });
+      };
+
+      let solved: string[] | null | undefined;
+      if (options.unique) {
+        const neighborBlockedWords = new Set<string>();
+        const neighborKeys = templateNeighbors.get(entry.key);
+        if (neighborKeys) {
+          for (const neighborKey of neighborKeys) {
+            const used = solvedWordsByTemplate.get(neighborKey);
+            if (!used) continue;
+            for (const word of used) neighborBlockedWords.add(word);
+          }
+        }
+
+        const strictBlockedWords = new Set<string>(neighborBlockedWords);
+        for (const word of usedWordsInJob) strictBlockedWords.add(word);
+
+        solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, strictBlockedWords));
+        if (!solved && strictBlockedWords.size !== neighborBlockedWords.size) {
+          solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, neighborBlockedWords));
+        }
+      } else {
+        const dictForTemplate = new Map<number, string[]>([...dict].map(([len, words]) => [len, [...words]]));
+        solved = await solveWithDictionary(dictForTemplate);
       }
 
       if (!solved) {
@@ -2033,24 +2279,24 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         continue;
       }
 
-      if (options.unique) {
-        const usedHere = entry.slots.map((s) => s.cells.map(([r, c]) => solved![r][c]).join(""));
-        for (const w of usedHere) {
-          const len = w.length;
-          const arr = globalDict.get(len);
-          if (!arr) continue;
-          const idx = arr.indexOf(w);
-          if (idx >= 0) arr.splice(idx, 1);
-        }
-      }
-
       const usedWordsList = entry.slots.map((s) => s.cells.map(([r, c]) => solved![r][c]).join(""));
+      if (options.unique) {
+        const usedHere = new Set<string>();
+        for (const word of usedWordsList) {
+          const key = normalizeWordKey(word);
+          if (!key) continue;
+          usedHere.add(key);
+          usedWordsInJob.add(key);
+        }
+        solvedWordsByTemplate.set(entry.key, usedHere);
+      }
       const langCode = template.language.toLowerCase();
       let langId = langIdCache.get(langCode);
       if (langId === undefined) {
         langId = await resolveLanguageId(langCode);
         langIdCache.set(langCode, langId);
       }
+      const usedDefinitionsForTemplate = new Set(usedDefinitionKeys);
       const selectedWords =
         typeof langId === "number"
           ? await selectWordsAndDefinitionsForEdition(usedWordsList, {
@@ -2058,6 +2304,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
               editionId: issue.editionId,
               preferUsageStats: options.usageStats,
               definitionWhere,
+              usedDefinitions: usedDefinitionsForTemplate,
             })
           : new Map<string, WordSelection>();
       const fallbackDefinitions = await loadDefinitions(usedWordsList, {
@@ -2065,7 +2312,15 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         definitionWhere,
       });
       reviewTemplates.push(
-        buildReviewTemplate(entry, solved!, langCode, langId ?? null, selectedWords, fallbackDefinitions)
+        buildReviewTemplate(
+          entry,
+          solved!,
+          langCode,
+          langId ?? null,
+          selectedWords,
+          fallbackDefinitions,
+          usedDefinitionKeys
+        )
       );
 
       if (idx !== undefined) {
@@ -2322,6 +2577,18 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
 
   const issueWordUsage = new Map<bigint, number>();
   const issueOpredUsage = new Map<bigint, number>();
+  const usedDefinitions = new Map<string, { templateName: string; slotId: number }>();
+  const usedWordsByTemplate = new Map<string, Map<string, number>>();
+  const templateNameByKey = new Map(review.templates.map((template) => [template.key, template.name]));
+  const neighborsByTemplate = buildTemplateNeighbors(
+    review.templates.map((template) => ({
+      key: template.key,
+      name: template.name,
+      sourceName: template.sourceName,
+      order: template.order,
+      path: template.path,
+    }))
+  );
   const finalizeErrors: string[] = [];
   let completedTemplates = 0;
   const totalTemplates = templatesState.length || review.templates.length;
@@ -2361,8 +2628,21 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       states.set(slot.slotId, built.state);
       errors.push(...built.errors.map((msg) => `Template ${template.name}: ${msg}`));
     }
+    const wordsInTemplate = collectTemplateWords(states);
+    errors.push(...validateWordUniqueness(template, states));
+    errors.push(
+      ...validateNeighborWordReuse(
+        template,
+        wordsInTemplate,
+        neighborsByTemplate,
+        usedWordsByTemplate,
+        templateNameByKey
+      )
+    );
     errors.push(...validateTemplateDefinitions(template, states));
     errors.push(...validateDefinitionConsistency(template, states));
+    errors.push(...validateDefinitionUniqueness(template, states));
+    errors.push(...validateDefinitionReuseAcrossTemplates(template, states, usedDefinitions));
 
     let solvedRows: string[] | null = null;
     if (!errors.length) {
@@ -2385,6 +2665,8 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       }
       continue;
     }
+    usedWordsByTemplate.set(template.key, wordsInTemplate);
+    registerUsedDefinitions(template, states, usedDefinitions);
 
     const slotStatesInOrder = template.slots
       .map((slot) => states.get(slot.slotId))

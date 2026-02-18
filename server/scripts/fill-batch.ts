@@ -1,7 +1,9 @@
 
 //  • читает ВСЕ *.fsh в sample/
 //  • решает каждый кроссворд (shuffle optional)
-//  • флаг -u / --unique  → слово используется только один раз за весь запуск
+//  • флаг -u / --unique  → максимум уникальных слов, но с fallback-повторами
+//    (повторы запрещены внутри шаблона и в соседних шаблонах одного/соседних разворотов)
+//  • флаг --report-duplicates → отчёт по дублям слов в конце
 //  • сохраняет SVG + used-words.txt в out/<basename>/
 //------------------------------------------------------------------
 import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
@@ -185,6 +187,156 @@ function compareByComplexity(a: TemplateStats, b: TemplateStats): number {
   return 0;
 }
 
+function normalizeWordKey(word: string): string {
+  return word.trim().toUpperCase();
+}
+
+function extractTemplateNumber(value: string): number | null {
+  const match = value.trim().match(/^(\d{1,6})(?=\D|$)/u);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
+
+function resolveSpreadIndex(page: number): number {
+  return Math.floor((page - 1) / 2);
+}
+
+type BatchEntry = {
+  key: string;
+  order: number;
+  path: string;
+  name: string;
+  grid: Grid;
+  slots: Slot[];
+  lenCounts: Map<number, number>;
+  stats: TemplateStats;
+};
+
+function resolveEntryPageNumber(entry: BatchEntry): number {
+  const fromName = extractTemplateNumber(entry.name);
+  if (fromName !== null) return fromName;
+  return entry.order + 1;
+}
+
+function buildEntryNeighbors(entries: BatchEntry[]): Map<string, Set<string>> {
+  const spreadByKey = new Map<string, number>();
+  const keysBySpread = new Map<number, string[]>();
+
+  for (const entry of entries) {
+    const spread = resolveSpreadIndex(resolveEntryPageNumber(entry));
+    spreadByKey.set(entry.key, spread);
+    const list = keysBySpread.get(spread) ?? [];
+    list.push(entry.key);
+    keysBySpread.set(spread, list);
+  }
+
+  const neighbors = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const spread = spreadByKey.get(entry.key);
+    if (spread === undefined) continue;
+    const set = new Set<string>();
+    for (const candidateSpread of [spread - 1, spread, spread + 1]) {
+      const keys = keysBySpread.get(candidateSpread);
+      if (!keys) continue;
+      for (const key of keys) {
+        if (key !== entry.key) set.add(key);
+      }
+    }
+    neighbors.set(entry.key, set);
+  }
+  return neighbors;
+}
+
+function filterDictionaryByBlockedWords(
+  dict: Map<number, string[]>,
+  blockedWords: Set<string>
+): Map<number, string[]> {
+  if (!blockedWords.size) return dict;
+  const blocked = new Set<string>();
+  for (const word of blockedWords) {
+    const key = normalizeWordKey(word);
+    if (key) blocked.add(key);
+  }
+  if (!blocked.size) return dict;
+
+  const filtered = new Map<number, string[]>();
+  for (const [len, words] of dict) {
+    filtered.set(
+      len,
+      words.filter((word) => !blocked.has(normalizeWordKey(word)))
+    );
+  }
+  return filtered;
+}
+
+type DuplicateUsage = {
+  templateKey: string;
+  templateName: string;
+  count: number;
+};
+
+function collectWordCounts(words: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const word of words) {
+    const key = normalizeWordKey(word);
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function buildDuplicateReport(
+  templateWordCounts: Map<string, Map<string, number>>,
+  templateNameByKey: Map<string, string>
+) {
+  const usageByWord = new Map<string, DuplicateUsage[]>();
+  for (const [templateKey, words] of templateWordCounts) {
+    const templateName = templateNameByKey.get(templateKey) ?? templateKey;
+    for (const [word, count] of words) {
+      if (count <= 0) continue;
+      const list = usageByWord.get(word) ?? [];
+      list.push({ templateKey, templateName, count });
+      usageByWord.set(word, list);
+    }
+  }
+
+  const duplicates = [...usageByWord.entries()]
+    .map(([word, usages]) => ({
+      word,
+      usages: usages.sort((a, b) => a.templateName.localeCompare(b.templateName, "ru")),
+      totalUses: usages.reduce((sum, item) => sum + item.count, 0),
+      templateCount: usages.length,
+    }))
+    .filter((item) => item.totalUses > 1)
+    .sort((a, b) => {
+      if (b.totalUses !== a.totalUses) return b.totalUses - a.totalUses;
+      if (b.templateCount !== a.templateCount) return b.templateCount - a.templateCount;
+      return a.word.localeCompare(b.word, "ru");
+    });
+
+  const duplicateTemplates = new Map<string, Set<string>>();
+  for (const item of duplicates) {
+    for (const usage of item.usages) {
+      const set = duplicateTemplates.get(usage.templateName) ?? new Set<string>();
+      set.add(item.word);
+      duplicateTemplates.set(usage.templateName, set);
+    }
+  }
+
+  const duplicateWordCount = duplicates.length;
+  const totalRepeatUses = duplicates.reduce((sum, item) => sum + (item.totalUses - 1), 0);
+  const templatesWithDuplicates = duplicateTemplates.size;
+
+  return {
+    duplicates,
+    duplicateWordCount,
+    totalRepeatUses,
+    templatesWithDuplicates,
+    duplicateTemplates,
+  };
+}
+
 type FailSlot = NonNullable<NonNullable<SolveFailInfo["detail"]>["slot"]>;
 type FailColumn = NonNullable<NonNullable<SolveFailInfo["detail"]>["column"]>;
 
@@ -274,6 +426,8 @@ const { values } = parseArgs({
     "keep-order": { type: "boolean" },
     explainFail: { type: "boolean" },
     "explain-fail": { type: "boolean" },
+    reportDuplicates: { type: "boolean" },
+    "report-duplicates": { type: "boolean" },
   },
 });
 const shuffleOpt = values.shuffle === true ? true : undefined;
@@ -309,6 +463,7 @@ const styleName = (values.style ?? "default").toLowerCase();
 const hardFirst = !!values.hardFirst || !!values["hard-first"];
 const keepOrder = !!values.keepOrder || !!values["keep-order"];
 const explainFail = !!values.explainFail || !!values["explain-fail"];
+const reportDuplicates = !!values.reportDuplicates || !!values["report-duplicates"];
 const writeDefsJson = !values["no-defs"] && !values["no-clues"];
 const useCorelStyle = styleName === "corel";
 if (!["default", "corel"].includes(styleName)) {
@@ -356,17 +511,10 @@ if (!files.length) {
   let solveTotalMs = 0;
   let solvedCount = 0;
   let failedCount = 0;
-  const entries: {
-    path: string;
-    name: string;
-    grid: Grid;
-    slots: Slot[];
-    lenCounts: Map<number, number>;
-    stats: TemplateStats;
-  }[] = [];
+  const entries: BatchEntry[] = [];
   const lengthsSet = new Set<number>();
 
-  for (const path of files) {
+  for (const [order, path] of files.entries()) {
     const name = basename(path, ".fsh");
     try {
       const grid: Grid = parseFsh(path);
@@ -374,7 +522,16 @@ if (!files.length) {
       const slots = scanSlots(grid);
       const lenCounts = buildLenCounts(slots);
       const stats = analyzeTemplate(slots);
-      entries.push({ path, name, grid, slots, lenCounts, stats });
+      entries.push({
+        key: `${name}#${order}`,
+        order,
+        path,
+        name,
+        grid,
+        slots,
+        lenCounts,
+        stats,
+      });
       for (const len of lenCounts.keys()) lengthsSet.add(len);
     } catch (e) {
       console.error(`  🛑 ${name}:`, (e as Error).message);
@@ -434,7 +591,7 @@ if (!files.length) {
       })
       .filter(Boolean) as Array<{ len: number; need: number; have: number }>;
     if (deficits.length) {
-      console.error("🛑 недостаточно слов в словаре для уникального режима:");
+      console.error("⚠ для полностью уникального набора слов словаря недостаточно, будет включен fallback повторов:");
       for (const d of deficits) {
         console.error(`   длина ${d.len}: нужно ${d.need}, в словаре ${d.have}`);
       }
@@ -456,13 +613,14 @@ if (!files.length) {
     }
   }
 
-  /* если уникальный режим — будем прямо мутировать глобальный экземпляр */
-  const globalDict = unique
-    ? new Map<number, string[]>([...masterDict].map(([l, a]) => [l, [...a]]))
-    : masterDict;
+  const entryNeighbors = buildEntryNeighbors(entries);
+  const solvedWordsByEntry = new Map<string, Set<string>>();
+  const usedWordsInBatch = new Set<string>();
+  const templateWordCounts = new Map<string, Map<string, number>>();
+  const templateNameByKey = new Map(entries.map((entry) => [entry.key, entry.name]));
 
   for (const entry of orderedEntries) {
-    const { path, name, grid, slots } = entry;
+    const { path, name, grid, slots, key } = entry;
     console.log(`\n● ${name} …`);
     const perTemplateCounts = entry.lenCounts;
     const perTemplateLengths = [...perTemplateCounts.keys()].sort((a, b) => a - b);
@@ -474,12 +632,6 @@ if (!files.length) {
     const useFailStdout = explainFail && nativeAvailable && parallelRestarts > 1;
 
     try {
-      /* 2. словарь для решения */
-      const dict = unique
-        ? globalDict
-        : new Map<number, string[]>([...masterDict].map(([l, a]) => [l, [...a]]));
-
-      /* 3. solve */
       const logProgress = doProgress;
       const onProgress = logProgress
         ? (info: SolveProgress) => {
@@ -528,19 +680,43 @@ if (!files.length) {
           failStdout: useFailStdout,
         }
         : solveOptions;
-      let solved: string[] | null = null;
-      if (nativeDlx && (doProgress || explainFail) && parallelRestarts > 1) {
-        nativeActive = true;
-        const nativeSolved = await solveDlxNativeAsync(grid.data, slots, dict, nativeOptions);
-        if (nativeSolved !== undefined) {
-          solved = nativeSolved;
-        } else {
+
+      const solveWithDictionary = async (dictForSolve: Map<number, string[]>) => {
+        if (nativeDlx && (doProgress || explainFail) && parallelRestarts > 1) {
+          nativeActive = true;
+          const nativeSolved = await solveDlxNativeAsync(grid.data, slots, dictForSolve, nativeOptions);
+          if (nativeSolved !== undefined) {
+            nativeActive = false;
+            return nativeSolved;
+          }
           nativeActive = false;
-          solved = solve(grid.data, slots, dict, { ...solveOptions, nativeDlx: false });
+          return solve(grid.data, slots, dictForSolve, { ...solveOptions, nativeDlx: false });
         }
-        nativeActive = false;
+        return solve(grid.data, slots, dictForSolve, solveOptions);
+      };
+
+      let solved: string[] | null = null;
+      if (unique) {
+        const neighborBlockedWords = new Set<string>();
+        const neighbors = entryNeighbors.get(key);
+        if (neighbors) {
+          for (const neighborKey of neighbors) {
+            const used = solvedWordsByEntry.get(neighborKey);
+            if (!used) continue;
+            for (const word of used) neighborBlockedWords.add(word);
+          }
+        }
+
+        const strictBlockedWords = new Set<string>(neighborBlockedWords);
+        for (const word of usedWordsInBatch) strictBlockedWords.add(word);
+
+        solved = await solveWithDictionary(filterDictionaryByBlockedWords(masterDict, strictBlockedWords));
+        if (!solved && strictBlockedWords.size !== neighborBlockedWords.size) {
+          solved = await solveWithDictionary(filterDictionaryByBlockedWords(masterDict, neighborBlockedWords));
+        }
       } else {
-        solved = solve(grid.data, slots, dict, solveOptions);
+        const dict = new Map<number, string[]>([...masterDict].map(([len, words]) => [len, [...words]]));
+        solved = await solveWithDictionary(dict);
       }
       const solveMs = Date.now() - solveStartedAt;
       solveTotalMs += solveMs;
@@ -558,19 +734,16 @@ if (!files.length) {
         continue;
       }
 
-      /* 4. если уникальный режим — вычёркиваем использованные слова */
       if (unique) {
-        const usedHere = slots.map(s =>
-          s.cells.map(([r, c]) => solved[r][c]).join("")
-        );
-        for (const w of usedHere) {
-          const len = w.length;
-          const arr = globalDict.get(len);
-          if (arr) {
-            const idx = arr.indexOf(w);
-            if (idx >= 0) arr.splice(idx, 1);
-          }
+        const usedHere = new Set<string>();
+        for (const slot of slots) {
+          const word = slot.cells.map(([r, c]) => solved[r][c]).join("");
+          const normalized = normalizeWordKey(word);
+          if (!normalized) continue;
+          usedHere.add(normalized);
+          usedWordsInBatch.add(normalized);
         }
+        solvedWordsByEntry.set(key, usedHere);
       }
 
       /* 5. SVG */
@@ -578,6 +751,7 @@ if (!files.length) {
       const usedWordsList = slots.map((s) =>
         s.cells.map(([r, c]) => solved[r][c]).join("")
       );
+      templateWordCounts.set(key, collectWordCounts(usedWordsList));
       const usedWords = usedWordsList.join("\n");
       const definitions = await loadDefinitions(usedWordsList, { langCode: "ru" });
       const clues = buildClueEntries(grid, slots, solved, definitions);
@@ -699,4 +873,29 @@ if (!files.length) {
     `Итог: успешно заполнены ${solvedCount}, не удалось ${failedCount} (всего ${entries.length})`
   );
   console.log(`\nВсе файлы обработаны. time=${totalMin}m solve=${solveMin}m`);
+
+  if (reportDuplicates) {
+    const report = buildDuplicateReport(templateWordCounts, templateNameByKey);
+    console.log("\n📊 отчёт по дублям слов");
+    console.log(
+      `  слов-дублей=${report.duplicateWordCount} повторных использований=${report.totalRepeatUses} шаблонов-с-дублями=${report.templatesWithDuplicates}`
+    );
+    if (!report.duplicates.length) {
+      console.log("  дублей не найдено");
+    } else {
+      console.log("  по словам:");
+      for (const item of report.duplicates) {
+        const templates = item.usages.map((usage) => `${usage.templateName}×${usage.count}`).join(", ");
+        console.log(`    ${item.word}: ${templates}`);
+      }
+      console.log("  по шаблонам:");
+      const templatesSorted = [...report.duplicateTemplates.entries()].sort((a, b) =>
+        a[0].localeCompare(b[0], "ru")
+      );
+      for (const [templateName, words] of templatesSorted) {
+        const sortedWords = [...words].sort((a, b) => a.localeCompare(b, "ru"));
+        console.log(`    ${templateName}: ${sortedWords.join(", ")}`);
+      }
+    }
+  }
 })();

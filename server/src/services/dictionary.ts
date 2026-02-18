@@ -14,6 +14,26 @@ export type DefinitionOptions = {
   definitionWhere?: Prisma.opred_vWhereInput;
 };
 
+const SHORT_DEFINITION_LIMIT = 30;
+
+function normalizeDefinitionText(value: string | null | undefined): string {
+  return (value ?? "").trim();
+}
+
+function normalizeDefinitionKey(value: string | null | undefined): string {
+  return normalizeDefinitionText(value).toLocaleLowerCase("ru");
+}
+
+function definitionSelectionBucket(text: string, usedDefinitions: Set<string>): number {
+  const key = normalizeDefinitionKey(text);
+  const isUnique = !usedDefinitions.has(key);
+  if (!isUnique) return Number.POSITIVE_INFINITY;
+  const isShort = normalizeDefinitionText(text).length < SHORT_DEFINITION_LIMIT;
+  if (isUnique && isShort) return 0;
+  if (isUnique) return 1;
+  return Number.POSITIVE_INFINITY;
+}
+
 export async function loadDictionary(
   options: DictionaryOptions = {}
 ): Promise<Map<number, string[]>> {
@@ -105,17 +125,53 @@ export async function loadDefinitions(
         opred_v: {
           where: opredWhere,
           orderBy: { id: "asc" },
-          select: { text_opr: true },
+          select: { id: true, text_opr: true },
         },
       },
     });
 
-    const map = new Map<string, string>();
+    const byWord = new Map<string, Array<{ id: bigint; text: string }>>();
     for (const row of rows) {
-      const def = row.opred_v.find((o) => o.text_opr.trim().length > 0);
       const normalized = row.word_text_norm?.trim();
       const text = normalized && normalized.length > 0 ? normalized : row.word_text;
-      map.set(text.toUpperCase(), def?.text_opr ?? "");
+      const key = text.toUpperCase();
+      const list = byWord.get(key) ?? [];
+      for (const opred of row.opred_v) {
+        const definition = normalizeDefinitionText(opred.text_opr);
+        if (!definition) continue;
+        list.push({ id: opred.id, text: definition });
+      }
+      byWord.set(key, list);
+    }
+
+    const usedDefinitions = new Set<string>();
+    const map = new Map<string, string>();
+    for (const [word, candidates] of byWord) {
+      let best: { id: bigint; text: string; bucket: number; len: number } | null = null;
+      for (const candidate of candidates) {
+        const bucket = definitionSelectionBucket(candidate.text, usedDefinitions);
+        if (!Number.isFinite(bucket)) continue;
+        const len = candidate.text.length;
+        if (
+          !best ||
+          bucket < best.bucket ||
+          (bucket === best.bucket &&
+            (len < best.len || (len === best.len && candidate.id < best.id)))
+        ) {
+          best = {
+            id: candidate.id,
+            text: candidate.text,
+            bucket,
+            len,
+          };
+        }
+      }
+      if (best?.text) {
+        map.set(word, best.text);
+        usedDefinitions.add(normalizeDefinitionKey(best.text));
+      } else {
+        map.set(word, "");
+      }
     }
     return map;
   } finally {
