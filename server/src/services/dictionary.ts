@@ -66,11 +66,17 @@ export async function loadDictionary(
       select: { word_text: true, word_text_norm: true, length: true },
     }); // модель Word из schema.prisma
     const map = new Map<number, string[]>();
+    const seenByLen = new Map<number, Set<string>>();
     for (const { word_text, word_text_norm, length } of words) {
-      const arr = map.get(length) ?? [];
       const normalized = word_text_norm?.trim();
       const text = normalized && normalized.length > 0 ? normalized : word_text;
-      arr.push(text.toUpperCase());
+      const word = text.toUpperCase();
+      const seen = seenByLen.get(length) ?? new Set<string>();
+      if (seen.has(word)) continue;
+      seen.add(word);
+      seenByLen.set(length, seen);
+      const arr = map.get(length) ?? [];
+      arr.push(word);
       map.set(length, arr);
     }
     return map;
@@ -336,11 +342,17 @@ export async function loadDictionaryByTemplate(
     });
 
     const map = new Map<number, string[]>();
+    const seenByLen = new Map<number, Set<string>>();
     for (const row of rows) {
       const normalized = row.word_text_norm?.trim();
       const text = normalized && normalized.length > 0 ? normalized : row.word_text;
+      const word = text.toUpperCase();
+      const seen = seenByLen.get(row.length) ?? new Set<string>();
+      if (seen.has(word)) continue;
+      seen.add(word);
+      seenByLen.set(row.length, seen);
       const arr = map.get(row.length) ?? [];
-      arr.push(text.toUpperCase());
+      arr.push(word);
       map.set(row.length, arr);
     }
     return map;

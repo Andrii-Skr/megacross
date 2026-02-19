@@ -25,9 +25,16 @@ function parseFillOverrides(input: unknown) {
     maxMs?: number;
     restarts?: number;
     parallelRestarts?: number;
+    shuffle?: boolean;
+    unique?: boolean;
+    lcv?: boolean;
+    style?: "default" | "corel";
+    explainFail?: boolean;
+    noDefs?: boolean;
     requireNative?: boolean;
     writeCrw?: boolean;
     usageStats?: boolean;
+    filterTemplateId?: number;
   } = {};
   const maxNodes = Number(raw.maxNodes);
   if (Number.isFinite(maxNodes) && maxNodes > 0) overrides.maxNodes = Math.floor(maxNodes);
@@ -39,9 +46,19 @@ function parseFillOverrides(input: unknown) {
   if (Number.isFinite(parallelRestarts) && parallelRestarts > 0) {
     overrides.parallelRestarts = Math.floor(parallelRestarts);
   }
+  if (typeof raw.shuffle === "boolean") overrides.shuffle = raw.shuffle;
+  if (typeof raw.unique === "boolean") overrides.unique = raw.unique;
+  if (typeof raw.lcv === "boolean") overrides.lcv = raw.lcv;
+  if (raw.style === "default" || raw.style === "corel") overrides.style = raw.style;
+  if (typeof raw.explainFail === "boolean") overrides.explainFail = raw.explainFail;
+  if (typeof raw.noDefs === "boolean") overrides.noDefs = raw.noDefs;
   if (typeof raw.writeCrw === "boolean") overrides.writeCrw = raw.writeCrw;
   if (typeof raw.usageStats === "boolean") overrides.usageStats = raw.usageStats;
   if (typeof raw.requireNative === "boolean") overrides.requireNative = raw.requireNative;
+  const filterTemplateId = Number(raw.filterTemplateId);
+  if (Number.isFinite(filterTemplateId) && filterTemplateId > 0) {
+    overrides.filterTemplateId = Math.floor(filterTemplateId);
+  }
   if (
     overrides.restarts !== undefined &&
     overrides.parallelRestarts !== undefined &&

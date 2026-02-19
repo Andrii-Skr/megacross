@@ -62,6 +62,7 @@ type FillJobOptions = {
   requireNative: boolean;
   writeCrw: boolean;
   usageStats: boolean;
+  filterTemplateId?: number | null;
 };
 
 type ReviewDefinitionOption = {
@@ -225,6 +226,7 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   requireNative: false,
   writeCrw: false,
   usageStats: true,
+  filterTemplateId: null,
 };
 
 const ARCHIVE_TTL_MS = 1000 * 60 * 60 * 24 * 30 * 6;
@@ -270,6 +272,11 @@ type UsageCountMap = Map<bigint, number>;
 
 const WORD_USE_PRIORITY_MULTIPLIER = 1_000_000;
 const SHORT_DEFINITION_LIMIT = 30;
+const STRICT_ATTEMPT_BUDGET_RATIO = 0.55;
+const STRICT_ATTEMPT_MIN_MAX_NODES = 200_000;
+const STRICT_ATTEMPT_MIN_MAX_MS = 5_000;
+const IN_JOB_REPEAT_PRIORITY_MULTIPLIER = 1_000_000_000;
+const MAX_WORD_USES = 2;
 
 function normalizeWordKey(word: string): string {
   return word.trim().toUpperCase();
@@ -913,6 +920,109 @@ function filterDictionaryByBlockedWords(
   return filtered;
 }
 
+function buildWordLengthLookup(dict: Map<number, string[]>): Map<string, number> {
+  const byWord = new Map<string, number>();
+  for (const [len, words] of dict) {
+    for (const word of words) {
+      const key = normalizeWordKey(word);
+      if (!key || byWord.has(key)) continue;
+      byWord.set(key, len);
+    }
+  }
+  return byWord;
+}
+
+function collectLengthDeficitsForBlockedWords(
+  lenCounts: Map<number, number>,
+  dict: Map<number, string[]>,
+  blockedWords: Set<string>
+): Set<number> {
+  if (!lenCounts.size) return new Set<number>();
+  const blocked = new Set<string>();
+  for (const word of blockedWords) {
+    const key = normalizeWordKey(word);
+    if (key) blocked.add(key);
+  }
+  const deficits = new Set<number>();
+  for (const [len, need] of lenCounts) {
+    if (need <= 0) continue;
+    const words = dict.get(len) ?? [];
+    let available = 0;
+    for (const word of words) {
+      if (!blocked.has(normalizeWordKey(word))) available += 1;
+    }
+    if (available < need) deficits.add(len);
+  }
+  return deficits;
+}
+
+function buildAdaptiveBlockedWords(
+  usedWords: Set<string>,
+  usedWordCount: Map<string, number>,
+  neighborBlockedWords: Set<string>,
+  deficitLengths: Set<number>,
+  wordLengthByWord: Map<string, number>,
+  maxWordUses: number
+): Set<string> {
+  const blocked = new Set<string>(neighborBlockedWords);
+  for (const [word, count] of usedWordCount) {
+    if (count >= maxWordUses) blocked.add(word);
+  }
+  if (!deficitLengths.size) {
+    for (const word of usedWords) blocked.add(word);
+    return blocked;
+  }
+  for (const word of usedWords) {
+    const count = usedWordCount.get(word) ?? 0;
+    if (count >= maxWordUses) {
+      blocked.add(word);
+      continue;
+    }
+    const len = wordLengthByWord.get(word);
+    if (typeof len === "number" && deficitLengths.has(len)) continue;
+    blocked.add(word);
+  }
+  return blocked;
+}
+
+function buildCappedBlockedWords(
+  baseBlockedWords: Set<string>,
+  usedWordCount: Map<string, number>,
+  maxWordUses: number
+): Set<string> {
+  const blocked = new Set<string>(baseBlockedWords);
+  for (const [word, count] of usedWordCount) {
+    if (count >= maxWordUses) blocked.add(word);
+  }
+  return blocked;
+}
+
+function resolveLimitedBudget(
+  baseLimit: number | undefined,
+  minLimit: number
+): number | undefined {
+  if (!Number.isFinite(baseLimit)) return undefined;
+  const base = Math.trunc(baseLimit as number);
+  if (base <= 0) return undefined;
+  const scaled = Math.trunc(base * STRICT_ATTEMPT_BUDGET_RATIO);
+  const limited = Math.max(minLimit, scaled);
+  return Math.min(base, limited);
+}
+
+function buildInJobUsagePriority(
+  usedWordCount: Map<string, number>,
+  basePriority?: Map<string, number>
+): Map<string, number> | undefined {
+  if (!usedWordCount.size) return basePriority;
+  const merged = basePriority ? new Map(basePriority) : new Map<string, number>();
+  for (const [word, count] of usedWordCount) {
+    if (count <= 0) continue;
+    const current = merged.get(word) ?? 0;
+    merged.set(word, current + count * IN_JOB_REPEAT_PRIORITY_MULTIPLIER);
+  }
+  return merged;
+}
+
 function getSamplesDir(): string {
   return (
     process.env.CROSS_SAMPLES_DIR ||
@@ -1133,6 +1243,25 @@ function pickPreferredDefinitionOption(
     }
   }
   return best?.option ?? null;
+}
+
+function mergeDefinitionOptionByText(
+  current: ReviewDefinitionOption | undefined,
+  candidate: ReviewDefinitionOption
+): ReviewDefinitionOption {
+  if (!current) return candidate;
+  const currentHasOpredId = Boolean(current.opredId);
+  const candidateHasOpredId = Boolean(candidate.opredId);
+  if (candidateHasOpredId && !currentHasOpredId) return candidate;
+  if (!candidateHasOpredId && currentHasOpredId) return current;
+  if (
+    candidate.opredId &&
+    current.opredId &&
+    candidate.opredId.localeCompare(current.opredId, "ru") < 0
+  ) {
+    return candidate;
+  }
+  return current;
 }
 
 function convertReviewSlotToSlot(input: ReviewSlot): Slot {
@@ -1635,18 +1764,26 @@ function buildReviewTemplate(
     const selectedDefinition = normalizeDefinitionText(selection?.definition) || fallbackDefinition;
     let selectedOpredId: string | null = null;
     const optionMap = new Map<string, ReviewDefinitionOption>();
+    const pushOption = (option: ReviewDefinitionOption) => {
+      const text = normalizeDefinitionText(option.text);
+      if (!text) return;
+      const key = normalizeDefinitionKey(text);
+      const merged = mergeDefinitionOptionByText(optionMap.get(key), {
+        opredId: option.opredId,
+        text,
+      });
+      optionMap.set(key, merged);
+    };
     for (const def of selection?.definitions ?? []) {
       const text = normalizeDefinitionText(def.text);
       if (!text) continue;
-      const key = `${def.opredId?.toString() ?? "custom"}:${text}`;
-      optionMap.set(key, {
+      pushOption({
         opredId: def.opredId ? String(def.opredId) : null,
         text,
       });
     }
     if (selectedDefinition.length > 0) {
-      const selectedKey = `${selection?.opredId ? String(selection.opredId) : "custom"}:${selectedDefinition}`;
-      optionMap.set(selectedKey, {
+      pushOption({
         opredId: selection?.opredId ? String(selection.opredId) : null,
         text: selectedDefinition,
       });
@@ -1982,6 +2119,52 @@ function validateNeighborWordReuse(
   return errors;
 }
 
+function collectWordCounts(words: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const word of words) {
+    const key = normalizeWordKey(word);
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function buildDuplicateReport(
+  templateWordCounts: Map<string, Map<string, number>>,
+  templateNameByKey: Map<string, string>
+): { duplicateWordCount: number; totalRepeatUses: number; templatesWithDuplicates: number } {
+  const usageByWord = new Map<string, Array<{ templateName: string; count: number }>>();
+  for (const [templateKey, words] of templateWordCounts) {
+    const templateName = templateNameByKey.get(templateKey) ?? templateKey;
+    for (const [word, count] of words) {
+      if (count <= 0) continue;
+      const list = usageByWord.get(word) ?? [];
+      list.push({ templateName, count });
+      usageByWord.set(word, list);
+    }
+  }
+
+  const duplicates = [...usageByWord.values()].filter((usages) =>
+    usages.reduce((sum, item) => sum + item.count, 0) > 1
+  );
+  const duplicateWordCount = duplicates.length;
+  const totalRepeatUses = duplicates.reduce((sum, usages) => {
+    const totalUses = usages.reduce((acc, item) => acc + item.count, 0);
+    return sum + Math.max(0, totalUses - 1);
+  }, 0);
+
+  const templatesWithDuplicates = new Set<string>();
+  for (const usages of duplicates) {
+    for (const usage of usages) templatesWithDuplicates.add(usage.templateName);
+  }
+
+  return {
+    duplicateWordCount,
+    totalRepeatUses,
+    templatesWithDuplicates: templatesWithDuplicates.size,
+  };
+}
+
 async function loadJobRow(jobId: bigint): Promise<any | null> {
   const rows = await prisma.$queryRaw<any[]>`
     SELECT * FROM scanword_fill_jobs WHERE id = ${jobId} LIMIT 1
@@ -2044,7 +2227,13 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
 
     const issue = await loadIssueContext(issueId);
     if (!issue) throw new Error("Issue not found");
-    const templateId = issue.filterTemplateId ?? issue.snapshotTemplateId;
+    const overrideTemplateId =
+      typeof options.filterTemplateId === "number" &&
+      Number.isFinite(options.filterTemplateId) &&
+      options.filterTemplateId > 0
+        ? Math.floor(options.filterTemplateId)
+        : null;
+    const templateId = overrideTemplateId ?? issue.filterTemplateId ?? issue.snapshotTemplateId;
     if (!templateId) throw new Error("Filter template is not set for this issue");
 
     const template = await loadFilterTemplate(templateId);
@@ -2064,6 +2253,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const { entries, lengths, invalid } = buildEntries(resolved);
     const dict = await loadDictionaryByTemplate(template, { lengths });
     if (!dict.size) throw new Error("Dictionary is empty for selected template");
+    const wordLengthByWord = buildWordLengthLookup(dict);
     const usagePriorityByWord = new Map<string, number>();
     if (options.usageStats) {
       const mainLangId = await resolveLanguageId(template.language);
@@ -2130,10 +2320,25 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const totalTemplates = templatesState.length;
     let completedTemplates = 0;
     let failedTemplates = templatesState.filter((t) => t.status === "error").length;
+    const jobStartedAt = Date.now();
+    let solveTotalMs = 0;
     const reviewTemplates: ReviewTemplate[] = [];
     const langIdCache = new Map<string, number | null>();
     const solvedWordsByTemplate = new Map<string, Set<string>>();
     const usedWordsInJob = new Set<string>();
+    const usedWordCountInJob = new Map<string, number>();
+    const uniqueFallbackStats = {
+      strictAttempted: 0,
+      strictLimited: 0,
+      strictSkippedByDeficit: 0,
+      strictSolved: 0,
+      adaptiveAttempted: 0,
+      adaptiveSolved: 0,
+      neighborAttempted: 0,
+      neighborSolved: 0,
+    };
+    const templateWordCounts = new Map<string, Map<string, number>>();
+    const templateNameByKey = new Map(sortedEntries.map((entry) => [entry.key, entry.name]));
     const usedDefinitionKeys = new Set<string>();
 
     const pushTemplateUpdate = async (extra: Partial<FillJobUpdate> = {}) => {
@@ -2177,6 +2382,25 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     if (options.requireNative && !nativeAvailable) {
       throw new Error("Native DLX solver is not available");
     }
+    const templateSource =
+      overrideTemplateId !== null
+        ? "override"
+        : issue.filterTemplateId !== null
+          ? "issue.filterTemplateId"
+          : "issue.snapshotTemplateId";
+    const nativeEngineLabel = options.requireNative ? "required" : nativeAvailable ? "auto(native)" : "auto(js)";
+    const maxNodesLabel =
+      typeof options.maxNodes === "number" && Number.isFinite(options.maxNodes)
+        ? String(options.maxNodes)
+        : "none";
+    const maxMsLabel =
+      typeof options.maxMs === "number" && Number.isFinite(options.maxMs) ? String(options.maxMs) : "none";
+    console.log(
+      `⚙ fill options: native=${nativeEngineLabel} shuffle=${options.shuffle ? "on" : "off"} unique=${options.unique ? "on" : "off"} lcv=${options.lcv ? "on" : "off"} restarts=${options.restarts} parallel=${options.parallelRestarts} maxNodes=${maxNodesLabel} maxMs=${maxMsLabel} style=${options.style} explainFail=${options.explainFail ? "on" : "off"} noDefs=${options.noDefs ? "on" : "off"} usageStats=${options.usageStats ? "on" : "off"}`
+    );
+    console.log(
+      `🎯 dictionary template: id=${templateId} source=${templateSource} issueId=${String(issue.issueId)} override=${overrideTemplateId ?? "none"} files=${sortedEntries.length}/${resolved.length}`
+    );
 
     for (const entry of sortedEntries) {
       const idx = indexByKey.get(entry.key);
@@ -2206,18 +2430,28 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         updateLocal({ progress, currentTemplate: entry.name });
       };
 
-      const solveWithDictionary = async (dictForSolve: Map<number, string[]>) => {
+      const solveWithDictionary = async (
+        dictForSolve: Map<number, string[]>,
+        overrides: {
+          maxNodes?: number;
+          maxMs?: number;
+          wordPriority?: Map<string, number>;
+          lcv?: boolean;
+        } = {}
+      ) => {
+        const effectiveWordPriority =
+          overrides.wordPriority ?? (options.usageStats ? usagePriorityByWord : undefined);
         if (nativeAvailable) {
           const solvedNative = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, {
             shuffle: options.shuffle,
-            lcv: options.lcv,
+            lcv: overrides.lcv ?? options.lcv,
             restarts: options.restarts,
             parallelRestarts: options.parallelRestarts,
-            maxNodes: options.maxNodes,
-            maxMs: options.maxMs,
+            maxNodes: overrides.maxNodes ?? options.maxNodes,
+            maxMs: overrides.maxMs ?? options.maxMs,
             nativeDlx: true,
             label: entry.name,
-            wordPriority: options.usageStats ? usagePriorityByWord : undefined,
+            wordPriority: effectiveWordPriority,
             onProgress,
             onFail,
           });
@@ -2225,20 +2459,21 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         }
         return solve(entry.grid.data, entry.slots, dictForSolve, {
           shuffle: options.shuffle,
-          lcv: options.lcv,
+          lcv: overrides.lcv ?? options.lcv,
           restarts: options.restarts,
           parallelRestarts: options.parallelRestarts,
-          maxNodes: options.maxNodes,
-          maxMs: options.maxMs,
+          maxNodes: overrides.maxNodes ?? options.maxNodes,
+          maxMs: overrides.maxMs ?? options.maxMs,
           nativeDlx: false,
           label: entry.name,
-          wordPriority: options.usageStats ? usagePriorityByWord : undefined,
+          wordPriority: effectiveWordPriority,
           onProgress,
           onFail,
         });
       };
 
       let solved: string[] | null | undefined;
+      const solveStartedAt = Date.now();
       if (options.unique) {
         const neighborBlockedWords = new Set<string>();
         const neighborKeys = templateNeighbors.get(entry.key);
@@ -2252,15 +2487,69 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
 
         const strictBlockedWords = new Set<string>(neighborBlockedWords);
         for (const word of usedWordsInJob) strictBlockedWords.add(word);
-
-        solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, strictBlockedWords));
-        if (!solved && strictBlockedWords.size !== neighborBlockedWords.size) {
-          solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, neighborBlockedWords));
+        const neighborCappedBlockedWords = buildCappedBlockedWords(
+          neighborBlockedWords,
+          usedWordCountInJob,
+          MAX_WORD_USES
+        );
+        const canFallbackToNeighbor = strictBlockedWords.size !== neighborCappedBlockedWords.size;
+        const fallbackPriority = buildInJobUsagePriority(
+          usedWordCountInJob,
+          options.usageStats ? usagePriorityByWord : undefined
+        );
+        const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
+          entry.lenCounts,
+          dict,
+          strictBlockedWords
+        );
+        if (strictDeficitLengths.size === 0) {
+          uniqueFallbackStats.strictAttempted += 1;
+          const strictAttemptMaxNodes = canFallbackToNeighbor
+            ? resolveLimitedBudget(options.maxNodes, STRICT_ATTEMPT_MIN_MAX_NODES)
+            : undefined;
+          const strictAttemptMaxMs = canFallbackToNeighbor
+            ? resolveLimitedBudget(options.maxMs, STRICT_ATTEMPT_MIN_MAX_MS)
+            : undefined;
+          if (strictAttemptMaxNodes !== undefined || strictAttemptMaxMs !== undefined) {
+            uniqueFallbackStats.strictLimited += 1;
+          }
+          solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, strictBlockedWords), {
+            maxNodes: strictAttemptMaxNodes,
+            maxMs: strictAttemptMaxMs,
+          });
+          if (solved) uniqueFallbackStats.strictSolved += 1;
+        } else {
+          uniqueFallbackStats.strictSkippedByDeficit += 1;
+          const adaptiveBlockedWords = buildAdaptiveBlockedWords(
+            usedWordsInJob,
+            usedWordCountInJob,
+            neighborBlockedWords,
+            strictDeficitLengths,
+            wordLengthByWord,
+            MAX_WORD_USES
+          );
+          if (adaptiveBlockedWords.size !== strictBlockedWords.size) {
+            uniqueFallbackStats.adaptiveAttempted += 1;
+            solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, adaptiveBlockedWords), {
+              wordPriority: fallbackPriority,
+              lcv: false,
+            });
+            if (solved) uniqueFallbackStats.adaptiveSolved += 1;
+          }
+        }
+        if (!solved && canFallbackToNeighbor) {
+          uniqueFallbackStats.neighborAttempted += 1;
+          solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, neighborCappedBlockedWords), {
+            wordPriority: fallbackPriority,
+            lcv: false,
+          });
+          if (solved) uniqueFallbackStats.neighborSolved += 1;
         }
       } else {
         const dictForTemplate = new Map<number, string[]>([...dict].map(([len, words]) => [len, [...words]]));
         solved = await solveWithDictionary(dictForTemplate);
       }
+      solveTotalMs += Date.now() - solveStartedAt;
 
       if (!solved) {
         if (!lastFail && options.explainFail && nativeAvailable) {
@@ -2280,6 +2569,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       }
 
       const usedWordsList = entry.slots.map((s) => s.cells.map(([r, c]) => solved![r][c]).join(""));
+      templateWordCounts.set(entry.key, collectWordCounts(usedWordsList));
       if (options.unique) {
         const usedHere = new Set<string>();
         for (const word of usedWordsList) {
@@ -2287,6 +2577,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           if (!key) continue;
           usedHere.add(key);
           usedWordsInJob.add(key);
+          usedWordCountInJob.set(key, (usedWordCountInJob.get(key) ?? 0) + 1);
         }
         solvedWordsByTemplate.set(entry.key, usedHere);
       }
@@ -2371,6 +2662,22 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       },
       templates: reviewTemplates,
     };
+    const totalMin = ((Date.now() - jobStartedAt) / 60000).toFixed(1);
+    const solveMin = (solveTotalMs / 60000).toFixed(1);
+    const duplicateReport = buildDuplicateReport(templateWordCounts, templateNameByKey);
+    console.log(
+      `Итог: успешно заполнены ${completedTemplates}, не удалось ${failedTemplates} (всего ${totalTemplates})`
+    );
+    console.log(`\nВсе файлы обработаны. time=${totalMin}m solve=${solveMin}m`);
+    if (options.unique) {
+      console.log(
+        `🔁 unique fallback: strict=${uniqueFallbackStats.strictSolved}/${uniqueFallbackStats.strictAttempted} strictLimited=${uniqueFallbackStats.strictLimited} skippedByDeficit=${uniqueFallbackStats.strictSkippedByDeficit} adaptive=${uniqueFallbackStats.adaptiveSolved}/${uniqueFallbackStats.adaptiveAttempted} neighbor=${uniqueFallbackStats.neighborSolved}/${uniqueFallbackStats.neighborAttempted}`
+      );
+    }
+    console.log("\n📊 отчёт по дублям слов");
+    console.log(
+      `  слов-дублей=${duplicateReport.duplicateWordCount} повторных использований=${duplicateReport.totalRepeatUses} шаблонов-с-дублями=${duplicateReport.templatesWithDuplicates}`
+    );
     await updateJob(jobId, {
       status: "review",
       progress: 100,
