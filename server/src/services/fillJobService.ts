@@ -2,12 +2,13 @@ import archiver from "archiver";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createWriteStream } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { buildClueEntries } from "../utils/clues";
 import { parseFsh } from "../utils/parseFsh";
-import { validate, scanSlots } from "../utils/grid";
-import { solve, type SolveFailInfo, type SolveProgress } from "../utils/solver";
+import { scanSlotsDetailed, type SlotStart, validate } from "../utils/grid";
+import type { SolveFailInfo, SolveProgress } from "../utils/solver";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../utils/nativeDlx";
 import { buildCrw } from "../utils/writeCrw";
 import { DIRS, type Cell, type Grid, type Slot } from "../types";
@@ -79,6 +80,8 @@ type ReviewSlotIntersection = {
   letter: string;
 };
 
+type ReviewStartPosition = SlotStart;
+
 type ReviewSlot = {
   slotId: number;
   r: number;
@@ -93,6 +96,7 @@ type ReviewSlot = {
   definitionOptions: ReviewDefinitionOption[];
   intersections: ReviewSlotIntersection[];
   clueCell: { key: string; row: number; col: number } | null;
+  startNumber: number | null;
 };
 
 type ReviewClueGroup = {
@@ -113,6 +117,7 @@ type ReviewTemplate = {
   grid: Grid;
   slots: ReviewSlot[];
   clueGroups: ReviewClueGroup[];
+  startPositions: ReviewStartPosition[];
 };
 
 export type FillReviewPayload = {
@@ -194,6 +199,8 @@ type TemplateEntry = {
   order: number;
   grid: Grid;
   slots: Slot[];
+  startNumberBySlotId: Map<number, number>;
+  startPositions: ReviewStartPosition[];
   lenCounts: Map<number, number>;
   stats: TemplateStats;
 };
@@ -223,7 +230,7 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   style: "corel",
   explainFail: true,
   noDefs: true,
-  requireNative: false,
+  requireNative: true,
   writeCrw: false,
   usageStats: true,
   filterTemplateId: null,
@@ -272,11 +279,26 @@ type UsageCountMap = Map<bigint, number>;
 
 const WORD_USE_PRIORITY_MULTIPLIER = 1_000_000;
 const SHORT_DEFINITION_LIMIT = 30;
-const STRICT_ATTEMPT_BUDGET_RATIO = 0.55;
-const STRICT_ATTEMPT_MIN_MAX_NODES = 200_000;
-const STRICT_ATTEMPT_MIN_MAX_MS = 5_000;
 const IN_JOB_REPEAT_PRIORITY_MULTIPLIER = 1_000_000_000;
 const MAX_WORD_USES = 2;
+
+function detectCpuParallelism(): number {
+  if (typeof os.availableParallelism === "function") {
+    const n = os.availableParallelism();
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  const n = os.cpus()?.length ?? 1;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+function resolveParallelRestarts(restarts: number, configured: number): number {
+  const safeRestarts = Number.isFinite(restarts) && restarts > 0 ? Math.floor(restarts) : 1;
+  const safeConfigured = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 1;
+  const cpuParallel = detectCpuParallelism();
+  const auto = Math.max(1, Math.min(safeRestarts, cpuParallel));
+  const requested = Math.max(1, Math.min(safeRestarts, safeConfigured));
+  return Math.max(requested, auto);
+}
 
 function normalizeWordKey(word: string): string {
   return word.trim().toUpperCase();
@@ -834,7 +856,6 @@ function computePressure(lenCounts: Map<number, number>, dictCounts: Map<number,
 }
 
 function compareByComplexity(a: TemplateStats, b: TemplateStats): number {
-  if (a.maxDegree !== b.maxDegree) return b.maxDegree - a.maxDegree;
   if (a.avgDegree !== b.avgDegree) return b.avgDegree - a.avgDegree;
   if (a.degreeSqSum !== b.degreeSqSum) return b.degreeSqSum - a.degreeSqSum;
   const ap = a.pressure ?? 0;
@@ -956,6 +977,43 @@ function collectLengthDeficitsForBlockedWords(
   return deficits;
 }
 
+function collectMostConstrainedLengthsForBlockedWords(
+  lenCounts: Map<number, number>,
+  dict: Map<number, string[]>,
+  blockedWords: Set<string>,
+  limit = 1
+): Set<number> {
+  if (!lenCounts.size || limit <= 0) return new Set<number>();
+  const blocked = new Set<string>();
+  for (const word of blockedWords) {
+    const key = normalizeWordKey(word);
+    if (key) blocked.add(key);
+  }
+  const ranked: Array<{ len: number; slack: number; available: number; need: number }> = [];
+  for (const [len, need] of lenCounts) {
+    if (need <= 0) continue;
+    const words = dict.get(len) ?? [];
+    let available = 0;
+    for (const word of words) {
+      if (!blocked.has(normalizeWordKey(word))) available += 1;
+    }
+    if (available <= 0) continue;
+    ranked.push({
+      len,
+      slack: available - need,
+      available,
+      need,
+    });
+  }
+  ranked.sort((a, b) => {
+    if (a.slack !== b.slack) return a.slack - b.slack;
+    if (a.available !== b.available) return a.available - b.available;
+    if (a.need !== b.need) return b.need - a.need;
+    return a.len - b.len;
+  });
+  return new Set<number>(ranked.slice(0, limit).map((item) => item.len));
+}
+
 function buildAdaptiveBlockedWords(
   usedWords: Set<string>,
   usedWordCount: Map<string, number>,
@@ -995,18 +1053,6 @@ function buildCappedBlockedWords(
     if (count >= maxWordUses) blocked.add(word);
   }
   return blocked;
-}
-
-function resolveLimitedBudget(
-  baseLimit: number | undefined,
-  minLimit: number
-): number | undefined {
-  if (!Number.isFinite(baseLimit)) return undefined;
-  const base = Math.trunc(baseLimit as number);
-  if (base <= 0) return undefined;
-  const scaled = Math.trunc(base * STRICT_ATTEMPT_BUDGET_RATIO);
-  const limited = Math.max(minLimit, scaled);
-  return Math.min(base, limited);
 }
 
 function buildInJobUsagePriority(
@@ -1544,7 +1590,8 @@ function buildEntries(templates: ResolvedTemplate[]): {
     try {
       const grid = parseFsh(template.path);
       validate(grid);
-      const slots = scanSlots(grid);
+      const slotScan = scanSlotsDetailed(grid);
+      const slots = slotScan.slots;
       const lenCounts = buildLenCounts(slots);
       const stats = analyzeTemplate(slots);
       entries.push({
@@ -1555,6 +1602,8 @@ function buildEntries(templates: ResolvedTemplate[]): {
         order: template.order,
         grid,
         slots,
+        startNumberBySlotId: slotScan.startNumberBySlotId,
+        startPositions: slotScan.starts,
         lenCounts,
         stats,
       });
@@ -1739,6 +1788,12 @@ function formatFail(info: SolveFailInfo): string {
   return "no-solution";
 }
 
+function extractFailedSlotLength(info: SolveFailInfo | null): number | null {
+  const len = info?.detail?.slot?.len;
+  if (typeof len !== "number" || !Number.isFinite(len) || len <= 0) return null;
+  return Math.trunc(len);
+}
+
 function buildReviewTemplate(
   entry: TemplateEntry,
   solved: string[],
@@ -1815,6 +1870,7 @@ function buildReviewTemplate(
       definitionOptions: options,
       intersections: intersectionsBySlot.get(slot.id) ?? [],
       clueCell: clueBySlot.get(slot.id) ?? null,
+      startNumber: entry.startNumberBySlotId.get(slot.id) ?? null,
     };
   });
 
@@ -1829,6 +1885,7 @@ function buildReviewTemplate(
     grid: entry.grid,
     slots,
     clueGroups,
+    startPositions: entry.startPositions.map((item) => ({ ...item })),
   };
 }
 
@@ -2379,16 +2436,16 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     }
 
     const nativeAvailable = isNativeDlxAvailable();
-    if (options.requireNative && !nativeAvailable) {
-      throw new Error("Native DLX solver is not available");
-    }
+    if (!nativeAvailable) throw new Error("Native DLX solver is not available (JS solver is disabled)");
+    const cpuParallel = detectCpuParallelism();
+    const effectiveParallelRestarts = resolveParallelRestarts(options.restarts, options.parallelRestarts);
     const templateSource =
       overrideTemplateId !== null
         ? "override"
         : issue.filterTemplateId !== null
           ? "issue.filterTemplateId"
           : "issue.snapshotTemplateId";
-    const nativeEngineLabel = options.requireNative ? "required" : nativeAvailable ? "auto(native)" : "auto(js)";
+    const nativeEngineLabel = "required(native)";
     const maxNodesLabel =
       typeof options.maxNodes === "number" && Number.isFinite(options.maxNodes)
         ? String(options.maxNodes)
@@ -2396,7 +2453,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const maxMsLabel =
       typeof options.maxMs === "number" && Number.isFinite(options.maxMs) ? String(options.maxMs) : "none";
     console.log(
-      `⚙ fill options: native=${nativeEngineLabel} shuffle=${options.shuffle ? "on" : "off"} unique=${options.unique ? "on" : "off"} lcv=${options.lcv ? "on" : "off"} restarts=${options.restarts} parallel=${options.parallelRestarts} maxNodes=${maxNodesLabel} maxMs=${maxMsLabel} style=${options.style} explainFail=${options.explainFail ? "on" : "off"} noDefs=${options.noDefs ? "on" : "off"} usageStats=${options.usageStats ? "on" : "off"}`
+      `⚙ fill options: native=${nativeEngineLabel} shuffle=${options.shuffle ? "on" : "off"} unique=${options.unique ? "on" : "off"} lcv=${options.lcv ? "on" : "off"} restarts=${options.restarts} parallel=${effectiveParallelRestarts} (cfg=${options.parallelRestarts} cpu=${cpuParallel}) maxNodes=${maxNodesLabel} maxMs=${maxMsLabel} style=${options.style} explainFail=${options.explainFail ? "on" : "off"} noDefs=${options.noDefs ? "on" : "off"} usageStats=${options.usageStats ? "on" : "off"}`
     );
     console.log(
       `🎯 dictionary template: id=${templateId} source=${templateSource} issueId=${String(issue.issueId)} override=${overrideTemplateId ?? "none"} files=${sortedEntries.length}/${resolved.length}`
@@ -2441,35 +2498,23 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       ) => {
         const effectiveWordPriority =
           overrides.wordPriority ?? (options.usageStats ? usagePriorityByWord : undefined);
-        if (nativeAvailable) {
-          const solvedNative = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, {
-            shuffle: options.shuffle,
-            lcv: overrides.lcv ?? options.lcv,
-            restarts: options.restarts,
-            parallelRestarts: options.parallelRestarts,
-            maxNodes: overrides.maxNodes ?? options.maxNodes,
-            maxMs: overrides.maxMs ?? options.maxMs,
-            nativeDlx: true,
-            label: entry.name,
-            wordPriority: effectiveWordPriority,
-            onProgress,
-            onFail,
-          });
-          if (solvedNative !== undefined) return solvedNative;
-        }
-        return solve(entry.grid.data, entry.slots, dictForSolve, {
+        const solvedNative = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, {
           shuffle: options.shuffle,
           lcv: overrides.lcv ?? options.lcv,
           restarts: options.restarts,
-          parallelRestarts: options.parallelRestarts,
+          parallelRestarts: effectiveParallelRestarts,
           maxNodes: overrides.maxNodes ?? options.maxNodes,
           maxMs: overrides.maxMs ?? options.maxMs,
-          nativeDlx: false,
+          nativeDlx: true,
           label: entry.name,
           wordPriority: effectiveWordPriority,
           onProgress,
           onFail,
         });
+        if (solvedNative === undefined) {
+          throw new Error("Native DLX solver is not available (JS solver is disabled)");
+        }
+        return solvedNative;
       };
 
       let solved: string[] | null | undefined;
@@ -2502,29 +2547,32 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           dict,
           strictBlockedWords
         );
+        let adaptiveDeficitLengths = strictDeficitLengths;
         if (strictDeficitLengths.size === 0) {
           uniqueFallbackStats.strictAttempted += 1;
-          const strictAttemptMaxNodes = canFallbackToNeighbor
-            ? resolveLimitedBudget(options.maxNodes, STRICT_ATTEMPT_MIN_MAX_NODES)
-            : undefined;
-          const strictAttemptMaxMs = canFallbackToNeighbor
-            ? resolveLimitedBudget(options.maxMs, STRICT_ATTEMPT_MIN_MAX_MS)
-            : undefined;
-          if (strictAttemptMaxNodes !== undefined || strictAttemptMaxMs !== undefined) {
-            uniqueFallbackStats.strictLimited += 1;
-          }
-          solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, strictBlockedWords), {
-            maxNodes: strictAttemptMaxNodes,
-            maxMs: strictAttemptMaxMs,
-          });
+          solved = await solveWithDictionary(filterDictionaryByBlockedWords(dict, strictBlockedWords));
           if (solved) uniqueFallbackStats.strictSolved += 1;
+          if (!solved) {
+            const failLen = extractFailedSlotLength(lastFail);
+            if (failLen !== null) {
+              adaptiveDeficitLengths = new Set<number>([failLen]);
+            } else {
+              adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
+                entry.lenCounts,
+                dict,
+                strictBlockedWords
+              );
+            }
+          }
         } else {
           uniqueFallbackStats.strictSkippedByDeficit += 1;
+        }
+        if (!solved && adaptiveDeficitLengths.size > 0) {
           const adaptiveBlockedWords = buildAdaptiveBlockedWords(
             usedWordsInJob,
             usedWordCountInJob,
             neighborBlockedWords,
-            strictDeficitLengths,
+            adaptiveDeficitLengths,
             wordLengthByWord,
             MAX_WORD_USES
           );

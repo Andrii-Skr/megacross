@@ -62,6 +62,15 @@ function dirKeyFromSlot(slot: Slot): number {
   return slot.dir === DIRS.right ? 6 : 8;
 }
 
+function hasArrowCells(grid: Grid): boolean {
+  for (const row of grid.data) {
+    for (const ch of row) {
+      if (ch === "↓" || ch === "→" || ch === "↘") return true;
+    }
+  }
+  return false;
+}
+
 function resolveClueCell(
   grid: Grid,
   slot: Slot,
@@ -94,6 +103,10 @@ export function buildClueEntries(
   solved: string[],
   definitions: Map<string, string>
 ): { down: ClueEntry[]; right: ClueEntry[] } {
+  if (!hasArrowCells(grid)) {
+    return { down: [], right: [] };
+  }
+
   const down: ClueEntry[] = [];
   const right: ClueEntry[] = [];
 

@@ -77,13 +77,12 @@ struct Dict {
 }
 
 struct IndexCell {
-  list: Vec<usize>,
-  set: HashSet<usize>,
+  bits: Vec<u64>,
+  count: usize,
 }
 
 struct WordIndex {
   pos_index: Vec<Vec<HashMap<char, IndexCell>>>,
-  word_counts: Vec<usize>,
 }
 
 struct Cross {
@@ -333,9 +332,17 @@ struct ProgressCtx<'a> {
   next_log_node: u64,
   log_every_ms: u64,
   log_every_nodes: u64,
-  last_pick: Option<ProgressLastPick>,
   stdout: bool,
   fail_stdout: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ProgressLastPickRef<'a> {
+  id: usize,
+  len: usize,
+  degree: usize,
+  candidates: i32,
+  pattern: &'a str,
 }
 
 struct Rng {
@@ -874,14 +881,13 @@ impl Dict {
 fn build_word_index(dict: &Dict) -> WordIndex {
   let mut pos_index: Vec<Vec<HashMap<char, IndexCell>>> =
     (0..=dict.max_len).map(|_| Vec::new()).collect();
-  let mut word_counts = vec![0usize; dict.max_len + 1];
 
   for len in 0..=dict.max_len {
     let words = &dict.chars[len];
-    word_counts[len] = words.len();
     if words.is_empty() {
       continue;
     }
+    let bit_words = (words.len() + 63) / 64;
     let mut pos_maps: Vec<HashMap<char, IndexCell>> = Vec::with_capacity(len);
     for _ in 0..len {
       pos_maps.push(HashMap::new());
@@ -891,57 +897,34 @@ fn build_word_index(dict: &Dict) -> WordIndex {
         let cell = pos_maps[i]
           .entry(*ch)
           .or_insert_with(|| IndexCell {
-            list: Vec::new(),
-            set: HashSet::new(),
+            bits: vec![0; bit_words],
+            count: 0,
           });
-        cell.list.push(idx);
-        cell.set.insert(idx);
+        let word_idx = idx / 64;
+        let bit = 1u64 << (idx % 64);
+        if cell.bits[word_idx] & bit == 0 {
+          cell.bits[word_idx] |= bit;
+          cell.count += 1;
+        }
       }
     }
     pos_index[len] = pos_maps;
   }
 
-  WordIndex { pos_index, word_counts }
+  WordIndex { pos_index }
 }
 
-fn count_candidates(pattern: &[char], len: usize, index: &WordIndex) -> usize {
+fn count_candidates_at(len: usize, pos: usize, ch: char, index: &WordIndex) -> usize {
   if len >= index.pos_index.len() {
     return 0;
   }
-  let words_count = index.word_counts[len];
-  if words_count == 0 {
+  if pos >= index.pos_index[len].len() {
     return 0;
   }
-  let pos_maps = &index.pos_index[len];
-  let mut constraints: Vec<&IndexCell> = Vec::new();
-  for (i, ch) in pattern.iter().enumerate() {
-    if *ch == '.' {
-      continue;
-    }
-    if let Some(cell) = pos_maps[i].get(ch) {
-      constraints.push(cell);
-    } else {
-      return 0;
-    }
-  }
-  if constraints.is_empty() {
-    return words_count;
-  }
-  if constraints.len() == 1 {
-    return constraints[0].list.len();
-  }
-  constraints.sort_by_key(|c| c.list.len());
-  let base = &constraints[0].list;
-  let mut count = 0usize;
-  'outer: for idx in base {
-    for c in constraints.iter().skip(1) {
-      if !c.set.contains(idx) {
-        continue 'outer;
-      }
-    }
-    count += 1;
-  }
-  count
+  index.pos_index[len][pos]
+    .get(&ch)
+    .map(|cell| cell.count)
+    .unwrap_or(0)
 }
 
 fn build_cross_data(
@@ -1194,7 +1177,6 @@ fn run_attempt_dlx<'a>(
     next_log_node: if options.log_every_nodes > 0 { options.log_every_nodes } else { u64::MAX },
     log_every_ms: options.log_every_ms,
     log_every_nodes: options.log_every_nodes,
-    last_pick: None,
     stdout: options.progress_stdout,
     fail_stdout: options.fail_stdout,
   };
@@ -1207,7 +1189,7 @@ fn run_attempt_dlx<'a>(
       progress_ctx.log_every_nodes
     );
   }
-  maybe_report(&state, &mut progress_ctx, 0, total_slots, true);
+  maybe_report(&state, &mut progress_ctx, 0, total_slots, true, None);
 
   let mut solution: Vec<usize> = Vec::new();
   let solved = search(
@@ -1403,9 +1385,7 @@ fn score_word(
   let mut score: i32 = 0;
   for cross in &crosses[slot_id] {
     let other_slot = &slots[cross.other];
-    let mut pattern = vec!['.'; other_slot.len];
-    pattern[cross.i_other] = word_chars[cross.i_self];
-    let count = count_candidates(&pattern, other_slot.len, index);
+    let count = count_candidates_at(other_slot.len, cross.i_other, word_chars[cross.i_self], index);
     if count == 0 {
       return -1;
     }
@@ -1524,14 +1504,21 @@ fn search(
     let row_id = matrix.nodes[r].row_id;
     let row = &matrix.rows[row_id];
     let word = &dict.words[row.len][row.word_idx];
-    progress_ctx.last_pick = Some(ProgressLastPick {
+    let pick = ProgressLastPickRef {
       id: row.slot_id,
       len: row.len,
       degree: adjacency.get(row.slot_id).map(|s| s.len()).unwrap_or(0),
       candidates: matrix.columns[col].size,
-      pattern: word.clone(),
-    });
-    maybe_report(state, progress_ctx, solution.len(), progress_ctx.total_slots, false);
+      pattern: word,
+    };
+    maybe_report(
+      state,
+      progress_ctx,
+      solution.len(),
+      progress_ctx.total_slots,
+      false,
+      Some(pick),
+    );
     if should_abort(state, options, abort_flag) {
       solution.pop();
       break;
@@ -1705,6 +1692,7 @@ fn maybe_report(
   depth: usize,
   total_slots: usize,
   force: bool,
+  last_pick: Option<ProgressLastPickRef<'_>>,
 ) {
   const STDOUT_MIN_MS: u64 = 5_000;
   if ctx.emitter.is_none() && !ctx.stdout {
@@ -1726,6 +1714,13 @@ fn maybe_report(
     state.nodes
   };
   let unfilled = total_slots.saturating_sub(depth);
+  let payload_last_pick = last_pick.map(|p| ProgressLastPick {
+    id: p.id,
+    len: p.len,
+    degree: p.degree,
+    candidates: p.candidates,
+    pattern: p.pattern.to_string(),
+  });
   let payload = ProgressPayload {
     label: ctx.label.clone(),
     attempt: ctx.attempt,
@@ -1736,7 +1731,7 @@ fn maybe_report(
     nodes_per_sec,
     unfilled,
     depth,
-    last_pick: ctx.last_pick.clone(),
+    last_pick: payload_last_pick,
     stats: ProgressStats {
       reject_intersect: state.reject_intersect,
       reject_forward: 0,

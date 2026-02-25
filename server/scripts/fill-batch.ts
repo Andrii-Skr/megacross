@@ -8,12 +8,13 @@
 //------------------------------------------------------------------
 import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, basename, extname }               from "node:path";
+import os                                        from "node:os";
 import { parseArgs }                             from "node:util";
 import { PrismaClient }                          from "@prisma/client";
 
 import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
-import { solve, type SolveFailInfo, type SolveProgress } from "../src/utils/solver";
+import type { SolveFailInfo, SolveProgress } from "../src/utils/solver";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
 import {
   loadDictionary,
@@ -37,11 +38,31 @@ import {
 const DEFAULT_CELL       = 30;        // px
 const SAMPLE_DIR = "sample";
 const OUT_DIR    = "out";
-const STRICT_ATTEMPT_BUDGET_RATIO = 0.55;
-const STRICT_ATTEMPT_MIN_MAX_NODES = 200_000;
-const STRICT_ATTEMPT_MIN_MAX_MS = 5_000;
 const IN_BATCH_REPEAT_PRIORITY_MULTIPLIER = 1_000_000_000;
 const MAX_WORD_USES = 2;
+
+function detectCpuParallelism(): number {
+  if (typeof os.availableParallelism === "function") {
+    const n = os.availableParallelism();
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  const n = os.cpus()?.length ?? 1;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+function resolveParallelRestarts(restarts: number, configured: number): number {
+  const safeRestarts = Number.isFinite(restarts) && restarts > 0 ? Math.floor(restarts) : 1;
+  const safeConfigured = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 1;
+  const cpuParallel = detectCpuParallelism();
+  const auto = Math.max(1, Math.min(safeRestarts, cpuParallel));
+  const requested = Math.max(1, Math.min(safeRestarts, safeConfigured));
+  return Math.max(requested, auto);
+}
+
+type WordPriorityRow = {
+  word: string | null;
+  useCount: number | bigint | null;
+};
 
 type IssueTemplateContext = {
   issueId: bigint;
@@ -50,6 +71,14 @@ type IssueTemplateContext = {
   templateId: number;
   templateName: string;
   template: DictionaryFilterTemplate;
+};
+
+type IssueContext = {
+  issueId: bigint;
+  editionId: number;
+  editionCode: string;
+  issueLabel: string;
+  filterTemplateId: number | null;
 };
 
 function parseIssueIdOption(value: string | undefined): bigint | null {
@@ -66,6 +95,15 @@ function parseFilterTemplateIdOption(value: string | undefined): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error(`Invalid --filter-template-id value: "${value}"`);
+  }
+  return Math.trunc(parsed);
+}
+
+function parseEditionIdOption(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid --edition-id value: "${value}"`);
   }
   return Math.trunc(parsed);
 }
@@ -124,6 +162,7 @@ async function loadIssueTemplateContext(issueId: bigint): Promise<IssueTemplateC
     const issueRows = await prisma.$queryRaw<
       Array<{
         id: bigint;
+        editionId: number;
         editionCode: string | null;
         issueLabel: string | null;
         filterTemplateId: number | null;
@@ -131,6 +170,7 @@ async function loadIssueTemplateContext(issueId: bigint): Promise<IssueTemplateC
     >`
       SELECT
         i.id,
+        i."editionId" as "editionId",
         e.code as "editionCode",
         n.label as "issueLabel",
         i."filterTemplateId" as "filterTemplateId"
@@ -192,6 +232,180 @@ async function loadIssueTemplateContext(issueId: bigint): Promise<IssueTemplateC
         excludeTagNames: Array.isArray(row.excludeTagNames) ? row.excludeTagNames : [],
       },
     };
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+async function loadIssueContext(issueId: bigint): Promise<IssueContext> {
+  const prisma = new PrismaClient();
+  try {
+    const issueRows = await prisma.$queryRaw<
+      Array<{
+        id: bigint;
+        editionId: number;
+        editionCode: string | null;
+        issueLabel: string | null;
+        filterTemplateId: number | null;
+      }>
+    >`
+      SELECT
+        i.id,
+        i."editionId" as "editionId",
+        e.code as "editionCode",
+        n.label as "issueLabel",
+        i."filterTemplateId" as "filterTemplateId"
+      FROM issues i
+      JOIN editions e ON e.id = i."editionId"
+      JOIN issue_numbers n ON n.id = i."issueNumberId"
+      WHERE i.id = ${issueId}
+      LIMIT 1
+    `;
+    if (!issueRows.length) {
+      throw new Error(`Issue ${String(issueId)} not found`);
+    }
+    return {
+      issueId,
+      editionId: issueRows[0].editionId,
+      editionCode: String(issueRows[0].editionCode ?? ""),
+      issueLabel: String(issueRows[0].issueLabel ?? ""),
+      filterTemplateId: issueRows[0].filterTemplateId,
+    };
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+async function tryLoadIssueContext(issueId: bigint): Promise<IssueContext | null> {
+  try {
+    return await loadIssueContext(issueId);
+  } catch (_err) {
+    console.warn(`issue-id ${String(issueId)} not found, running without issue context`);
+    return null;
+  }
+}
+
+function toNumber(value: number | bigint | null | undefined): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "bigint") return Number(value);
+  return 0;
+}
+
+function getWordPriority(priorityByWord: Map<string, number>, word: string): number {
+  return priorityByWord.get(normalizeWordKey(word)) ?? 0;
+}
+
+function sortDictionaryByUsagePriority(dict: Map<number, string[]>, priorityByWord: Map<string, number>) {
+  if (!priorityByWord.size) return;
+  for (const words of dict.values()) {
+    words.sort((a, b) => {
+      const scoreDiff = getWordPriority(priorityByWord, a) - getWordPriority(priorityByWord, b);
+      if (scoreDiff !== 0) return scoreDiff;
+      return a.localeCompare(b, "ru");
+    });
+  }
+}
+
+async function loadEditionUsagePriority(editionId: number): Promise<Map<string, number>> {
+  const prisma = new PrismaClient();
+  try {
+    const rows = await prisma.$queryRaw<WordPriorityRow[]>`
+      SELECT
+        UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
+        SUM(ews."useCount")::int AS "useCount"
+      FROM edition_word_stat ews
+      JOIN word_v w ON w.id = ews."wordId"
+      WHERE ews."editionId" = ${editionId}
+      GROUP BY 1
+    `;
+    const priority = new Map<string, number>();
+    for (const row of rows) {
+      if (!row.word) continue;
+      priority.set(normalizeWordKey(row.word), toNumber(row.useCount));
+    }
+    return priority;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+function mergeWordUsageCounts(templateWordCounts: Map<string, Map<string, number>>): Map<string, number> {
+  const merged = new Map<string, number>();
+  for (const counts of templateWordCounts.values()) {
+    for (const [word, count] of counts) {
+      if (count <= 0) continue;
+      merged.set(word, (merged.get(word) ?? 0) + count);
+    }
+  }
+  return merged;
+}
+
+async function persistEditionWordStats(
+  editionId: number,
+  wordUsage: Map<string, number>,
+  issueId: bigint | null
+): Promise<{ updatedWords: number; skippedWords: number }> {
+  if (!wordUsage.size) return { updatedWords: 0, skippedWords: 0 };
+  const prisma = new PrismaClient();
+  try {
+    const words = [...wordUsage.keys()];
+    const rows = await prisma.word_v.findMany({
+      where: {
+        is_deleted: false,
+        OR: [
+          { word_text_norm: { in: words, mode: "insensitive" as const } },
+          { word_text: { in: words, mode: "insensitive" as const } },
+        ],
+      },
+      select: {
+        id: true,
+        word_text: true,
+        word_text_norm: true,
+      },
+    });
+
+    const wordIdByWord = new Map<string, bigint>();
+    for (const row of rows) {
+      const normalized = row.word_text_norm?.trim();
+      const key = normalizeWordKey(normalized && normalized.length > 0 ? normalized : row.word_text);
+      if (!key) continue;
+      const existing = wordIdByWord.get(key);
+      if (existing === undefined || row.id < existing) {
+        wordIdByWord.set(key, row.id);
+      }
+    }
+
+    let updatedWords = 0;
+    let skippedWords = 0;
+    const now = new Date();
+    await prisma.$transaction(async (tx) => {
+      for (const [word, count] of wordUsage) {
+        if (count <= 0) continue;
+        const wordId = wordIdByWord.get(word);
+        if (!wordId) {
+          skippedWords += 1;
+          continue;
+        }
+        updatedWords += 1;
+        await tx.edition_word_stat.upsert({
+          where: { editionId_wordId: { editionId, wordId } },
+          update: {
+            useCount: { increment: count },
+            lastUsedAt: now,
+            ...(issueId !== null ? { lastIssueId: issueId } : {}),
+          },
+          create: {
+            editionId,
+            wordId,
+            useCount: count,
+            lastUsedAt: now,
+            ...(issueId !== null ? { lastIssueId: issueId } : {}),
+          },
+        });
+      }
+    });
+
+    return { updatedWords, skippedWords };
   } finally {
     await prisma.$disconnect();
   }
@@ -336,7 +550,6 @@ function formatComplexity(stats: TemplateStats): string {
 }
 
 function compareByComplexity(a: TemplateStats, b: TemplateStats): number {
-  if (a.maxDegree !== b.maxDegree) return b.maxDegree - a.maxDegree;
   if (a.avgDegree !== b.avgDegree) return b.avgDegree - a.avgDegree;
   if (a.degreeSqSum !== b.degreeSqSum) return b.degreeSqSum - a.degreeSqSum;
   const ap = a.pressure ?? 0;
@@ -471,6 +684,43 @@ function collectLengthDeficitsForBlockedWords(
   return deficits;
 }
 
+function collectMostConstrainedLengthsForBlockedWords(
+  lenCounts: Map<number, number>,
+  dict: Map<number, string[]>,
+  blockedWords: Set<string>,
+  limit = 1
+): Set<number> {
+  if (!lenCounts.size || limit <= 0) return new Set<number>();
+  const blocked = new Set<string>();
+  for (const word of blockedWords) {
+    const key = normalizeWordKey(word);
+    if (key) blocked.add(key);
+  }
+  const ranked: Array<{ len: number; slack: number; available: number; need: number }> = [];
+  for (const [len, need] of lenCounts) {
+    if (need <= 0) continue;
+    const words = dict.get(len) ?? [];
+    let available = 0;
+    for (const word of words) {
+      if (!blocked.has(normalizeWordKey(word))) available += 1;
+    }
+    if (available <= 0) continue;
+    ranked.push({
+      len,
+      slack: available - need,
+      available,
+      need,
+    });
+  }
+  ranked.sort((a, b) => {
+    if (a.slack !== b.slack) return a.slack - b.slack;
+    if (a.available !== b.available) return a.available - b.available;
+    if (a.need !== b.need) return b.need - a.need;
+    return a.len - b.len;
+  });
+  return new Set<number>(ranked.slice(0, limit).map((item) => item.len));
+}
+
 function buildAdaptiveBlockedWords(
   usedWords: Set<string>,
   usedWordCount: Map<string, number>,
@@ -512,23 +762,15 @@ function buildCappedBlockedWords(
   return blocked;
 }
 
-function resolveLimitedBudget(
-  baseLimit: number | undefined,
-  minLimit: number
-): number | undefined {
-  if (!Number.isFinite(baseLimit)) return undefined;
-  const base = Math.trunc(baseLimit as number);
-  if (base <= 0) return undefined;
-  const scaled = Math.trunc(base * STRICT_ATTEMPT_BUDGET_RATIO);
-  const limited = Math.max(minLimit, scaled);
-  return Math.min(base, limited);
-}
-
-function buildInBatchUsagePriority(usedWordCount: Map<string, number>): Map<string, number> {
-  const priority = new Map<string, number>();
+function buildInBatchUsagePriority(
+  usedWordCount: Map<string, number>,
+  basePriority?: Map<string, number>
+): Map<string, number> {
+  const priority = basePriority ? new Map(basePriority) : new Map<string, number>();
   for (const [word, count] of usedWordCount) {
     if (count <= 0) continue;
-    priority.set(word, count * IN_BATCH_REPEAT_PRIORITY_MULTIPLIER);
+    const current = priority.get(word) ?? 0;
+    priority.set(word, current + count * IN_BATCH_REPEAT_PRIORITY_MULTIPLIER);
   }
   return priority;
 }
@@ -646,6 +888,12 @@ function formatFail(info: SolveFailInfo): string {
   }
 }
 
+function extractFailedSlotLength(info: SolveFailInfo | null): number | null {
+  const len = info?.detail?.slot?.len;
+  if (typeof len !== "number" || !Number.isFinite(len) || len <= 0) return null;
+  return Math.trunc(len);
+}
+
 async function waitForNativeFail(timeoutMs = 200): Promise<SolveFailInfo | null> {
   const started = Date.now();
   let info = consumeLastNativeFail();
@@ -680,6 +928,8 @@ const { values } = parseArgs({
     restarts:{ type: "string" },
     issueId: { type: "string" },
     "issue-id": { type: "string" },
+    editionId: { type: "string" },
+    "edition-id": { type: "string" },
     filterTemplateId: { type: "string" },
     "filter-template-id": { type: "string" },
     dict:    { type: "string",  short: "d" },
@@ -715,17 +965,19 @@ const maxMs = Number.isFinite(maxMsRaw) ? maxMsRaw : undefined;
 const maxNodes = Number.isFinite(maxNodesRaw) ? maxNodesRaw : undefined;
 const doLcv = !!values.lcv;
 const debugDlx = !!values.debugDlx || !!values["debug-dlx"];
-const nativeDlx = !!values.nativeDlx || !!values["native-dlx"];
+const nativeDlx = true;
 const restartsRaw = values.restarts ? Number(values.restarts) : 1;
 const restarts = Number.isFinite(restartsRaw) && restartsRaw > 0 ? Math.floor(restartsRaw) : 1;
 const parallelRaw = values.parallel
   ? Number(values.parallel)
   : values["parallel-restarts"] ? Number(values["parallel-restarts"]) : undefined;
-const parallelRestarts = Number.isFinite(parallelRaw) && parallelRaw && parallelRaw > 1
-  ? Math.floor(parallelRaw)
-  : 1;
+const configuredParallelRestarts =
+  Number.isFinite(parallelRaw) && parallelRaw && parallelRaw > 0 ? Math.floor(parallelRaw) : 1;
+const parallelRestarts = resolveParallelRestarts(restarts, configuredParallelRestarts);
 const issueIdRaw = values.issueId ?? values["issue-id"];
 const issueId = parseIssueIdOption(issueIdRaw);
+const editionIdRaw = values.editionId ?? values["edition-id"];
+const editionId = parseEditionIdOption(editionIdRaw);
 const filterTemplateIdRaw = values.filterTemplateId ?? values["filter-template-id"];
 const filterTemplateId = parseFilterTemplateIdOption(filterTemplateIdRaw);
 const dictPath  = values.dict ?? "";
@@ -817,15 +1069,18 @@ if (!files.length) {
   /* 1. словарь на весь раунд */
   const lengths = [...lengthsSet];
   let masterDict: Map<number, string[]>;
+  const issueContext = issueId !== null ? await tryLoadIssueContext(issueId) : null;
+  const effectiveEditionId = editionId ?? issueContext?.editionId ?? null;
+  const editionUsagePriorityByWord = new Map<string, number>();
   if (filterTemplateId !== null) {
     const templateData = await loadFilterTemplateById(filterTemplateId);
     masterDict = await loadDictionaryByTemplate(templateData.template, { lengths });
+    const issueSuffix = issueContext
+      ? ` issueId=${String(issueContext.issueId)} edition=${issueContext.editionCode} issue="${issueContext.issueLabel}" issueTemplateId=${issueContext.filterTemplateId ?? "none"}`
+      : "";
     console.log(
-      `\n🎯 dictionary source: filter template id (templateId=${filterTemplateId} name="${templateData.name}")`
+      `\n🎯 dictionary source: filter template id (templateId=${filterTemplateId} name="${templateData.name}"${issueSuffix})`
     );
-    if (issueId !== null) {
-      console.log(`ℹ issue-id ${String(issueId)} ignored because --filter-template-id is set`);
-    }
   } else if (issueId !== null) {
     const issueTemplate = await loadIssueTemplateContext(issueId);
     masterDict = await loadDictionaryByTemplate(issueTemplate.template, { lengths });
@@ -834,6 +1089,18 @@ if (!files.length) {
     );
   } else {
     masterDict = await loadDictionary({ langCode: "ru", lengths });
+  }
+  if (effectiveEditionId !== null) {
+    const loadedPriority = await loadEditionUsagePriority(effectiveEditionId);
+    for (const [word, priority] of loadedPriority) {
+      editionUsagePriorityByWord.set(word, priority);
+    }
+    sortDictionaryByUsagePriority(masterDict, editionUsagePriorityByWord);
+    console.log(
+      `📈 edition usage stats: editionId=${effectiveEditionId} loadedWords=${editionUsagePriorityByWord.size}`
+    );
+  } else {
+    console.log("📈 edition usage stats: off (no --edition-id or resolvable issue edition)");
   }
   const wordLengthByWord = buildWordLengthLookup(masterDict);
   const dictCounts = new Map<number, number>();
@@ -850,9 +1117,16 @@ if (!files.length) {
     }
   }
   const totalSlotLengths = [...totalSlotCounts.keys()].sort((a, b) => a - b);
-  const parallelLabel = parallelRestarts > 1 ? `${parallelRestarts} (early-stop)` : "1";
-  const nativeAvailable = nativeDlx && isNativeDlxAvailable();
-  const engineLabel = nativeAvailable ? "dlx(native)" : nativeDlx ? "dlx(js,fallback)" : "dlx(js)";
+  const cpuParallel = detectCpuParallelism();
+  const parallelLabel =
+    parallelRestarts > 1
+      ? `${parallelRestarts} (cfg=${configuredParallelRestarts} cpu=${cpuParallel} early-stop)`
+      : "1";
+  const nativeAvailable = isNativeDlxAvailable();
+  if (!nativeAvailable) {
+    throw new Error("Native DLX solver is not available (JS solver is disabled)");
+  }
+  const engineLabel = "dlx(native,required)";
   const prefixNeed = "📚 нужно (все) → ";
   const prefixDict = "📖 словарь → ";
   const prefixPad = " ".repeat(Math.max(0, prefixNeed.length - prefixDict.length));
@@ -976,8 +1250,9 @@ if (!files.length) {
           maxNodes: overrides.maxNodes ?? maxNodes,
           label: name,
           debugDlx,
-          nativeDlx,
-          wordPriority: overrides.wordPriority,
+          nativeDlx: true,
+          wordPriority:
+            overrides.wordPriority ?? (editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined),
           onFail,
         };
         const solveOptions = logProgress
@@ -991,18 +1266,16 @@ if (!files.length) {
             failStdout: useFailStdout,
           }
           : solveOptions;
-
-        if (nativeDlx && (doProgress || explainFail) && parallelRestarts > 1) {
-          nativeActive = true;
+        nativeActive = (doProgress || explainFail) && parallelRestarts > 1;
+        try {
           const nativeSolved = await solveDlxNativeAsync(grid.data, slots, dictForSolve, nativeOptions);
-          if (nativeSolved !== undefined) {
-            nativeActive = false;
-            return nativeSolved;
+          if (nativeSolved === undefined) {
+            throw new Error("Native DLX solver is not available (JS solver is disabled)");
           }
+          return nativeSolved;
+        } finally {
           nativeActive = false;
-          return solve(grid.data, slots, dictForSolve, { ...solveOptions, nativeDlx: false });
         }
-        return solve(grid.data, slots, dictForSolve, solveOptions);
       };
 
       let solved: string[] | null = null;
@@ -1025,40 +1298,43 @@ if (!files.length) {
           MAX_WORD_USES
         );
         const canFallbackToNeighbor = strictBlockedWords.size !== neighborCappedBlockedWords.size;
-        const fallbackPriority = buildInBatchUsagePriority(usedWordCountInBatch);
+        const fallbackPriority = buildInBatchUsagePriority(
+          usedWordCountInBatch,
+          editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined
+        );
         const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
           entry.lenCounts,
           masterDict,
           strictBlockedWords
         );
+        let adaptiveDeficitLengths = strictDeficitLengths;
         if (strictDeficitLengths.size === 0) {
           uniqueFallbackStats.strictAttempted += 1;
-          const strictAttemptMaxNodes = canFallbackToNeighbor
-            ? resolveLimitedBudget(maxNodes, STRICT_ATTEMPT_MIN_MAX_NODES)
-            : undefined;
-          const strictAttemptMaxMs = canFallbackToNeighbor
-            ? resolveLimitedBudget(maxMs, STRICT_ATTEMPT_MIN_MAX_MS)
-            : undefined;
-          if (strictAttemptMaxNodes !== undefined || strictAttemptMaxMs !== undefined) {
-            uniqueFallbackStats.strictLimited += 1;
-          }
-          solved = await solveWithDictionary(
-            filterDictionaryByBlockedWords(masterDict, strictBlockedWords),
-            {
-              maxNodes: strictAttemptMaxNodes,
-              maxMs: strictAttemptMaxMs,
-            }
-          );
+          solved = await solveWithDictionary(filterDictionaryByBlockedWords(masterDict, strictBlockedWords));
           if (solved) {
             uniqueFallbackStats.strictSolved += 1;
           }
+          if (!solved) {
+            const failLen = extractFailedSlotLength(failInfo);
+            if (failLen !== null) {
+              adaptiveDeficitLengths = new Set<number>([failLen]);
+            } else {
+              adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
+                entry.lenCounts,
+                masterDict,
+                strictBlockedWords
+              );
+            }
+          }
         } else {
           uniqueFallbackStats.strictSkippedByDeficit += 1;
+        }
+        if (!solved && adaptiveDeficitLengths.size > 0) {
           const adaptiveBlockedWords = buildAdaptiveBlockedWords(
             usedWordsInBatch,
             usedWordCountInBatch,
             neighborBlockedWords,
-            strictDeficitLengths,
+            adaptiveDeficitLengths,
             wordLengthByWord,
             MAX_WORD_USES
           );
@@ -1243,6 +1519,14 @@ if (!files.length) {
     }
   }
 
+  if (effectiveEditionId !== null && solvedCount > 0) {
+    const batchWordUsage = mergeWordUsageCounts(templateWordCounts);
+    const persisted = await persistEditionWordStats(effectiveEditionId, batchWordUsage, issueContext?.issueId ?? null);
+    console.log(
+      `📈 edition usage stats updated: editionId=${effectiveEditionId} words=${persisted.updatedWords} skipped=${persisted.skippedWords}`
+    );
+  }
+
   const totalMin = ((Date.now() - batchStartedAt) / 60000).toFixed(1);
   const solveMin = (solveTotalMs / 60000).toFixed(1);
   console.log(
@@ -1261,22 +1545,5 @@ if (!files.length) {
     console.log(
       `  слов-дублей=${report.duplicateWordCount} повторных использований=${report.totalRepeatUses} шаблонов-с-дублями=${report.templatesWithDuplicates}`
     );
-    if (!report.duplicates.length) {
-      console.log("  дублей не найдено");
-    } else {
-      console.log("  по словам:");
-      for (const item of report.duplicates) {
-        const templates = item.usages.map((usage) => `${usage.templateName}×${usage.count}`).join(", ");
-        console.log(`    ${item.word}: ${templates}`);
-      }
-      console.log("  по шаблонам:");
-      const templatesSorted = [...report.duplicateTemplates.entries()].sort((a, b) =>
-        a[0].localeCompare(b[0], "ru")
-      );
-      for (const [templateName, words] of templatesSorted) {
-        const sortedWords = [...words].sort((a, b) => a.localeCompare(b, "ru"));
-        console.log(`    ${templateName}: ${sortedWords.join(", ")}`);
-      }
-    }
   }
 })();

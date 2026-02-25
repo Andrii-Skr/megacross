@@ -105,8 +105,10 @@ export function solveDlxNative(
   const onFail = options?.onFail;
   let progressSeen = false;
   const progressWrapper = onProgress || onFail
-    ? (payload: unknown) => {
+    ? (payloadOrErr: unknown, payloadMaybe?: unknown) => {
         try {
+          // TSFN path sends Node-style callback args: (err, payload).
+          const payload = payloadMaybe ?? payloadOrErr;
           const data = typeof payload === "string" ? JSON.parse(payload) : payload;
           if (data && typeof data === "object") {
             if (!progressSeen) {
@@ -205,8 +207,10 @@ export async function solveDlxNativeAsync(
   const onFail = options?.onFail;
   let progressSeen = false;
   const progressWrapper = onProgress || onFail
-    ? (payload: unknown) => {
+    ? (payloadOrErr: unknown, payloadMaybe?: unknown) => {
         try {
+          // TSFN path sends Node-style callback args: (err, payload).
+          const payload = payloadMaybe ?? payloadOrErr;
           const data = typeof payload === "string" ? JSON.parse(payload) : payload;
           if (data && typeof data === "object") {
             if (!progressSeen) {

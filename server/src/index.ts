@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { existsSync } from "node:fs";
 import { getWordsAndDefinitions, getAllTags } from "./services/wordDefinitionService";
 import {
@@ -14,8 +14,21 @@ import {
 
 const app = express();
 const port = process.env.PORT || 3001;
+const requestBodyLimit = process.env.CROSS_BODY_LIMIT || "10mb";
+const requestBodyParameterLimitRaw = Number(process.env.CROSS_BODY_PARAMETER_LIMIT);
+const requestBodyParameterLimit =
+  Number.isFinite(requestBodyParameterLimitRaw) && requestBodyParameterLimitRaw > 0
+    ? Math.floor(requestBodyParameterLimitRaw)
+    : 50_000;
 
-app.use(express.json());
+app.use(express.json({ limit: requestBodyLimit }));
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: requestBodyLimit,
+    parameterLimit: requestBodyParameterLimit,
+  })
+);
 
 function parseFillOverrides(input: unknown) {
   if (!input || typeof input !== "object") return {};
@@ -250,6 +263,21 @@ app.get("/api/fill/:jobId/archive", async (req, res) => {
     const msg = error instanceof Error ? error.message : "Failed to download archive";
     res.status(500).json({ error: msg });
   }
+});
+
+app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (
+    error &&
+    typeof error === "object" &&
+    "type" in error &&
+    (error as { type?: string }).type === "entity.too.large"
+  ) {
+    res.status(413).json({
+      error: `Payload too large. Maximum request size is ${requestBodyLimit}.`,
+    });
+    return;
+  }
+  next(error);
 });
 
 app.listen(port, () => {
