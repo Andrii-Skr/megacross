@@ -47,6 +47,7 @@ function parseFillOverrides(input: unknown) {
     requireNative?: boolean;
     writeCrw?: boolean;
     usageStats?: boolean;
+    usageRebalance?: boolean;
     filterTemplateId?: number;
   } = {};
   const maxNodes = Number(raw.maxNodes);
@@ -67,6 +68,7 @@ function parseFillOverrides(input: unknown) {
   if (typeof raw.noDefs === "boolean") overrides.noDefs = raw.noDefs;
   if (typeof raw.writeCrw === "boolean") overrides.writeCrw = raw.writeCrw;
   if (typeof raw.usageStats === "boolean") overrides.usageStats = raw.usageStats;
+  if (typeof raw.usageRebalance === "boolean") overrides.usageRebalance = raw.usageRebalance;
   if (typeof raw.requireNative === "boolean") overrides.requireNative = raw.requireNative;
   const filterTemplateId = Number(raw.filterTemplateId);
   if (Number.isFinite(filterTemplateId) && filterTemplateId > 0) {

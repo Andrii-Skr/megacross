@@ -33,6 +33,7 @@ struct SolveOptionsInput {
   debug_dlx: Option<bool>,
   progress_stdout: Option<bool>,
   fail_stdout: Option<bool>,
+  word_priority: Option<HashMap<String, i64>>,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +68,7 @@ struct ResolveOptions {
   debug_dlx: bool,
   progress_stdout: bool,
   fail_stdout: bool,
+  word_priority: Option<HashMap<String, i64>>,
 }
 
 #[derive(Clone)]
@@ -797,6 +799,7 @@ fn resolve_options(raw: SolveOptionsInput) -> ResolveOptions {
     debug_dlx: raw.debug_dlx.unwrap_or(false),
     progress_stdout,
     fail_stdout,
+    word_priority: raw.word_priority,
   }
 }
 
@@ -1098,7 +1101,7 @@ fn run_attempt_dlx<'a>(
     let mut candidates: Vec<usize> = (0..word_list.len()).collect();
 
     if options.lcv && candidates.len() > 1 {
-      let mut scored: Vec<(i32, u32, usize)> = Vec::with_capacity(candidates.len());
+      let mut scored: Vec<(i32, i64, u32, usize)> = Vec::with_capacity(candidates.len());
       for (i, &idx) in candidates.iter().enumerate() {
         let score = score_word(
           slot.id,
@@ -1108,10 +1111,25 @@ fn run_attempt_dlx<'a>(
           &index,
           dict,
         );
+        let priority = word_priority(options, &word_list[idx]);
         let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
-        scored.push((score, tie, idx));
+        scored.push((score, priority, tie, idx));
       }
-      scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+      scored.sort_by(|a, b| {
+        b.0
+          .cmp(&a.0)
+          .then_with(|| a.1.cmp(&b.1))
+          .then_with(|| a.2.cmp(&b.2))
+      });
+      candidates = scored.into_iter().map(|s| s.3).collect();
+    } else if options.word_priority.is_some() && candidates.len() > 1 {
+      let mut scored: Vec<(i64, u32, usize)> = Vec::with_capacity(candidates.len());
+      for (i, &idx) in candidates.iter().enumerate() {
+        let priority = word_priority(options, &word_list[idx]);
+        let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
+        scored.push((priority, tie, idx));
+      }
+      scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
       candidates = scored.into_iter().map(|s| s.2).collect();
     } else if options.shuffle && candidates.len() > 1 {
       rng.shuffle(&mut candidates);
@@ -1279,7 +1297,7 @@ fn run_attempt_dlx_no_progress(
     let mut candidates: Vec<usize> = (0..word_list.len()).collect();
 
     if options.lcv && candidates.len() > 1 {
-      let mut scored: Vec<(i32, u32, usize)> = Vec::with_capacity(candidates.len());
+      let mut scored: Vec<(i32, i64, u32, usize)> = Vec::with_capacity(candidates.len());
       for (i, &idx) in candidates.iter().enumerate() {
         let score = score_word(
           slot.id,
@@ -1289,10 +1307,25 @@ fn run_attempt_dlx_no_progress(
           &index,
           dict,
         );
+        let priority = word_priority(options, &word_list[idx]);
         let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
-        scored.push((score, tie, idx));
+        scored.push((score, priority, tie, idx));
       }
-      scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+      scored.sort_by(|a, b| {
+        b.0
+          .cmp(&a.0)
+          .then_with(|| a.1.cmp(&b.1))
+          .then_with(|| a.2.cmp(&b.2))
+      });
+      candidates = scored.into_iter().map(|s| s.3).collect();
+    } else if options.word_priority.is_some() && candidates.len() > 1 {
+      let mut scored: Vec<(i64, u32, usize)> = Vec::with_capacity(candidates.len());
+      for (i, &idx) in candidates.iter().enumerate() {
+        let priority = word_priority(options, &word_list[idx]);
+        let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
+        scored.push((priority, tie, idx));
+      }
+      scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
       candidates = scored.into_iter().map(|s| s.2).collect();
     } else if options.shuffle && candidates.len() > 1 {
       rng.shuffle(&mut candidates);
@@ -1392,6 +1425,14 @@ fn score_word(
     score += count as i32;
   }
   score
+}
+
+fn word_priority(options: &ResolveOptions, word: &str) -> i64 {
+  options
+    .word_priority
+    .as_ref()
+    .and_then(|map| map.get(word).copied())
+    .unwrap_or(0)
 }
 
 fn should_abort(

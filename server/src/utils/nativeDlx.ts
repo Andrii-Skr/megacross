@@ -17,6 +17,7 @@ type NativeSolveOptions = {
   debugDlx?: boolean;
   progressStdout?: boolean;
   failStdout?: boolean;
+  wordPriority?: Record<string, number>;
 };
 
 type NativeModule = {
@@ -35,6 +36,18 @@ let loggedAsyncMissing = false;
 let loggedAsyncError = false;
 let lastTriedPaths: string[] | null = null;
 let lastFail: Parameters<NonNullable<SolveOptions["onFail"]>>[0] | null = null;
+
+function serializeWordPriority(priority?: Map<string, number>): Record<string, number> | undefined {
+  if (!priority?.size) return undefined;
+  const out: Record<string, number> = {};
+  for (const [word, scoreRaw] of priority) {
+    if (!word) continue;
+    const score = Number(scoreRaw);
+    if (!Number.isFinite(score)) continue;
+    out[word] = Math.trunc(score);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
 
 export function consumeLastNativeFail():
   | Parameters<NonNullable<SolveOptions["onFail"]>>[0]
@@ -132,6 +145,7 @@ export function solveDlxNative(
 
   const dictObj: Record<string, string[]> = {};
   for (const [len, words] of dict) dictObj[String(len)] = words;
+  const wordPriorityObj = serializeWordPriority(options?.wordPriority);
 
   const input = {
     rows: rawRows,
@@ -152,6 +166,7 @@ export function solveDlxNative(
       debugDlx: options?.debugDlx,
       progressStdout: options?.progressStdout,
       failStdout: options?.failStdout,
+      wordPriority: wordPriorityObj,
     } satisfies NativeSolveOptions,
   };
 
@@ -234,6 +249,7 @@ export async function solveDlxNativeAsync(
 
   const dictObj: Record<string, string[]> = {};
   for (const [len, words] of dict) dictObj[String(len)] = words;
+  const wordPriorityObj = serializeWordPriority(options?.wordPriority);
 
   const input = {
     rows: rawRows,
@@ -254,6 +270,7 @@ export async function solveDlxNativeAsync(
       debugDlx: options?.debugDlx,
       progressStdout: options?.progressStdout,
       failStdout: options?.failStdout,
+      wordPriority: wordPriorityObj,
     } satisfies NativeSolveOptions,
   };
 

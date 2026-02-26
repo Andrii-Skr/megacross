@@ -15,6 +15,21 @@ import { PrismaClient }                          from "@prisma/client";
 import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
 import type { SolveFailInfo, SolveProgress } from "../src/utils/solver";
+import {
+  resolveStrictLimitedBudget,
+  runCspProbe,
+  sortDictionaryByPriority,
+} from "../src/utils/fillFallback";
+import {
+  applyHardHotBanLengthSafe,
+  buildUsageRebalanceContext,
+  buildSoftHotDuplicateBlock,
+  buildUsageRebalanceMetrics,
+  formatUsageRebalanceMetrics,
+  resolveUsageRebalanceThresholds,
+  type UsageRebalanceContext,
+  type UsageRebalanceThresholds,
+} from "../src/utils/usageRebalance";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
 import {
   loadDictionary,
@@ -945,6 +960,8 @@ const { values } = parseArgs({
     "explain-fail": { type: "boolean" },
     reportDuplicates: { type: "boolean" },
     "report-duplicates": { type: "boolean" },
+    usageRebalance: { type: "boolean" },
+    "usage-rebalance": { type: "boolean" },
   },
 });
 const shuffleOpt = values.shuffle === true ? true : undefined;
@@ -987,6 +1004,7 @@ const hardFirst = !!values.hardFirst || !!values["hard-first"];
 const keepOrder = !!values.keepOrder || !!values["keep-order"];
 const explainFail = !!values.explainFail || !!values["explain-fail"];
 const reportDuplicates = !!values.reportDuplicates || !!values["report-duplicates"];
+const usageRebalance = !!values.usageRebalance || !!values["usage-rebalance"];
 const writeDefsJson = !values["no-defs"] && !values["no-clues"];
 const useCorelStyle = styleName === "corel";
 if (!["default", "corel"].includes(styleName)) {
@@ -1072,6 +1090,9 @@ if (!files.length) {
   const issueContext = issueId !== null ? await tryLoadIssueContext(issueId) : null;
   const effectiveEditionId = editionId ?? issueContext?.editionId ?? null;
   const editionUsagePriorityByWord = new Map<string, number>();
+  let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
+  let usageRebalanceContext: UsageRebalanceContext | null = null;
+  let usageRebalanceReason = "off";
   if (filterTemplateId !== null) {
     const templateData = await loadFilterTemplateById(filterTemplateId);
     masterDict = await loadDictionaryByTemplate(templateData.template, { lengths });
@@ -1101,6 +1122,21 @@ if (!files.length) {
     );
   } else {
     console.log("📈 edition usage stats: off (no --edition-id or resolvable issue edition)");
+  }
+  if (!usageRebalance) {
+    usageRebalanceReason = "off";
+  } else if (!unique) {
+    usageRebalanceReason = "skipped (unique=off)";
+  } else if (!editionUsagePriorityByWord.size) {
+    usageRebalanceReason = "skipped (no usage stats)";
+  } else {
+    usageRebalanceThresholds = resolveUsageRebalanceThresholds(masterDict, editionUsagePriorityByWord);
+    usageRebalanceContext = buildUsageRebalanceContext(
+      masterDict,
+      editionUsagePriorityByWord,
+      usageRebalanceThresholds
+    );
+    usageRebalanceReason = `on (soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
   }
   const wordLengthByWord = buildWordLengthLookup(masterDict);
   const dictCounts = new Map<number, number>();
@@ -1142,8 +1178,13 @@ if (!files.length) {
     ? `on (logMs=${logEveryMs}${useProgressStdout ? " stdout" : ""})`
     : "off";
   console.log(
-    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFail ? "on" : "off"}`
+    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFail ? "on" : "off"} usageRebalance=${usageRebalanceReason}`
   );
+  if (usageRebalanceThresholds) {
+    console.log(
+      `🧊 usage rebalance thresholds: soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold}`
+    );
+  }
   const orderMode = hardFirst || (unique && !keepOrder) ? "complex" : "file";
   console.log(`🧭 order=${orderMode === "complex" ? "complexity" : "file"}`);
   if (unique) {
@@ -1182,6 +1223,10 @@ if (!files.length) {
   const usedWordsInBatch = new Set<string>();
   const usedWordCountInBatch = new Map<string, number>();
   const uniqueFallbackStats = {
+    probeAttempted: 0,
+    probeSolved: 0,
+    probeUnsat: 0,
+    probeUnknown: 0,
     strictAttempted: 0,
     strictLimited: 0,
     strictSkippedByDeficit: 0,
@@ -1191,6 +1236,7 @@ if (!files.length) {
     neighborAttempted: 0,
     neighborSolved: 0,
   };
+  const usageRebalanceMetrics = buildUsageRebalanceMetrics();
   const templateWordCounts = new Map<string, Map<string, number>>();
   const templateNameByKey = new Map(entries.map((entry) => [entry.key, entry.name]));
 
@@ -1239,10 +1285,11 @@ if (!files.length) {
           maxMs?: number;
           wordPriority?: Map<string, number>;
           lcv?: boolean;
+          shuffle?: boolean;
         } = {}
       ) => {
         const solveBaseOptions = {
-          shuffle: shuffleOpt,
+          shuffle: overrides.shuffle ?? shuffleOpt,
           lcv: overrides.lcv ?? doLcv,
           restarts,
           parallelRestarts,
@@ -1302,6 +1349,56 @@ if (!files.length) {
           usedWordCountInBatch,
           editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined
         );
+        const buildRebalanceBlockedVariants = (
+          baseBlockedWords: Set<string>,
+          includeHardBan: boolean
+        ): {
+          primaryBlockedWords: Set<string>;
+          retrySoftOnlyBlockedWords: Set<string> | null;
+          changedByRebalance: boolean;
+        } => {
+          if (!usageRebalanceThresholds || !usageRebalanceContext || !editionUsagePriorityByWord.size) {
+            return {
+              primaryBlockedWords: baseBlockedWords,
+              retrySoftOnlyBlockedWords: null,
+              changedByRebalance: false,
+            };
+          }
+          const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
+          const softBlockedWords = buildSoftHotDuplicateBlock(
+            usedWordCountInBatch,
+            usageRebalanceContext
+          );
+          let softAdded = 0;
+          for (const word of softBlockedWords) {
+            if (softOnlyBlockedWords.has(word)) continue;
+            softOnlyBlockedWords.add(word);
+            softAdded += 1;
+          }
+          usageRebalanceMetrics.softBlocked += softAdded;
+          if (!includeHardBan) {
+            return {
+              primaryBlockedWords: softOnlyBlockedWords,
+              retrySoftOnlyBlockedWords: null,
+              changedByRebalance: softOnlyBlockedWords.size !== baseBlockedWords.size,
+            };
+          }
+          const hard = applyHardHotBanLengthSafe(
+            entry.lenCounts,
+            softOnlyBlockedWords,
+            usageRebalanceContext
+          );
+          usageRebalanceMetrics.hardCandidates += hard.hardCandidates;
+          usageRebalanceMetrics.hardApplied += hard.hardApplied;
+          usageRebalanceMetrics.hardRelaxed += hard.hardRelaxed;
+          if (hard.disabledBySafety) usageRebalanceMetrics.hardDisabledBySafety += 1;
+          return {
+            primaryBlockedWords: hard.blockedWords,
+            retrySoftOnlyBlockedWords: hard.hardApplied > 0 ? softOnlyBlockedWords : null,
+            changedByRebalance: hard.blockedWords.size !== baseBlockedWords.size,
+          };
+        };
+        let rebalanceRescueBlockedWords: Set<string> | null = null;
         const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
           entry.lenCounts,
           masterDict,
@@ -1309,13 +1406,22 @@ if (!files.length) {
         );
         let adaptiveDeficitLengths = strictDeficitLengths;
         if (strictDeficitLengths.size === 0) {
-          uniqueFallbackStats.strictAttempted += 1;
-          solved = await solveWithDictionary(filterDictionaryByBlockedWords(masterDict, strictBlockedWords));
-          if (solved) {
-            uniqueFallbackStats.strictSolved += 1;
-          }
-          if (!solved) {
-            const failLen = extractFailedSlotLength(failInfo);
+          const strictDict = filterDictionaryByBlockedWords(masterDict, strictBlockedWords);
+          uniqueFallbackStats.probeAttempted += 1;
+          const probeResult = runCspProbe(grid.data, slots, strictDict, {
+            label: `${name}:probe`,
+            maxNodes,
+            maxMs,
+            uniqueWords: true,
+            wordPriority: editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined,
+          });
+          failInfo = probeResult.failInfo ?? failInfo;
+          if (probeResult.solved) {
+            solved = probeResult.solved;
+            uniqueFallbackStats.probeSolved += 1;
+          } else if (probeResult.outcome === "unsat") {
+            uniqueFallbackStats.probeUnsat += 1;
+            const failLen = extractFailedSlotLength(probeResult.failInfo);
             if (failLen !== null) {
               adaptiveDeficitLengths = new Set<number>([failLen]);
             } else {
@@ -1324,6 +1430,34 @@ if (!files.length) {
                 masterDict,
                 strictBlockedWords
               );
+            }
+          } else {
+            uniqueFallbackStats.probeUnknown += 1;
+            uniqueFallbackStats.strictAttempted += 1;
+            const hasFallbackPotential = canFallbackToNeighbor || usedWordsInBatch.size > 0;
+            if (hasFallbackPotential) {
+              uniqueFallbackStats.strictLimited += 1;
+              const strictBudget = resolveStrictLimitedBudget(maxNodes, maxMs);
+              solved = await solveWithDictionary(strictDict, {
+                maxNodes: strictBudget.maxNodes,
+                maxMs: strictBudget.maxMs,
+              });
+            } else {
+              solved = await solveWithDictionary(strictDict);
+            }
+            if (solved) {
+              uniqueFallbackStats.strictSolved += 1;
+            } else {
+              const failLen = extractFailedSlotLength(failInfo);
+              if (failLen !== null) {
+                adaptiveDeficitLengths = new Set<number>([failLen]);
+              } else {
+                adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
+                  entry.lenCounts,
+                  masterDict,
+                  strictBlockedWords
+                );
+              }
             }
           }
         } else {
@@ -1340,11 +1474,16 @@ if (!files.length) {
           );
           if (adaptiveBlockedWords.size !== strictBlockedWords.size) {
             uniqueFallbackStats.adaptiveAttempted += 1;
-            solved = await solveWithDictionary(
+            const adaptiveDict = sortDictionaryByPriority(
               filterDictionaryByBlockedWords(masterDict, adaptiveBlockedWords),
+              fallbackPriority
+            );
+            solved = await solveWithDictionary(
+              adaptiveDict,
               {
                 wordPriority: fallbackPriority,
                 lcv: false,
+                shuffle: false,
               }
             );
             if (solved) {
@@ -1354,16 +1493,52 @@ if (!files.length) {
         }
         if (!solved && canFallbackToNeighbor) {
           uniqueFallbackStats.neighborAttempted += 1;
+          const neighborRebalance = buildRebalanceBlockedVariants(neighborCappedBlockedWords, true);
+          if (neighborRebalance.changedByRebalance) rebalanceRescueBlockedWords = neighborCappedBlockedWords;
+          const neighborDict = sortDictionaryByPriority(
+            filterDictionaryByBlockedWords(masterDict, neighborRebalance.primaryBlockedWords),
+            fallbackPriority
+          );
           solved = await solveWithDictionary(
-            filterDictionaryByBlockedWords(masterDict, neighborCappedBlockedWords),
+            neighborDict,
             {
               wordPriority: fallbackPriority,
               lcv: false,
+              shuffle: false,
             }
           );
+          if (!solved && neighborRebalance.retrySoftOnlyBlockedWords) {
+            usageRebalanceMetrics.hardRetrySoftOnly += 1;
+            const neighborSoftOnlyDict = sortDictionaryByPriority(
+              filterDictionaryByBlockedWords(masterDict, neighborRebalance.retrySoftOnlyBlockedWords),
+              fallbackPriority
+            );
+            solved = await solveWithDictionary(
+              neighborSoftOnlyDict,
+              {
+                wordPriority: fallbackPriority,
+                lcv: false,
+                shuffle: false,
+              }
+            );
+          }
           if (solved) {
             uniqueFallbackStats.neighborSolved += 1;
           }
+        }
+        if (!solved && rebalanceRescueBlockedWords) {
+          const rescueDict = sortDictionaryByPriority(
+            filterDictionaryByBlockedWords(masterDict, rebalanceRescueBlockedWords),
+            fallbackPriority
+          );
+          solved = await solveWithDictionary(
+            rescueDict,
+            {
+              wordPriority: fallbackPriority,
+              lcv: false,
+              shuffle: false,
+            }
+          );
         }
       } else {
         const dict = new Map<number, string[]>([...masterDict].map(([len, words]) => [len, [...words]]));
@@ -1535,8 +1710,11 @@ if (!files.length) {
   console.log(`\nВсе файлы обработаны. time=${totalMin}m solve=${solveMin}m`);
   if (unique) {
     console.log(
-      `🔁 unique fallback: strict=${uniqueFallbackStats.strictSolved}/${uniqueFallbackStats.strictAttempted} strictLimited=${uniqueFallbackStats.strictLimited} skippedByDeficit=${uniqueFallbackStats.strictSkippedByDeficit} adaptive=${uniqueFallbackStats.adaptiveSolved}/${uniqueFallbackStats.adaptiveAttempted} neighbor=${uniqueFallbackStats.neighborSolved}/${uniqueFallbackStats.neighborAttempted}`
+      `🔁 unique fallback: probeAttempted=${uniqueFallbackStats.probeAttempted} probeSolved=${uniqueFallbackStats.probeSolved} probeUnsat=${uniqueFallbackStats.probeUnsat} probeUnknown=${uniqueFallbackStats.probeUnknown} strict=${uniqueFallbackStats.strictSolved}/${uniqueFallbackStats.strictAttempted} strictLimited=${uniqueFallbackStats.strictLimited} skippedByDeficit=${uniqueFallbackStats.strictSkippedByDeficit} adaptive=${uniqueFallbackStats.adaptiveSolved}/${uniqueFallbackStats.adaptiveAttempted} neighbor=${uniqueFallbackStats.neighborSolved}/${uniqueFallbackStats.neighborAttempted}`
     );
+  }
+  if (usageRebalance) {
+    console.log(`🧊 ${formatUsageRebalanceMetrics(usageRebalanceMetrics)}`);
   }
 
   if (reportDuplicates) {

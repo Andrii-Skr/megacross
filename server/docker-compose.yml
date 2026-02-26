@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cross-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dbuser
+      POSTGRES_PASSWORD: "4123"
+      POSTGRES_DB: zenit
+    ports:
+      - "5432:5432"
+    volumes:
+      - cross-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbuser -d zenit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  cross-postgres-data:
