@@ -123,6 +123,32 @@ function parseEditionIdOption(value: string | undefined): number | null {
   return Math.trunc(parsed);
 }
 
+function isEditionWordStatEditionFkError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code !== "P2003") return false;
+  const meta = (error as { meta?: { constraint?: unknown } }).meta;
+  const constraint = meta?.constraint;
+  return typeof constraint === "string" && constraint === "edition_word_stat_editionId_fkey";
+}
+
+async function assertEditionExists(editionId: number): Promise<void> {
+  const prisma = new PrismaClient();
+  try {
+    const edition = await prisma.editions.findUnique({
+      where: { id: editionId },
+      select: { id: true },
+    });
+    if (!edition) {
+      throw new Error(
+        `Edition ${editionId} not found. Provide a valid --edition-id or use --issue-id linked to an existing edition.`
+      );
+    }
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
 async function loadFilterTemplateById(templateId: number): Promise<{ name: string; template: DictionaryFilterTemplate }> {
   const prisma = new PrismaClient();
   try {
@@ -393,32 +419,47 @@ async function persistEditionWordStats(
     let updatedWords = 0;
     let skippedWords = 0;
     const now = new Date();
-    await prisma.$transaction(async (tx) => {
-      for (const [word, count] of wordUsage) {
-        if (count <= 0) continue;
-        const wordId = wordIdByWord.get(word);
-        if (!wordId) {
-          skippedWords += 1;
-          continue;
-        }
-        updatedWords += 1;
-        await tx.edition_word_stat.upsert({
-          where: { editionId_wordId: { editionId, wordId } },
-          update: {
-            useCount: { increment: count },
-            lastUsedAt: now,
-            ...(issueId !== null ? { lastIssueId: issueId } : {}),
-          },
-          create: {
-            editionId,
-            wordId,
-            useCount: count,
-            lastUsedAt: now,
-            ...(issueId !== null ? { lastIssueId: issueId } : {}),
-          },
+    try {
+      await prisma.$transaction(async (tx) => {
+        const edition = await tx.editions.findUnique({
+          where: { id: editionId },
+          select: { id: true },
         });
+        if (!edition) {
+          throw new Error(`Cannot persist edition usage stats: edition ${editionId} does not exist.`);
+        }
+
+        for (const [word, count] of wordUsage) {
+          if (count <= 0) continue;
+          const wordId = wordIdByWord.get(word);
+          if (!wordId) {
+            skippedWords += 1;
+            continue;
+          }
+          updatedWords += 1;
+          await tx.edition_word_stat.upsert({
+            where: { editionId_wordId: { editionId, wordId } },
+            update: {
+              useCount: { increment: count },
+              lastUsedAt: now,
+              ...(issueId !== null ? { lastIssueId: issueId } : {}),
+            },
+            create: {
+              editionId,
+              wordId,
+              useCount: count,
+              lastUsedAt: now,
+              ...(issueId !== null ? { lastIssueId: issueId } : {}),
+            },
+          });
+        }
+      });
+    } catch (error) {
+      if (isEditionWordStatEditionFkError(error)) {
+        throw new Error(`Cannot persist edition usage stats: edition ${editionId} does not exist.`);
       }
-    });
+      throw error;
+    }
 
     return { updatedWords, skippedWords };
   } finally {
@@ -1089,6 +1130,9 @@ if (!files.length) {
   let masterDict: Map<number, string[]>;
   const issueContext = issueId !== null ? await tryLoadIssueContext(issueId) : null;
   const effectiveEditionId = editionId ?? issueContext?.editionId ?? null;
+  if (effectiveEditionId !== null) {
+    await assertEditionExists(effectiveEditionId);
+  }
   const editionUsagePriorityByWord = new Map<string, number>();
   let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
   let usageRebalanceContext: UsageRebalanceContext | null = null;
