@@ -6,9 +6,8 @@
 //  • флаг --report-duplicates → отчёт по дублям слов в конце
 //  • сохраняет SVG + used-words.txt в out/<basename>/
 //------------------------------------------------------------------
-import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, basename, extname }               from "node:path";
-import os                                        from "node:os";
+import { appendFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, basename, dirname, extname }               from "node:path";
 import { parseArgs }                             from "node:util";
 import { PrismaClient }                          from "@prisma/client";
 
@@ -22,12 +21,20 @@ import {
 } from "../src/utils/fillFallback";
 import {
   applyHardHotBanLengthSafe,
+  buildLenMeanUsagePriority,
+  buildRebalanceBlockedVariantCascade,
   buildUsageRebalanceContext,
   buildSoftHotDuplicateBlock,
   buildUsageRebalanceMetrics,
+  formatUsageBalanceByLen,
+  formatUsageRebalanceLenMetrics,
   formatUsageRebalanceMetrics,
+  incrementUsageRebalanceMetricByLen,
+  mergeUsageRebalanceMetricByLen,
   resolveUsageRebalanceThresholds,
+  type RebalanceBlockedVariant,
   type UsageRebalanceContext,
+  type UsageRebalanceMode,
   type UsageRebalanceThresholds,
 } from "../src/utils/usageRebalance";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
@@ -53,25 +60,71 @@ import {
 const DEFAULT_CELL       = 30;        // px
 const SAMPLE_DIR = "sample";
 const OUT_DIR    = "out";
+const FILL_BATCH_RUN_LOG_FILE = join(OUT_DIR, "fill-batch-runs.log");
+const RUN_LOG_SEPARATOR = "=".repeat(96);
 const IN_BATCH_REPEAT_PRIORITY_MULTIPLIER = 1_000_000_000;
 const MAX_WORD_USES = 2;
+const AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK = 24;
 
-function detectCpuParallelism(): number {
-  if (typeof os.availableParallelism === "function") {
-    const n = os.availableParallelism();
-    if (Number.isFinite(n) && n > 0) return Math.floor(n);
-  }
-  const n = os.cpus()?.length ?? 1;
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+function parseUsageRebalanceMode(
+  value: string | undefined,
+  usageRebalanceEnabled: boolean
+): UsageRebalanceMode {
+  if (!usageRebalanceEnabled) return "safe";
+  if (!value) return "aggressive";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "safe" || normalized === "aggressive") return normalized;
+  console.warn(`Unknown --usage-rebalance-mode value "${value}", using "aggressive".`);
+  return "aggressive";
 }
 
-function resolveParallelRestarts(restarts: number, configured: number): number {
+function areSetsEqual(left: Set<string>, right: Set<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const item of left) {
+    if (!right.has(item)) return false;
+  }
+  return true;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function formatDateLocal(date: Date): string {
+  const year = date.getFullYear();
+  const month = pad2(date.getMonth() + 1);
+  const day = pad2(date.getDate());
+  const hours = pad2(date.getHours());
+  const minutes = pad2(date.getMinutes());
+  const seconds = pad2(date.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function appendRunLogBlock(lines: string[]): void {
+  try {
+    mkdirSync(dirname(FILL_BATCH_RUN_LOG_FILE), { recursive: true });
+    appendFileSync(FILL_BATCH_RUN_LOG_FILE, `${lines.join("\n")}\n`, "utf8");
+  } catch (_error) {
+    // Best-effort logging only; fill-batch should continue even if log file write fails.
+  }
+}
+
+function buildRunCommand(args: string[]): string {
+  return args.length > 0 ? `pnpm run fill-batch -- ${args.join(" ")}` : "pnpm run fill-batch";
+}
+
+function resolveParallelRestarts(
+  restarts: number,
+  configuredRaw: number | undefined,
+  explicit: boolean
+): number {
   const safeRestarts = Number.isFinite(restarts) && restarts > 0 ? Math.floor(restarts) : 1;
-  const safeConfigured = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 1;
-  const cpuParallel = detectCpuParallelism();
-  const auto = Math.max(1, Math.min(safeRestarts, cpuParallel));
-  const requested = Math.max(1, Math.min(safeRestarts, safeConfigured));
-  return Math.max(requested, auto);
+  if (!explicit) return 1;
+  const safeConfigured =
+    Number.isFinite(configuredRaw) && configuredRaw && configuredRaw > 0
+      ? Math.floor(configuredRaw)
+      : 1;
+  return Math.max(1, Math.min(safeRestarts, safeConfigured));
 }
 
 type WordPriorityRow = {
@@ -960,51 +1013,162 @@ async function waitForNativeFail(timeoutMs = 200): Promise<SolveFailInfo | null>
   return info;
 }
 
+type SolvePhase = "base" | "strict" | "adaptive" | "neighbor" | "rescue";
+
+type SolveCallMetric = {
+  phase: SolvePhase;
+  template: string;
+  parallelUsed: boolean;
+  restartsUsed: number;
+  elapsedMs: number;
+  solved: boolean;
+};
+
+const SOLVE_PHASE_ORDER: SolvePhase[] = ["base", "strict", "adaptive", "neighbor", "rescue"];
+
+function formatDurationMs(ms: number): string {
+  return `${(ms / 1000).toFixed(3)}s`;
+}
+
+function percentile(sorted: number[], ratio: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[idx];
+}
+
+function buildSolverStatsLines(metrics: SolveCallMetric[]): string[] {
+  if (metrics.length === 0) {
+    return ["📉 solver stats: no solve calls recorded"];
+  }
+
+  const total = metrics.length;
+  const solvedCount = metrics.filter((item) => item.solved).length;
+  const unsolvedCount = total - solvedCount;
+  const parallelCount = metrics.filter((item) => item.parallelUsed).length;
+  const serialCount = total - parallelCount;
+  const elapsedSorted = metrics
+    .map((item) => item.elapsedMs)
+    .sort((a, b) => a - b);
+  const medianMs = percentile(elapsedSorted, 0.5);
+  const p95Ms = percentile(elapsedSorted, 0.95);
+  const parallelShare = ((parallelCount / total) * 100).toFixed(1);
+  const serialShare = ((serialCount / total) * 100).toFixed(1);
+
+  const perPhase = new Map<SolvePhase, { calls: number; solved: number; totalMs: number }>();
+  for (const phase of SOLVE_PHASE_ORDER) {
+    perPhase.set(phase, { calls: 0, solved: 0, totalMs: 0 });
+  }
+  for (const metric of metrics) {
+    const bucket = perPhase.get(metric.phase);
+    if (!bucket) continue;
+    bucket.calls += 1;
+    if (metric.solved) bucket.solved += 1;
+    bucket.totalMs += metric.elapsedMs;
+  }
+  const phaseSummary = SOLVE_PHASE_ORDER
+    .map((phase) => {
+      const bucket = perPhase.get(phase);
+      if (!bucket || bucket.calls === 0) return `${phase}=0`;
+      const avgMs = bucket.totalMs / bucket.calls;
+      return `${phase}=${bucket.solved}/${bucket.calls} avg=${formatDurationMs(avgMs)}`;
+    })
+    .join(" | ");
+
+  const lines = [
+    `📉 solver stats: calls=${total} solved=${solvedCount} unsolved=${unsolvedCount} median=${formatDurationMs(medianMs)} p95=${formatDurationMs(p95Ms)} parallel=${parallelShare}% serial=${serialShare}%`,
+    `   phases: ${phaseSummary}`,
+    "   slow top-10:",
+  ];
+
+  const slowCalls = [...metrics]
+    .sort((a, b) => b.elapsedMs - a.elapsedMs)
+    .slice(0, 10);
+  for (const [index, metric] of slowCalls.entries()) {
+    lines.push(
+      `   ${index + 1}. ${metric.template} phase=${metric.phase} elapsed=${formatDurationMs(metric.elapsedMs)} solved=${metric.solved ? "yes" : "no"} parallel=${metric.parallelUsed ? "yes" : "no"} restarts=${metric.restartsUsed}`
+    );
+  }
+
+  return lines;
+}
+
 /* ---------- CLI ---------- */
-const { values } = parseArgs({
-  args: process.argv.slice(2).filter((arg) => arg !== "--"),
-  options: {
-    shuffle: { type: "boolean", short: "s" },
-    unique:  { type: "boolean", short: "u" },
-    crw:     { type: "boolean", short: "c" },
-    progress:{ type: "boolean", short: "p" },
-    logMs:   { type: "string" },
-    "log-ms":{ type: "string" },
-    maxMs:   { type: "string" },
-    "max-ms":{ type: "string" },
-    maxNodes:{ type: "string" },
-    "max-nodes":{ type: "string" },
-    lcv:     { type: "boolean" },
-    debugDlx:{ type: "boolean" },
-    "debug-dlx":{ type: "boolean" },
-    nativeDlx:{ type: "boolean" },
-    "native-dlx":{ type: "boolean" },
-    parallel: { type: "string" },
-    "parallel-restarts": { type: "string" },
-    restarts:{ type: "string" },
-    issueId: { type: "string" },
-    "issue-id": { type: "string" },
-    editionId: { type: "string" },
-    "edition-id": { type: "string" },
-    filterTemplateId: { type: "string" },
-    "filter-template-id": { type: "string" },
-    dict:    { type: "string",  short: "d" },
-    template:{ type: "string",  short: "t" },
-    style:   { type: "string" },
-    "no-defs": { type: "boolean" },
-    "no-clues": { type: "boolean" },
-    hardFirst: { type: "boolean" },
-    "hard-first": { type: "boolean" },
-    keepOrder: { type: "boolean" },
-    "keep-order": { type: "boolean" },
-    explainFail: { type: "boolean" },
-    "explain-fail": { type: "boolean" },
-    reportDuplicates: { type: "boolean" },
-    "report-duplicates": { type: "boolean" },
-    usageRebalance: { type: "boolean" },
-    "usage-rebalance": { type: "boolean" },
-  },
-});
+const rawCliArgs = process.argv.slice(2).filter((arg) => arg !== "--");
+const runCommand = buildRunCommand(rawCliArgs);
+const runStartedAt = new Date();
+appendRunLogBlock([
+  "",
+  RUN_LOG_SEPARATOR,
+  `[RUN START] ${formatDateLocal(runStartedAt)}`,
+  `команда запуска: "${runCommand}"`,
+]);
+
+const parsedCli = (() => {
+  try {
+    return parseArgs({
+      args: rawCliArgs,
+      options: {
+        shuffle: { type: "boolean", short: "s" },
+        unique:  { type: "boolean", short: "u" },
+        crw:     { type: "boolean", short: "c" },
+        progress:{ type: "boolean", short: "p" },
+        logMs:   { type: "string" },
+        "log-ms":{ type: "string" },
+        maxMs:   { type: "string" },
+        "max-ms":{ type: "string" },
+        maxNodes:{ type: "string" },
+        "max-nodes":{ type: "string" },
+        lcv:     { type: "boolean" },
+        debugDlx:{ type: "boolean" },
+        "debug-dlx":{ type: "boolean" },
+        nativeDlx:{ type: "boolean" },
+        "native-dlx":{ type: "boolean" },
+        parallel: { type: "string" },
+        "parallel-restarts": { type: "string" },
+        restarts:{ type: "string" },
+        issueId: { type: "string" },
+        "issue-id": { type: "string" },
+        editionId: { type: "string" },
+        "edition-id": { type: "string" },
+        filterTemplateId: { type: "string" },
+        "filter-template-id": { type: "string" },
+        dict:    { type: "string",  short: "d" },
+        template:{ type: "string",  short: "t" },
+        style:   { type: "string" },
+        "no-defs": { type: "boolean" },
+        "no-clues": { type: "boolean" },
+        hardFirst: { type: "boolean" },
+        "hard-first": { type: "boolean" },
+        keepOrder: { type: "boolean" },
+        "keep-order": { type: "boolean" },
+        explainFail: { type: "boolean" },
+        "explain-fail": { type: "boolean" },
+        reportDuplicates: { type: "boolean" },
+        "report-duplicates": { type: "boolean" },
+        usageRebalance: { type: "boolean" },
+        "usage-rebalance": { type: "boolean" },
+        usageRebalanceMode: { type: "string" },
+        "usage-rebalance-mode": { type: "string" },
+        solverStats: { type: "boolean" },
+        "solver-stats": { type: "boolean" },
+        templateParallel: { type: "string" },
+        "template-parallel": { type: "string" },
+      },
+    });
+  } catch (error) {
+    const runFailedAt = new Date();
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    const runDurationMin = ((runFailedAt.getTime() - runStartedAt.getTime()) / 60000).toFixed(1);
+    appendRunLogBlock([
+      `[RUN END] ${formatDateLocal(runFailedAt)} status=cli-error duration=${runDurationMin}m`,
+      `команда запуска: "${runCommand}"`,
+      `ошибка: ${errorMessage}`,
+    ]);
+    throw error;
+  }
+})();
+const { values } = parsedCli;
 const shuffleOpt = values.shuffle === true ? true : undefined;
 const unique    = !!values.unique;
 const doCrw     = !!values.crw;
@@ -1026,12 +1190,12 @@ const debugDlx = !!values.debugDlx || !!values["debug-dlx"];
 const nativeDlx = true;
 const restartsRaw = values.restarts ? Number(values.restarts) : 1;
 const restarts = Number.isFinite(restartsRaw) && restartsRaw > 0 ? Math.floor(restartsRaw) : 1;
-const parallelRaw = values.parallel
-  ? Number(values.parallel)
-  : values["parallel-restarts"] ? Number(values["parallel-restarts"]) : undefined;
+const parallelValueRaw = values.parallel ?? values["parallel-restarts"];
+const parallelExplicit = parallelValueRaw !== undefined;
+const parallelRaw = parallelValueRaw !== undefined ? Number(parallelValueRaw) : undefined;
 const configuredParallelRestarts =
   Number.isFinite(parallelRaw) && parallelRaw && parallelRaw > 0 ? Math.floor(parallelRaw) : 1;
-const parallelRestarts = resolveParallelRestarts(restarts, configuredParallelRestarts);
+const parallelRestarts = resolveParallelRestarts(restarts, parallelRaw, parallelExplicit);
 const issueIdRaw = values.issueId ?? values["issue-id"];
 const issueId = parseIssueIdOption(issueIdRaw);
 const editionIdRaw = values.editionId ?? values["edition-id"];
@@ -1044,8 +1208,18 @@ const styleName = (values.style ?? "default").toLowerCase();
 const hardFirst = !!values.hardFirst || !!values["hard-first"];
 const keepOrder = !!values.keepOrder || !!values["keep-order"];
 const explainFail = !!values.explainFail || !!values["explain-fail"];
+const explainFailLite = explainFail && parallelRestarts > 1;
 const reportDuplicates = !!values.reportDuplicates || !!values["report-duplicates"];
 const usageRebalance = !!values.usageRebalance || !!values["usage-rebalance"];
+const usageRebalanceModeRaw = values.usageRebalanceMode ?? values["usage-rebalance-mode"];
+const usageRebalanceMode = parseUsageRebalanceMode(usageRebalanceModeRaw, usageRebalance);
+const solverStats = !!values.solverStats || !!values["solver-stats"];
+const templateParallelRaw = values.templateParallel ?? values["template-parallel"];
+const templateParallelParsed = templateParallelRaw !== undefined ? Number(templateParallelRaw) : NaN;
+const templateParallel =
+  Number.isFinite(templateParallelParsed) && templateParallelParsed > 1
+    ? Math.floor(templateParallelParsed)
+    : 1;
 const writeDefsJson = !values["no-defs"] && !values["no-clues"];
 const useCorelStyle = styleName === "corel";
 if (!["default", "corel"].includes(styleName)) {
@@ -1083,7 +1257,15 @@ const files = readdirSync(SAMPLE_DIR)
   .map(f => join(SAMPLE_DIR, f));
 
 if (!files.length) {
-  console.log("Нет *.fsh в sample/");
+  const noFilesLine = "Нет *.fsh в sample/";
+  console.log(noFilesLine);
+  const runFinishedAt = new Date();
+  const runDurationMin = ((runFinishedAt.getTime() - runStartedAt.getTime()) / 60000).toFixed(1);
+  appendRunLogBlock([
+    `[RUN END] ${formatDateLocal(runFinishedAt)} status=no-files duration=${runDurationMin}m`,
+    `команда запуска: "${runCommand}"`,
+    noFilesLine,
+  ]);
   process.exit(0);
 }
 
@@ -1133,6 +1315,7 @@ if (!files.length) {
   if (effectiveEditionId !== null) {
     await assertEditionExists(effectiveEditionId);
   }
+  const editionUsageCountByWord = new Map<string, number>();
   const editionUsagePriorityByWord = new Map<string, number>();
   let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
   let usageRebalanceContext: UsageRebalanceContext | null = null;
@@ -1158,11 +1341,23 @@ if (!files.length) {
   if (effectiveEditionId !== null) {
     const loadedPriority = await loadEditionUsagePriority(effectiveEditionId);
     for (const [word, priority] of loadedPriority) {
-      editionUsagePriorityByWord.set(word, priority);
+      editionUsageCountByWord.set(word, priority);
     }
-    sortDictionaryByUsagePriority(masterDict, editionUsagePriorityByWord);
+    if (editionUsageCountByWord.size) {
+      const usagePriorityMode: UsageRebalanceMode =
+        usageRebalance && usageRebalanceMode === "aggressive" ? "aggressive" : "safe";
+      const meanPriority = buildLenMeanUsagePriority(
+        masterDict,
+        editionUsageCountByWord,
+        usagePriorityMode
+      );
+      for (const [word, priority] of meanPriority) {
+        editionUsagePriorityByWord.set(word, priority);
+      }
+      sortDictionaryByUsagePriority(masterDict, editionUsagePriorityByWord);
+    }
     console.log(
-      `📈 edition usage stats: editionId=${effectiveEditionId} loadedWords=${editionUsagePriorityByWord.size}`
+      `📈 edition usage stats: editionId=${effectiveEditionId} loadedWords=${editionUsageCountByWord.size}`
     );
   } else {
     console.log("📈 edition usage stats: off (no --edition-id or resolvable issue edition)");
@@ -1171,16 +1366,20 @@ if (!files.length) {
     usageRebalanceReason = "off";
   } else if (!unique) {
     usageRebalanceReason = "skipped (unique=off)";
-  } else if (!editionUsagePriorityByWord.size) {
+  } else if (!editionUsageCountByWord.size) {
     usageRebalanceReason = "skipped (no usage stats)";
   } else {
-    usageRebalanceThresholds = resolveUsageRebalanceThresholds(masterDict, editionUsagePriorityByWord);
+    usageRebalanceThresholds = resolveUsageRebalanceThresholds(
+      masterDict,
+      editionUsageCountByWord,
+      usageRebalanceMode
+    );
     usageRebalanceContext = buildUsageRebalanceContext(
       masterDict,
-      editionUsagePriorityByWord,
+      editionUsageCountByWord,
       usageRebalanceThresholds
     );
-    usageRebalanceReason = `on (soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
+    usageRebalanceReason = `on (mode=${usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
   }
   const wordLengthByWord = buildWordLengthLookup(masterDict);
   const dictCounts = new Map<number, number>();
@@ -1197,11 +1396,7 @@ if (!files.length) {
     }
   }
   const totalSlotLengths = [...totalSlotCounts.keys()].sort((a, b) => a - b);
-  const cpuParallel = detectCpuParallelism();
-  const parallelLabel =
-    parallelRestarts > 1
-      ? `${parallelRestarts} (cfg=${configuredParallelRestarts} cpu=${cpuParallel} early-stop)`
-      : "1";
+  const parallelLabel = `${parallelRestarts} (cfg=${configuredParallelRestarts} explicit=${parallelExplicit ? "yes" : "no"}${parallelRestarts > 1 ? " early-stop" : ""})`;
   const nativeAvailable = isNativeDlxAvailable();
   if (!nativeAvailable) {
     throw new Error("Native DLX solver is not available (JS solver is disabled)");
@@ -1221,13 +1416,24 @@ if (!files.length) {
   const progressLabel = doProgress
     ? `on (logMs=${logEveryMs}${useProgressStdout ? " stdout" : ""})`
     : "off";
+  const explainFailLabel = explainFail
+    ? explainFailLite ? "lite" : "full"
+    : "off";
   console.log(
-    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFail ? "on" : "off"} usageRebalance=${usageRebalanceReason}`
+    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} templateParallel=${templateParallel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFailLabel} usageRebalance=${usageRebalanceReason} solverStats=${solverStats ? "on" : "off"}`
   );
+  if (templateParallel > 1 && unique) {
+    console.log("🧪 template parallel mode: experimental under --unique (cross-template word pressure may differ run-to-run)");
+  }
   if (usageRebalanceThresholds) {
     console.log(
-      `🧊 usage rebalance thresholds: soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold}`
+      `🧊 usage rebalance thresholds: mode=${usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold}`
     );
+  }
+  if (usageRebalanceContext) {
+    for (const line of formatUsageBalanceByLen(usageRebalanceContext)) {
+      console.log(line);
+    }
   }
   const orderMode = hardFirst || (unique && !keepOrder) ? "complex" : "file";
   console.log(`🧭 order=${orderMode === "complex" ? "complexity" : "file"}`);
@@ -1281,10 +1487,11 @@ if (!files.length) {
     neighborSolved: 0,
   };
   const usageRebalanceMetrics = buildUsageRebalanceMetrics();
+  const solverStatsMetrics: SolveCallMetric[] = [];
   const templateWordCounts = new Map<string, Map<string, number>>();
   const templateNameByKey = new Map(entries.map((entry) => [entry.key, entry.name]));
 
-  for (const entry of orderedEntries) {
+  const runEntry = async (entry: BatchEntry): Promise<void> => {
     const { path, name, grid, slots, key } = entry;
     console.log(`\n● ${name} …`);
     const perTemplateCounts = entry.lenCounts;
@@ -1294,7 +1501,7 @@ if (!files.length) {
     const startedAt = Date.now();
     let failInfo: SolveFailInfo | null = null;
     let nativeActive = false;
-    const useFailStdout = explainFail && nativeAvailable && parallelRestarts > 1;
+    const useFailStdout = explainFail && !explainFailLite && nativeAvailable && parallelRestarts > 1;
 
     try {
       const logProgress = doProgress;
@@ -1314,7 +1521,11 @@ if (!files.length) {
         : undefined;
 
       const solveStartedAt = Date.now();
-      const onFail = explainFail
+      const rebalanceLcvPrioritySlack =
+        usageRebalance && usageRebalanceMode === "aggressive"
+          ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
+          : 0;
+      const onFail = explainFail && !explainFailLite
         ? (info: SolveFailInfo) => {
             failInfo = info;
             if (!(nativeActive && useFailStdout)) {
@@ -1324,17 +1535,22 @@ if (!files.length) {
         : undefined;
       const solveWithDictionary = async (
         dictForSolve: Map<number, string[]>,
+        phase: SolvePhase,
         overrides: {
           maxNodes?: number;
           maxMs?: number;
           wordPriority?: Map<string, number>;
           lcv?: boolean;
           shuffle?: boolean;
+          lcvPrioritySlack?: number;
         } = {}
       ) => {
+        const solveCallStartedAt = Date.now();
+        let solveCallResult: string[] | null = null;
         const solveBaseOptions = {
           shuffle: overrides.shuffle ?? shuffleOpt,
           lcv: overrides.lcv ?? doLcv,
+          lcvPrioritySlack: overrides.lcvPrioritySlack ?? rebalanceLcvPrioritySlack,
           restarts,
           parallelRestarts,
           maxMs: overrides.maxMs ?? maxMs,
@@ -1349,7 +1565,8 @@ if (!files.length) {
         const solveOptions = logProgress
           ? { ...solveBaseOptions, logEveryMs, onProgress }
           : solveBaseOptions;
-        const nativeOptions = (doProgress || explainFail) && parallelRestarts > 1
+        const useNativeStreaming = (doProgress || (explainFail && !explainFailLite)) && parallelRestarts > 1;
+        const nativeOptions = useNativeStreaming
           ? {
             ...solveOptions,
             logEveryMs: logProgress ? logEveryMs : 0,
@@ -1357,15 +1574,26 @@ if (!files.length) {
             failStdout: useFailStdout,
           }
           : solveOptions;
-        nativeActive = (doProgress || explainFail) && parallelRestarts > 1;
+        nativeActive = useNativeStreaming;
         try {
           const nativeSolved = await solveDlxNativeAsync(grid.data, slots, dictForSolve, nativeOptions);
           if (nativeSolved === undefined) {
             throw new Error("Native DLX solver is not available (JS solver is disabled)");
           }
+          solveCallResult = nativeSolved;
           return nativeSolved;
         } finally {
           nativeActive = false;
+          if (solverStats) {
+            solverStatsMetrics.push({
+              phase,
+              template: name,
+              parallelUsed: parallelRestarts > 1,
+              restartsUsed: restarts,
+              elapsedMs: Date.now() - solveCallStartedAt,
+              solved: !!solveCallResult,
+            });
+          }
         }
       };
 
@@ -1393,39 +1621,23 @@ if (!files.length) {
           usedWordCountInBatch,
           editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined
         );
-        const buildRebalanceBlockedVariants = (
-          baseBlockedWords: Set<string>,
-          includeHardBan: boolean
-        ): {
-          primaryBlockedWords: Set<string>;
-          retrySoftOnlyBlockedWords: Set<string> | null;
-          changedByRebalance: boolean;
-        } => {
-          if (!usageRebalanceThresholds || !usageRebalanceContext || !editionUsagePriorityByWord.size) {
-            return {
-              primaryBlockedWords: baseBlockedWords,
-              retrySoftOnlyBlockedWords: null,
-              changedByRebalance: false,
-            };
+        const buildRebalanceBlockedVariants = (baseBlockedWords: Set<string>): RebalanceBlockedVariant[] => {
+          if (!usageRebalanceThresholds || !usageRebalanceContext || !editionUsageCountByWord.size) {
+            return [{ kind: "base", blockedWords: baseBlockedWords }];
           }
           const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
           const softBlockedWords = buildSoftHotDuplicateBlock(
             usedWordCountInBatch,
             usageRebalanceContext
           );
-          let softAdded = 0;
           for (const word of softBlockedWords) {
             if (softOnlyBlockedWords.has(word)) continue;
             softOnlyBlockedWords.add(word);
-            softAdded += 1;
-          }
-          usageRebalanceMetrics.softBlocked += softAdded;
-          if (!includeHardBan) {
-            return {
-              primaryBlockedWords: softOnlyBlockedWords,
-              retrySoftOnlyBlockedWords: null,
-              changedByRebalance: softOnlyBlockedWords.size !== baseBlockedWords.size,
-            };
+            usageRebalanceMetrics.softBlocked += 1;
+            const len = usageRebalanceContext.wordLenInfoByWord.get(word)?.len;
+            if (typeof len === "number") {
+              incrementUsageRebalanceMetricByLen(usageRebalanceMetrics.softBlockedByLen, len, 1);
+            }
           }
           const hard = applyHardHotBanLengthSafe(
             entry.lenCounts,
@@ -1436,21 +1648,69 @@ if (!files.length) {
           usageRebalanceMetrics.hardApplied += hard.hardApplied;
           usageRebalanceMetrics.hardRelaxed += hard.hardRelaxed;
           if (hard.disabledBySafety) usageRebalanceMetrics.hardDisabledBySafety += 1;
-          return {
-            primaryBlockedWords: hard.blockedWords,
-            retrySoftOnlyBlockedWords: hard.hardApplied > 0 ? softOnlyBlockedWords : null,
-            changedByRebalance: hard.blockedWords.size !== baseBlockedWords.size,
-          };
+          mergeUsageRebalanceMetricByLen(
+            usageRebalanceMetrics.hardAppliedByLen,
+            hard.hardAppliedByLen
+          );
+
+          return buildRebalanceBlockedVariantCascade(
+            baseBlockedWords,
+            softOnlyBlockedWords,
+            hard.blockedWords
+          );
         };
-        let rebalanceRescueBlockedWords: Set<string> | null = null;
+
+        const solveWithBlockedVariants = async (
+          phase: "strict" | "adaptive" | "neighbor",
+          variants: RebalanceBlockedVariant[],
+          options: {
+            sortByFallbackPriority: boolean;
+            strictBudget?: { maxNodes: number; maxMs: number } | null;
+          }
+        ): Promise<string[] | null> => {
+          let appliedStrictBudget = false;
+          for (const [index, variant] of variants.entries()) {
+            if (index > 0 && variant.kind === "softOnly") {
+              usageRebalanceMetrics.hardRetrySoftOnly += 1;
+            }
+            const filtered = filterDictionaryByBlockedWords(masterDict, variant.blockedWords);
+            const dictForSolve = options.sortByFallbackPriority
+              ? sortDictionaryByPriority(filtered, fallbackPriority)
+              : filtered;
+            const overrides: {
+              maxNodes?: number;
+              maxMs?: number;
+              wordPriority?: Map<string, number>;
+              lcv?: boolean;
+              shuffle?: boolean;
+              lcvPrioritySlack?: number;
+            } = {};
+            if (phase === "strict" && options.strictBudget && !appliedStrictBudget) {
+              overrides.maxNodes = options.strictBudget.maxNodes;
+              overrides.maxMs = options.strictBudget.maxMs;
+              appliedStrictBudget = true;
+            }
+            if (phase !== "strict") {
+              overrides.wordPriority = fallbackPriority;
+              overrides.lcv = false;
+              overrides.shuffle = false;
+            }
+            const solvedVariant = await solveWithDictionary(dictForSolve, phase, overrides);
+            if (solvedVariant) return solvedVariant;
+          }
+          return null;
+        };
+
+        const strictVariants = buildRebalanceBlockedVariants(strictBlockedWords);
+        const strictPrimaryBlockedWords = strictVariants[0]?.blockedWords ?? strictBlockedWords;
         const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
           entry.lenCounts,
           masterDict,
-          strictBlockedWords
+          strictPrimaryBlockedWords
         );
         let adaptiveDeficitLengths = strictDeficitLengths;
         if (strictDeficitLengths.size === 0) {
-          const strictDict = filterDictionaryByBlockedWords(masterDict, strictBlockedWords);
+          const strictDict = filterDictionaryByBlockedWords(masterDict, strictPrimaryBlockedWords);
           uniqueFallbackStats.probeAttempted += 1;
           const probeResult = runCspProbe(grid.data, slots, strictDict, {
             label: `${name}:probe`,
@@ -1458,6 +1718,7 @@ if (!files.length) {
             maxMs,
             uniqueWords: true,
             wordPriority: editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined,
+            lcvPrioritySlack: rebalanceLcvPrioritySlack,
           });
           failInfo = probeResult.failInfo ?? failInfo;
           if (probeResult.solved) {
@@ -1472,23 +1733,41 @@ if (!files.length) {
               adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
                 entry.lenCounts,
                 masterDict,
-                strictBlockedWords
+                strictPrimaryBlockedWords
               );
+            }
+            uniqueFallbackStats.strictAttempted += 1;
+            const hasFallbackPotential = canFallbackToNeighbor || usedWordsInBatch.size > 0;
+            const strictBudget = hasFallbackPotential ? resolveStrictLimitedBudget(maxNodes, maxMs) : null;
+            if (strictBudget) uniqueFallbackStats.strictLimited += 1;
+            solved = await solveWithBlockedVariants("strict", strictVariants, {
+              sortByFallbackPriority: false,
+              strictBudget,
+            });
+            if (solved) {
+              uniqueFallbackStats.strictSolved += 1;
+            } else {
+              const strictFailLen = extractFailedSlotLength(failInfo);
+              if (strictFailLen !== null) {
+                adaptiveDeficitLengths = new Set<number>([strictFailLen]);
+              } else {
+                adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
+                  entry.lenCounts,
+                  masterDict,
+                  strictPrimaryBlockedWords
+                );
+              }
             }
           } else {
             uniqueFallbackStats.probeUnknown += 1;
             uniqueFallbackStats.strictAttempted += 1;
             const hasFallbackPotential = canFallbackToNeighbor || usedWordsInBatch.size > 0;
-            if (hasFallbackPotential) {
-              uniqueFallbackStats.strictLimited += 1;
-              const strictBudget = resolveStrictLimitedBudget(maxNodes, maxMs);
-              solved = await solveWithDictionary(strictDict, {
-                maxNodes: strictBudget.maxNodes,
-                maxMs: strictBudget.maxMs,
-              });
-            } else {
-              solved = await solveWithDictionary(strictDict);
-            }
+            const strictBudget = hasFallbackPotential ? resolveStrictLimitedBudget(maxNodes, maxMs) : null;
+            if (strictBudget) uniqueFallbackStats.strictLimited += 1;
+            solved = await solveWithBlockedVariants("strict", strictVariants, {
+              sortByFallbackPriority: false,
+              strictBudget,
+            });
             if (solved) {
               uniqueFallbackStats.strictSolved += 1;
             } else {
@@ -1499,7 +1778,7 @@ if (!files.length) {
                 adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
                   entry.lenCounts,
                   masterDict,
-                  strictBlockedWords
+                  strictPrimaryBlockedWords
                 );
               }
             }
@@ -1508,7 +1787,7 @@ if (!files.length) {
           uniqueFallbackStats.strictSkippedByDeficit += 1;
         }
         if (!solved && adaptiveDeficitLengths.size > 0) {
-          const adaptiveBlockedWords = buildAdaptiveBlockedWords(
+          const adaptiveBaseBlockedWords = buildAdaptiveBlockedWords(
             usedWordsInBatch,
             usedWordCountInBatch,
             neighborBlockedWords,
@@ -1516,20 +1795,13 @@ if (!files.length) {
             wordLengthByWord,
             MAX_WORD_USES
           );
-          if (adaptiveBlockedWords.size !== strictBlockedWords.size) {
+          if (!areSetsEqual(adaptiveBaseBlockedWords, strictBlockedWords)) {
             uniqueFallbackStats.adaptiveAttempted += 1;
-            const adaptiveDict = sortDictionaryByPriority(
-              filterDictionaryByBlockedWords(masterDict, adaptiveBlockedWords),
-              fallbackPriority
-            );
-            solved = await solveWithDictionary(
-              adaptiveDict,
-              {
-                wordPriority: fallbackPriority,
-                lcv: false,
-                shuffle: false,
-              }
-            );
+            const adaptiveVariants = buildRebalanceBlockedVariants(adaptiveBaseBlockedWords);
+            solved = await solveWithBlockedVariants("adaptive", adaptiveVariants, {
+              sortByFallbackPriority: true,
+              strictBudget: null,
+            });
             if (solved) {
               uniqueFallbackStats.adaptiveSolved += 1;
             }
@@ -1537,71 +1809,37 @@ if (!files.length) {
         }
         if (!solved && canFallbackToNeighbor) {
           uniqueFallbackStats.neighborAttempted += 1;
-          const neighborRebalance = buildRebalanceBlockedVariants(neighborCappedBlockedWords, true);
-          if (neighborRebalance.changedByRebalance) rebalanceRescueBlockedWords = neighborCappedBlockedWords;
-          const neighborDict = sortDictionaryByPriority(
-            filterDictionaryByBlockedWords(masterDict, neighborRebalance.primaryBlockedWords),
-            fallbackPriority
-          );
-          solved = await solveWithDictionary(
-            neighborDict,
-            {
-              wordPriority: fallbackPriority,
-              lcv: false,
-              shuffle: false,
-            }
-          );
-          if (!solved && neighborRebalance.retrySoftOnlyBlockedWords) {
-            usageRebalanceMetrics.hardRetrySoftOnly += 1;
-            const neighborSoftOnlyDict = sortDictionaryByPriority(
-              filterDictionaryByBlockedWords(masterDict, neighborRebalance.retrySoftOnlyBlockedWords),
-              fallbackPriority
-            );
-            solved = await solveWithDictionary(
-              neighborSoftOnlyDict,
-              {
-                wordPriority: fallbackPriority,
-                lcv: false,
-                shuffle: false,
-              }
-            );
-          }
+          const neighborVariants = buildRebalanceBlockedVariants(neighborCappedBlockedWords);
+          solved = await solveWithBlockedVariants("neighbor", neighborVariants, {
+            sortByFallbackPriority: true,
+            strictBudget: null,
+          });
           if (solved) {
             uniqueFallbackStats.neighborSolved += 1;
           }
         }
-        if (!solved && rebalanceRescueBlockedWords) {
-          const rescueDict = sortDictionaryByPriority(
-            filterDictionaryByBlockedWords(masterDict, rebalanceRescueBlockedWords),
-            fallbackPriority
-          );
-          solved = await solveWithDictionary(
-            rescueDict,
-            {
-              wordPriority: fallbackPriority,
-              lcv: false,
-              shuffle: false,
-            }
-          );
-        }
       } else {
         const dict = new Map<number, string[]>([...masterDict].map(([len, words]) => [len, [...words]]));
-        solved = await solveWithDictionary(dict);
+        solved = await solveWithDictionary(dict, "base");
       }
       const solveMs = Date.now() - solveStartedAt;
       solveTotalMs += solveMs;
       if (!solved) {
-        if (explainFail && !failInfo && nativeDlx) {
+        if (explainFail && !explainFailLite && !failInfo && nativeDlx) {
           failInfo = await waitForNativeFail();
         }
         const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
         const solveSec = (solveMs / 1000).toFixed(2);
         console.warn(`  ⚠ недостаточно слов (time=${elapsedSec}s solve=${solveSec}s)`);
-        if (explainFail && failInfo) {
-          console.warn(`  причина → ${formatFail(failInfo)}`);
+        if (explainFail) {
+          if (explainFailLite) {
+            console.warn("  причина → no-solution (lite)");
+          } else if (failInfo) {
+            console.warn(`  причина → ${formatFail(failInfo)}`);
+          }
         }
         failedCount += 1;
-        continue;
+        return;
       }
 
       if (unique) {
@@ -1736,36 +1974,120 @@ if (!files.length) {
       console.error(`  time=${elapsedSec}s`);
       failedCount += 1;
     }
+  };
+
+  const pickWaveEntries = (
+    pending: BatchEntry[],
+    maxWaveSize: number
+  ): BatchEntry[] => {
+    const wave: BatchEntry[] = [];
+    const blocked = new Set<string>();
+    for (const entry of pending) {
+      if (wave.length >= maxWaveSize) break;
+      if (blocked.has(entry.key)) continue;
+      wave.push(entry);
+      blocked.add(entry.key);
+      const neighbors = entryNeighbors.get(entry.key);
+      if (!neighbors) continue;
+      for (const neighborKey of neighbors) blocked.add(neighborKey);
+    }
+    return wave;
+  };
+
+  if (templateParallel > 1) {
+    const pending = [...orderedEntries];
+    while (pending.length > 0) {
+      const wave = pickWaveEntries(pending, templateParallel);
+      if (!wave.length) {
+        // Safety fallback; should not happen, but guarantees progress.
+        wave.push(pending[0]);
+      }
+      const waveKeys = new Set(wave.map((entry) => entry.key));
+      for (let i = pending.length - 1; i >= 0; i--) {
+        if (waveKeys.has(pending[i].key)) pending.splice(i, 1);
+      }
+      console.log(`\n🧵 wave size=${wave.length} remaining=${pending.length}`);
+      await Promise.all(wave.map((entry) => runEntry(entry)));
+    }
+  } else {
+    for (const entry of orderedEntries) {
+      await runEntry(entry);
+    }
   }
 
+  let editionUsageLine: string | null = null;
   if (effectiveEditionId !== null && solvedCount > 0) {
     const batchWordUsage = mergeWordUsageCounts(templateWordCounts);
     const persisted = await persistEditionWordStats(effectiveEditionId, batchWordUsage, issueContext?.issueId ?? null);
-    console.log(
-      `📈 edition usage stats updated: editionId=${effectiveEditionId} words=${persisted.updatedWords} skipped=${persisted.skippedWords}`
-    );
+    editionUsageLine =
+      `📈 edition usage stats updated: editionId=${effectiveEditionId} words=${persisted.updatedWords} skipped=${persisted.skippedWords}`;
+    console.log(editionUsageLine);
   }
 
   const totalMin = ((Date.now() - batchStartedAt) / 60000).toFixed(1);
   const solveMin = (solveTotalMs / 60000).toFixed(1);
-  console.log(
-    `Итог: успешно заполнены ${solvedCount}, не удалось ${failedCount} (всего ${entries.length})`
-  );
-  console.log(`\nВсе файлы обработаны. time=${totalMin}m solve=${solveMin}m`);
+  const totalLine = `Итог: успешно заполнены ${solvedCount}, не удалось ${failedCount} (всего ${entries.length})`;
+  const doneLine = `Все файлы обработаны. time=${totalMin}m solve=${solveMin}m`;
+  console.log(totalLine);
+  console.log(`\n${doneLine}`);
+  let uniqueLine: string | null = null;
   if (unique) {
-    console.log(
+    uniqueLine =
       `🔁 unique fallback: probeAttempted=${uniqueFallbackStats.probeAttempted} probeSolved=${uniqueFallbackStats.probeSolved} probeUnsat=${uniqueFallbackStats.probeUnsat} probeUnknown=${uniqueFallbackStats.probeUnknown} strict=${uniqueFallbackStats.strictSolved}/${uniqueFallbackStats.strictAttempted} strictLimited=${uniqueFallbackStats.strictLimited} skippedByDeficit=${uniqueFallbackStats.strictSkippedByDeficit} adaptive=${uniqueFallbackStats.adaptiveSolved}/${uniqueFallbackStats.adaptiveAttempted} neighbor=${uniqueFallbackStats.neighborSolved}/${uniqueFallbackStats.neighborAttempted}`
-    );
+    console.log(uniqueLine);
   }
+  let usageRebalanceLine: string | null = null;
+  let usageRebalanceByLenLine: string | null = null;
   if (usageRebalance) {
-    console.log(`🧊 ${formatUsageRebalanceMetrics(usageRebalanceMetrics)}`);
+    usageRebalanceLine = `🧊 ${formatUsageRebalanceMetrics(usageRebalanceMetrics)}`;
+    usageRebalanceByLenLine = `🧊 ${formatUsageRebalanceLenMetrics(usageRebalanceMetrics)}`;
+    console.log(usageRebalanceLine);
+    console.log(usageRebalanceByLenLine);
+  }
+  let solverStatsLines: string[] = [];
+  if (solverStats) {
+    solverStatsLines = buildSolverStatsLines(solverStatsMetrics);
+    for (const line of solverStatsLines) {
+      console.log(line);
+    }
   }
 
+  let duplicatesHeaderLine: string | null = null;
+  let duplicatesSummaryLine: string | null = null;
   if (reportDuplicates) {
     const report = buildDuplicateReport(templateWordCounts, templateNameByKey);
-    console.log("\n📊 отчёт по дублям слов");
-    console.log(
-      `  слов-дублей=${report.duplicateWordCount} повторных использований=${report.totalRepeatUses} шаблонов-с-дублями=${report.templatesWithDuplicates}`
-    );
+    duplicatesHeaderLine = "📊 отчёт по дублям слов";
+    duplicatesSummaryLine =
+      `  слов-дублей=${report.duplicateWordCount} повторных использований=${report.totalRepeatUses} шаблонов-с-дублями=${report.templatesWithDuplicates}`;
+    console.log(`\n${duplicatesHeaderLine}`);
+    console.log(duplicatesSummaryLine);
   }
-})();
+
+  const runFinishedAt = new Date();
+  const runDurationMin = ((runFinishedAt.getTime() - runStartedAt.getTime()) / 60000).toFixed(1);
+  appendRunLogBlock([
+    `[RUN END] ${formatDateLocal(runFinishedAt)} status=ok duration=${runDurationMin}m`,
+    `команда запуска: "${runCommand}"`,
+    ...(editionUsageLine ? [editionUsageLine] : []),
+    totalLine,
+    doneLine,
+    ...(uniqueLine ? [uniqueLine] : []),
+    ...(usageRebalanceLine ? [usageRebalanceLine] : []),
+    ...(usageRebalanceByLenLine ? [usageRebalanceByLenLine] : []),
+    ...(solverStats ? solverStatsLines : []),
+    ...(duplicatesHeaderLine ? [duplicatesHeaderLine] : []),
+    ...(duplicatesSummaryLine ? [duplicatesSummaryLine] : []),
+  ]);
+})().catch((error: unknown) => {
+  const runFailedAt = new Date();
+  const runDurationMin = ((runFailedAt.getTime() - runStartedAt.getTime()) / 60000).toFixed(1);
+  const errorMessage = error instanceof Error
+    ? error.stack ?? error.message
+    : String(error);
+  appendRunLogBlock([
+    `[RUN END] ${formatDateLocal(runFailedAt)} status=error duration=${runDurationMin}m`,
+    `команда запуска: "${runCommand}"`,
+    `ошибка: ${errorMessage}`,
+  ]);
+  throw error;
+});

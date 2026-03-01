@@ -5,6 +5,7 @@ import type { Dict, SolveOptions } from "./solver.js";
 type NativeSolveOptions = {
   shuffle?: boolean;
   lcv?: boolean;
+  lcvPrioritySlack?: number;
   restarts?: number;
   parallelRestarts?: number;
   uniqueWords?: boolean;
@@ -154,6 +155,7 @@ export function solveDlxNative(
     options: {
       shuffle: options?.shuffle,
       lcv: options?.lcv,
+      lcvPrioritySlack: options?.lcvPrioritySlack,
       restarts: options?.restarts,
       parallelRestarts: options?.parallelRestarts,
       uniqueWords: options?.uniqueWords,
@@ -258,6 +260,7 @@ export async function solveDlxNativeAsync(
     options: {
       shuffle: options?.shuffle,
       lcv: options?.lcv,
+      lcvPrioritySlack: options?.lcvPrioritySlack,
       restarts: options?.restarts,
       parallelRestarts: options?.parallelRestarts,
       uniqueWords: options?.uniqueWords,

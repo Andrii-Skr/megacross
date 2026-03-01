@@ -2,10 +2,10 @@ use napi::bindgen_prelude::*;
 use napi::Status;
 use napi::threadsafe_function::{ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
-use rayon::prelude::*;
+use rayon::{ThreadPool, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,7 @@ struct SlotInput {
 struct SolveOptionsInput {
   shuffle: Option<bool>,
   lcv: Option<bool>,
+  lcv_priority_slack: Option<i32>,
   restarts: Option<usize>,
   unique_words: Option<bool>,
   split_components: Option<bool>,
@@ -56,6 +57,7 @@ struct Slot {
 struct ResolveOptions {
   shuffle: bool,
   lcv: bool,
+  lcv_priority_slack: i32,
   restarts: usize,
   unique_words: bool,
   split_components: bool,
@@ -91,6 +93,29 @@ struct Cross {
   other: usize,
   i_self: usize,
   i_other: usize,
+}
+
+static RAYON_POOL_CACHE: OnceLock<Mutex<HashMap<usize, Arc<ThreadPool>>>> = OnceLock::new();
+
+fn get_or_create_thread_pool(num_threads: usize) -> Option<Arc<ThreadPool>> {
+  let cache = RAYON_POOL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+  if let Ok(mut pools) = cache.lock() {
+    if let Some(pool) = pools.get(&num_threads) {
+      return Some(Arc::clone(pool));
+    }
+    let built = rayon::ThreadPoolBuilder::new()
+      .num_threads(num_threads)
+      .build()
+      .ok()?;
+    let pool = Arc::new(built);
+    pools.insert(num_threads, Arc::clone(&pool));
+    return Some(pool);
+  }
+  rayon::ThreadPoolBuilder::new()
+    .num_threads(num_threads)
+    .build()
+    .ok()
+    .map(Arc::new)
 }
 
 struct DlxColumn {
@@ -548,10 +573,7 @@ fn solve_dlx_internal(
       });
     };
 
-    if let Ok(pool) = rayon::ThreadPoolBuilder::new()
-      .num_threads(parallel_restarts)
-      .build()
-    {
+    if let Some(pool) = get_or_create_thread_pool(parallel_restarts) {
       pool.install(run);
     } else {
       run();
@@ -683,7 +705,7 @@ fn solve_attempt_with_progress_tsfn(
 
     let emitter: Box<dyn ProgressEmitter> = Box::new(TsfnEmitter {
       callback: Arc::clone(progress),
-      call_mode: ThreadsafeFunctionCallMode::Blocking,
+      call_mode: ThreadsafeFunctionCallMode::NonBlocking,
       debug: options.debug_dlx,
       logged: false,
     });
@@ -787,6 +809,7 @@ fn resolve_options(raw: SolveOptionsInput) -> ResolveOptions {
   ResolveOptions {
     shuffle,
     lcv: raw.lcv.unwrap_or(false),
+    lcv_priority_slack: raw.lcv_priority_slack.unwrap_or(0).max(0),
     restarts,
     unique_words: raw.unique_words.unwrap_or(true),
     split_components: raw.split_components.unwrap_or(true),
@@ -1116,10 +1139,7 @@ fn run_attempt_dlx<'a>(
         scored.push((score, priority, tie, idx));
       }
       scored.sort_by(|a, b| {
-        b.0
-          .cmp(&a.0)
-          .then_with(|| a.1.cmp(&b.1))
-          .then_with(|| a.2.cmp(&b.2))
+        compare_scored_candidates(a.0, a.1, a.2, b.0, b.1, b.2, options.lcv_priority_slack)
       });
       candidates = scored.into_iter().map(|s| s.3).collect();
     } else if options.word_priority.is_some() && candidates.len() > 1 {
@@ -1312,10 +1332,7 @@ fn run_attempt_dlx_no_progress(
         scored.push((score, priority, tie, idx));
       }
       scored.sort_by(|a, b| {
-        b.0
-          .cmp(&a.0)
-          .then_with(|| a.1.cmp(&b.1))
-          .then_with(|| a.2.cmp(&b.2))
+        compare_scored_candidates(a.0, a.1, a.2, b.0, b.1, b.2, options.lcv_priority_slack)
       });
       candidates = scored.into_iter().map(|s| s.3).collect();
     } else if options.word_priority.is_some() && candidates.len() > 1 {
@@ -1425,6 +1442,30 @@ fn score_word(
     score += count as i32;
   }
   score
+}
+
+fn compare_scored_candidates(
+  a_score: i32,
+  a_priority: i64,
+  a_tie: u32,
+  b_score: i32,
+  b_priority: i64,
+  b_tie: u32,
+  lcv_priority_slack: i32,
+) -> std::cmp::Ordering {
+  let safe_slack = if lcv_priority_slack > 0 { lcv_priority_slack } else { 0 };
+  let score_gap = a_score.saturating_sub(b_score).abs();
+  if safe_slack > 0 && score_gap <= safe_slack {
+    a_priority
+      .cmp(&b_priority)
+      .then_with(|| b_score.cmp(&a_score))
+      .then_with(|| a_tie.cmp(&b_tie))
+  } else {
+    b_score
+      .cmp(&a_score)
+      .then_with(|| a_priority.cmp(&b_priority))
+      .then_with(|| a_tie.cmp(&b_tie))
+  }
 }
 
 fn word_priority(options: &ResolveOptions, word: &str) -> i64 {

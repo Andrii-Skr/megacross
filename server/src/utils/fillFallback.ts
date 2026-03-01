@@ -33,6 +33,7 @@ type CspProbeOptions = {
   maxMs?: number;
   uniqueWords?: boolean;
   wordPriority?: Map<string, number>;
+  lcvPrioritySlack?: number;
 };
 
 function toPositiveInt(value: number | undefined): number | undefined {
@@ -98,6 +99,7 @@ export function runCspProbe(
     nativeDlx: false,
     shuffle: false,
     lcv: true,
+    lcvPrioritySlack: options.lcvPrioritySlack,
     uniqueWords: options.uniqueWords ?? true,
     splitComponents: true,
     restarts: 1,

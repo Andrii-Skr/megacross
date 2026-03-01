@@ -70,6 +70,7 @@ export type SolveFailInfo = {
 export type SolveOptions = {
   shuffle?: boolean;
   lcv?: boolean;
+  lcvPrioritySlack?: number;
   restarts?: number;
   parallelRestarts?: number;
   uniqueWords?: boolean;
@@ -92,6 +93,7 @@ export type SolveOptions = {
 type ResolvedOptions = {
   shuffle: boolean;
   lcv: boolean;
+  lcvPrioritySlack: number;
   restarts: number;
   parallelRestarts: number;
   uniqueWords: boolean;
@@ -117,6 +119,33 @@ type WordIndex = {
   wordsByLen: Map<number, string[]>;
   posIndex: Map<number, Map<number, Map<string, IndexCell>>>;
 };
+
+type ScoredCandidate = {
+  score: number;
+  priority: number;
+  tie: number;
+};
+
+function compareScoredCandidates(
+  a: ScoredCandidate,
+  b: ScoredCandidate,
+  lcvPrioritySlack: number
+): number {
+  const safeSlack = Number.isFinite(lcvPrioritySlack) && lcvPrioritySlack > 0
+    ? Math.floor(lcvPrioritySlack)
+    : 0;
+  const scoreDiff = b.score - a.score;
+  if (safeSlack > 0 && Math.abs(scoreDiff) <= safeSlack) {
+    const priorityDiff = a.priority - b.priority;
+    if (priorityDiff !== 0) return priorityDiff;
+    if (scoreDiff !== 0) return scoreDiff;
+    return a.tie - b.tie;
+  }
+  if (scoreDiff !== 0) return scoreDiff;
+  const priorityDiff = a.priority - b.priority;
+  if (priorityDiff !== 0) return priorityDiff;
+  return a.tie - b.tie;
+}
 
 function buildWordIndex(dict: Dict): WordIndex {
   const wordsByLen = new Map<number, string[]>();
@@ -431,7 +460,7 @@ function runAttemptCsp(
         priority: priorityOf(w),
         tie: options.shuffle ? Math.random() : i,
       }));
-      scored.sort((a, b) => (b.score - a.score) || (a.priority - b.priority) || (a.tie - b.tie));
+      scored.sort((a, b) => compareScoredCandidates(a, b, options.lcvPrioritySlack));
       return scored.map(s => s.word);
     }
     if (options.wordPriority) {
@@ -781,7 +810,7 @@ function runAttemptDlx(
         priority: priorityOf(w),
         tie: options.shuffle ? Math.random() : i,
       }));
-      scored.sort((a, b) => (b.score - a.score) || (a.priority - b.priority) || (a.tie - b.tie));
+      scored.sort((a, b) => compareScoredCandidates(a, b, options.lcvPrioritySlack));
       candidates = scored.map(s => s.word);
     } else if (options.wordPriority && candidates.length > 1) {
       const scored = candidates.map((w, i) => ({
@@ -1076,6 +1105,10 @@ export function solve(
   const options: ResolvedOptions = {
     shuffle,
     lcv: optionsRaw.lcv ?? false,
+    lcvPrioritySlack:
+      Number.isFinite(optionsRaw.lcvPrioritySlack) && (optionsRaw.lcvPrioritySlack as number) > 0
+        ? Math.floor(optionsRaw.lcvPrioritySlack as number)
+        : 0,
     restarts,
     parallelRestarts: optionsRaw.parallelRestarts ?? 1,
     uniqueWords: optionsRaw.uniqueWords ?? true,

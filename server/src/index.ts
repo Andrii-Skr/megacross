@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { existsSync } from "node:fs";
 import { getWordsAndDefinitions, getAllTags } from "./services/wordDefinitionService";
+import type { UsageRebalanceMode } from "./utils/usageRebalance";
 import {
   finalizeFillJob,
   getFillJob,
@@ -48,6 +49,7 @@ function parseFillOverrides(input: unknown) {
     writeCrw?: boolean;
     usageStats?: boolean;
     usageRebalance?: boolean;
+    usageRebalanceMode?: UsageRebalanceMode;
     filterTemplateId?: number;
   } = {};
   const maxNodes = Number(raw.maxNodes);
@@ -69,6 +71,9 @@ function parseFillOverrides(input: unknown) {
   if (typeof raw.writeCrw === "boolean") overrides.writeCrw = raw.writeCrw;
   if (typeof raw.usageStats === "boolean") overrides.usageStats = raw.usageStats;
   if (typeof raw.usageRebalance === "boolean") overrides.usageRebalance = raw.usageRebalance;
+  if (raw.usageRebalanceMode === "safe" || raw.usageRebalanceMode === "aggressive") {
+    overrides.usageRebalanceMode = raw.usageRebalanceMode;
+  }
   if (typeof raw.requireNative === "boolean") overrides.requireNative = raw.requireNative;
   const filterTemplateId = Number(raw.filterTemplateId);
   if (Number.isFinite(filterTemplateId) && filterTemplateId > 0) {
