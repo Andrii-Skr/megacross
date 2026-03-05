@@ -25,8 +25,10 @@ const FILL_BATCH_ARGS = [
   "--edition-id",
   "18",
   "--usage-rebalance",
+  "--usage-rebalance-mode",
+  "cost",
   "--template-parallel",
-   "1"
+  "1",
 ];
 
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
@@ -102,12 +104,24 @@ function pickLineBySubstring(lines: string[], marker: string): string | undefine
 function buildSummaryLines(lines: string[]): string[] {
   return [
     pickLine(lines, "📈 edition usage stats updated:"),
+    pickLine(lines, "🔥 hot-ban state updated:"),
     pickLine(lines, "Итог: успешно заполнены"),
     pickLine(lines, "Все файлы обработаны."),
     pickLine(lines, "🔁 unique fallback:"),
     pickLine(lines, "📐 usage-balance-by-len worst="),
     pickLine(lines, "🧊 rebalance:"),
     pickLine(lines, "🧊 rebalance-by-len:"),
+    pickLine(lines, "🧪 cost-rebalance:"),
+    pickLine(lines, "🔥 hot-ban:"),
+    pickLine(lines, "🔥 hot-ban-by-len:"),
+    pickLine(lines, "📊 отчёт по дублям слов"),
+    pickLineBySubstring(lines, "слов-дублей="),
+  ].filter((line): line is string => typeof line === "string");
+}
+
+function buildFocusLines(lines: string[]): string[] {
+  return [
+    pickLine(lines, "Все файлы обработаны."),
     pickLine(lines, "📊 отчёт по дублям слов"),
     pickLineBySubstring(lines, "слов-дублей="),
   ].filter((line): line is string => typeof line === "string");
@@ -120,8 +134,15 @@ function appendLinesToLog(logPath: string, lines: string[]): void {
 function printSummaryLog(lines: string[], logPath: string): void {
   const summary = buildSummaryLines(lines);
   if (summary.length > 0) {
-    console.log(summary.join("\n"));
-    appendLinesToLog(logPath, summary);
+    const focus = buildFocusLines(lines);
+    const focusBlock =
+      focus.length > 0
+        ? ["━━━━━━━━━━ QUICK CHECK ━━━━━━━━━━", ...focus.map((line) => `▶ ${line}`), "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        : [];
+    const detailsBlock = ["──── iteration summary ────", ...summary];
+    const output = [...focusBlock, ...detailsBlock];
+    console.log(output.join("\n"));
+    appendLinesToLog(logPath, output);
     return;
   }
 

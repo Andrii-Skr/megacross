@@ -9,6 +9,7 @@ const PROBE_MS_RATIO = 0.2;
 const PROBE_MS_MIN = 800;
 const PROBE_MS_MAX = 1_500;
 const PROBE_MS_BASE = 7_500;
+const PROBE_BEAM_WIDTH = 50;
 
 const STRICT_LIMITED_NODES_RATIO = 0.3;
 const STRICT_LIMITED_NODES_MIN = 250_000;
@@ -34,6 +35,7 @@ type CspProbeOptions = {
   uniqueWords?: boolean;
   wordPriority?: Map<string, number>;
   lcvPrioritySlack?: number;
+  beamWidth?: number;
 };
 
 function toPositiveInt(value: number | undefined): number | undefined {
@@ -100,6 +102,10 @@ export function runCspProbe(
     shuffle: false,
     lcv: true,
     lcvPrioritySlack: options.lcvPrioritySlack,
+    beamWidth:
+      Number.isFinite(options.beamWidth) && (options.beamWidth as number) > 0
+        ? Math.floor(options.beamWidth as number)
+        : PROBE_BEAM_WIDTH,
     uniqueWords: options.uniqueWords ?? true,
     splitComponents: true,
     restarts: 1,

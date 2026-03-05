@@ -1,11 +1,12 @@
 
-//  • читает ВСЕ *.fsh в sample/
+//  • читает *.fsh из sample/ (или запускает каждый подпапку sample/ как отдельный ран)
 //  • решает каждый кроссворд (shuffle optional)
 //  • флаг -u / --unique  → максимум уникальных слов, но с fallback-повторами
 //    (повторы запрещены внутри шаблона и в соседних шаблонах одного/соседних разворотов)
 //  • флаг --report-duplicates → отчёт по дублям слов в конце
 //  • сохраняет SVG + used-words.txt в out/<basename>/
 //------------------------------------------------------------------
+import { spawnSync } from "node:child_process";
 import { appendFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, basename, dirname, extname }               from "node:path";
 import { parseArgs }                             from "node:util";
@@ -37,6 +38,14 @@ import {
   type UsageRebalanceMode,
   type UsageRebalanceThresholds,
 } from "../src/utils/usageRebalance";
+import {
+  formatLenCounter,
+  loadEditionHotBannedWords,
+  mergeLenCounter,
+  recomputeEditionHotBanState,
+  relaxHotBanForLenDeficits,
+} from "../src/utils/editionHotBan";
+import { polishSolvedRowsByCost } from "../src/utils/solutionPolish";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
 import {
   loadDictionary,
@@ -65,6 +74,8 @@ const RUN_LOG_SEPARATOR = "=".repeat(96);
 const IN_BATCH_REPEAT_PRIORITY_MULTIPLIER = 1_000_000_000;
 const MAX_WORD_USES = 2;
 const AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK = 24;
+const COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK = 1_000_000;
+const COST_REBALANCE_POLISH_PASSES = 2;
 
 function parseUsageRebalanceMode(
   value: string | undefined,
@@ -73,7 +84,9 @@ function parseUsageRebalanceMode(
   if (!usageRebalanceEnabled) return "safe";
   if (!value) return "aggressive";
   const normalized = value.trim().toLowerCase();
-  if (normalized === "safe" || normalized === "aggressive") return normalized;
+  if (normalized === "safe" || normalized === "aggressive" || normalized === "cost") {
+    return normalized;
+  }
   console.warn(`Unknown --usage-rebalance-mode value "${value}", using "aggressive".`);
   return "aggressive";
 }
@@ -174,6 +187,86 @@ function parseEditionIdOption(value: string | undefined): number | null {
     throw new Error(`Invalid --edition-id value: "${value}"`);
   }
   return Math.trunc(parsed);
+}
+
+function parseSampleSubdirOption(value: string | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.trim().replace(/\\/gu, "/");
+  if (!normalized) {
+    throw new Error(`Invalid --sample-subdir value: "${value}"`);
+  }
+  const parts = normalized
+    .split("/")
+    .filter((part) => part.length > 0 && part !== ".");
+  if (!parts.length || parts.some((part) => part === "..")) {
+    throw new Error(`Invalid --sample-subdir value: "${value}"`);
+  }
+  return parts.join("/");
+}
+
+function removeOptionsWithValue(args: string[], optionNames: string[]): string[] {
+  const names = new Set(optionNames);
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (names.has(arg)) {
+      if (i + 1 < args.length && !args[i + 1].startsWith("-")) i += 1;
+      continue;
+    }
+    const hasInlineValue = [...names].some((name) => arg.startsWith(`${name}=`));
+    if (hasInlineValue) continue;
+    out.push(arg);
+  }
+  return out;
+}
+
+function collectSampleFoldersWithFsh(sampleRoot: string): string[] {
+  const entries = readdirSync(sampleRoot, { withFileTypes: true });
+  const folders: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dirPath = join(sampleRoot, entry.name);
+    const hasFsh = readdirSync(dirPath).some((fileName) => extname(fileName).toLowerCase() === ".fsh");
+    if (hasFsh) folders.push(entry.name);
+  }
+  folders.sort((a, b) => a.localeCompare(b, "ru"));
+  return folders;
+}
+
+function runFillBatchBySampleFolders(folderNames: string[], rawArgs: string[]) {
+  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const sanitizedArgs = removeOptionsWithValue(rawArgs, ["--sample-subdir", "--sampleSubdir"]);
+  const startedAt = Date.now();
+  let succeeded = 0;
+  let failed = 0;
+  const failedFolders: string[] = [];
+
+  for (const [index, folderName] of folderNames.entries()) {
+    const childArgs = [...sanitizedArgs, "--sample-subdir", folderName];
+    const childCommand = buildRunCommand(childArgs);
+    console.log(`\n📁 sample folder ${index + 1}/${folderNames.length}: ${folderName}`);
+    console.log(`команда запуска: "${childCommand}"`);
+    const result = spawnSync(pnpmBin, ["run", "fill-batch", "--", ...childArgs], {
+      stdio: "inherit",
+    });
+    const exitCode = result.status ?? 1;
+    if (result.error || exitCode !== 0) {
+      failed += 1;
+      failedFolders.push(folderName);
+      const reason = result.error ? result.error.message : `code=${exitCode}`;
+      console.error(`❌ folder failed: ${folderName} (${reason})`);
+    } else {
+      succeeded += 1;
+    }
+  }
+
+  return {
+    total: folderNames.length,
+    succeeded,
+    failed,
+    failedFolders,
+    elapsedMs: Date.now() - startedAt,
+  };
 }
 
 function isEditionWordStatEditionFkError(error: unknown): boolean {
@@ -1149,10 +1242,14 @@ const parsedCli = (() => {
         "usage-rebalance": { type: "boolean" },
         usageRebalanceMode: { type: "string" },
         "usage-rebalance-mode": { type: "string" },
+        editionHotBan: { type: "boolean" },
+        "edition-hot-ban": { type: "boolean" },
         solverStats: { type: "boolean" },
         "solver-stats": { type: "boolean" },
         templateParallel: { type: "string" },
         "template-parallel": { type: "string" },
+        sampleSubdir: { type: "string" },
+        "sample-subdir": { type: "string" },
       },
     });
   } catch (error) {
@@ -1200,6 +1297,8 @@ const issueIdRaw = values.issueId ?? values["issue-id"];
 const issueId = parseIssueIdOption(issueIdRaw);
 const editionIdRaw = values.editionId ?? values["edition-id"];
 const editionId = parseEditionIdOption(editionIdRaw);
+const sampleSubdirRaw = values.sampleSubdir ?? values["sample-subdir"];
+const sampleSubdir = parseSampleSubdirOption(sampleSubdirRaw);
 const filterTemplateIdRaw = values.filterTemplateId ?? values["filter-template-id"];
 const filterTemplateId = parseFilterTemplateIdOption(filterTemplateIdRaw);
 const dictPath  = values.dict ?? "";
@@ -1213,6 +1312,8 @@ const reportDuplicates = !!values.reportDuplicates || !!values["report-duplicate
 const usageRebalance = !!values.usageRebalance || !!values["usage-rebalance"];
 const usageRebalanceModeRaw = values.usageRebalanceMode ?? values["usage-rebalance-mode"];
 const usageRebalanceMode = parseUsageRebalanceMode(usageRebalanceModeRaw, usageRebalance);
+const usageRebalancePenaltyOnly = usageRebalance && usageRebalanceMode === "cost";
+const editionHotBan = !!values.editionHotBan || !!values["edition-hot-ban"];
 const solverStats = !!values.solverStats || !!values["solver-stats"];
 const templateParallelRaw = values.templateParallel ?? values["template-parallel"];
 const templateParallelParsed = templateParallelRaw !== undefined ? Number(templateParallelRaw) : NaN;
@@ -1251,13 +1352,57 @@ const SVG_PREAMBLE = useCorelStyle
   : "";
 const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
 
+if (!sampleSubdir) {
+  const sampleFolders = collectSampleFoldersWithFsh(SAMPLE_DIR);
+  if (sampleFolders.length > 0) {
+    console.log(`📁 sample folders mode: found=${sampleFolders.length} (one folder = one run)`);
+    const batchResult = runFillBatchBySampleFolders(sampleFolders, rawCliArgs);
+    const elapsedMin = (batchResult.elapsedMs / 60000).toFixed(1);
+    const summaryLine =
+      `📁 sample folders processed: ok=${batchResult.succeeded} failed=${batchResult.failed} total=${batchResult.total} time=${elapsedMin}m`;
+    console.log(`\n${summaryLine}`);
+    if (batchResult.failedFolders.length) {
+      console.log(`❌ failed folders: ${batchResult.failedFolders.join(", ")}`);
+    }
+    const runFinishedAt = new Date();
+    const runDurationMin = ((runFinishedAt.getTime() - runStartedAt.getTime()) / 60000).toFixed(1);
+    appendRunLogBlock([
+      `[RUN END] ${formatDateLocal(runFinishedAt)} status=${batchResult.failed > 0 ? "error" : "ok"} duration=${runDurationMin}m`,
+      `команда запуска: "${runCommand}"`,
+      summaryLine,
+      ...(batchResult.failedFolders.length
+        ? [`failed folders: ${batchResult.failedFolders.join(", ")}`]
+        : []),
+    ]);
+    process.exit(batchResult.failed > 0 ? 1 : 0);
+  }
+}
+
+const sampleInputDir = sampleSubdir ? join(SAMPLE_DIR, sampleSubdir) : SAMPLE_DIR;
+
 /* ---------- ищем .fsh ---------- */
-const files = readdirSync(SAMPLE_DIR)
-  .filter(f => extname(f).toLowerCase() === ".fsh")
-  .map(f => join(SAMPLE_DIR, f));
+let files: string[] = [];
+try {
+  files = readdirSync(sampleInputDir)
+    .filter(f => extname(f).toLowerCase() === ".fsh")
+    .map(f => join(sampleInputDir, f));
+} catch (error) {
+  const message =
+    error instanceof Error ? error.message : String(error);
+  const readDirLine = `Не удалось прочитать входную папку ${sampleInputDir}: ${message}`;
+  console.error(readDirLine);
+  const runFinishedAt = new Date();
+  const runDurationMin = ((runFinishedAt.getTime() - runStartedAt.getTime()) / 60000).toFixed(1);
+  appendRunLogBlock([
+    `[RUN END] ${formatDateLocal(runFinishedAt)} status=error duration=${runDurationMin}m`,
+    `команда запуска: "${runCommand}"`,
+    readDirLine,
+  ]);
+  process.exit(1);
+}
 
 if (!files.length) {
-  const noFilesLine = "Нет *.fsh в sample/";
+  const noFilesLine = `Нет *.fsh в ${sampleInputDir}/`;
   console.log(noFilesLine);
   const runFinishedAt = new Date();
   const runDurationMin = ((runFinishedAt.getTime() - runStartedAt.getTime()) / 60000).toFixed(1);
@@ -1317,9 +1462,11 @@ if (!files.length) {
   }
   const editionUsageCountByWord = new Map<string, number>();
   const editionUsagePriorityByWord = new Map<string, number>();
+  const editionHotBannedWords = new Set<string>();
   let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
   let usageRebalanceContext: UsageRebalanceContext | null = null;
   let usageRebalanceReason = "off";
+  let editionHotBanReason = "off";
   if (filterTemplateId !== null) {
     const templateData = await loadFilterTemplateById(filterTemplateId);
     masterDict = await loadDictionaryByTemplate(templateData.template, { lengths });
@@ -1345,7 +1492,9 @@ if (!files.length) {
     }
     if (editionUsageCountByWord.size) {
       const usagePriorityMode: UsageRebalanceMode =
-        usageRebalance && usageRebalanceMode === "aggressive" ? "aggressive" : "safe";
+        usageRebalance && (usageRebalanceMode === "aggressive" || usageRebalanceMode === "cost")
+          ? "aggressive"
+          : "safe";
       const meanPriority = buildLenMeanUsagePriority(
         masterDict,
         editionUsageCountByWord,
@@ -1361,6 +1510,20 @@ if (!files.length) {
     );
   } else {
     console.log("📈 edition usage stats: off (no --edition-id or resolvable issue edition)");
+  }
+  if (!editionHotBan) {
+    editionHotBanReason = "off";
+  } else if (effectiveEditionId === null) {
+    editionHotBanReason = "skipped (no edition)";
+  } else {
+    const loadedHotBannedWords = await loadEditionHotBannedWords(effectiveEditionId);
+    for (const word of loadedHotBannedWords) {
+      editionHotBannedWords.add(word);
+    }
+    editionHotBanReason = `on (edition=${effectiveEditionId} banned=${editionHotBannedWords.size})`;
+    if (!editionUsageCountByWord.size) {
+      editionHotBanReason = `${editionHotBanReason} noUsage=1`;
+    }
   }
   if (!usageRebalance) {
     usageRebalanceReason = "off";
@@ -1379,7 +1542,9 @@ if (!files.length) {
       editionUsageCountByWord,
       usageRebalanceThresholds
     );
-    usageRebalanceReason = `on (mode=${usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
+    usageRebalanceReason = usageRebalancePenaltyOnly
+      ? `on (mode=cost strategy=penalty-only soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
+      : `on (mode=${usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
   }
   const wordLengthByWord = buildWordLengthLookup(masterDict);
   const dictCounts = new Map<number, number>();
@@ -1420,7 +1585,7 @@ if (!files.length) {
     ? explainFailLite ? "lite" : "full"
     : "off";
   console.log(
-    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} templateParallel=${templateParallel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFailLabel} usageRebalance=${usageRebalanceReason} solverStats=${solverStats ? "on" : "off"}`
+    `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} templateParallel=${templateParallel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFailLabel} usageRebalance=${usageRebalanceReason} editionHotBan=${editionHotBanReason} solverStats=${solverStats ? "on" : "off"}`
   );
   if (templateParallel > 1 && unique) {
     console.log("🧪 template parallel mode: experimental under --unique (cross-template word pressure may differ run-to-run)");
@@ -1487,6 +1652,19 @@ if (!files.length) {
     neighborSolved: 0,
   };
   const usageRebalanceMetrics = buildUsageRebalanceMetrics();
+  const usageCostMetrics = {
+    templatesPolished: 0,
+    replacements: 0,
+    totalDeltaCost: 0,
+    examinedCandidates: 0,
+  };
+  const editionHotBanMetrics = {
+    loaded: editionHotBannedWords.size,
+    applied: 0,
+    relaxed: 0,
+    relaxedByLen: new Map<number, number>(),
+    unresolvedByLen: new Map<number, number>(),
+  };
   const solverStatsMetrics: SolveCallMetric[] = [];
   const templateWordCounts = new Map<string, Map<string, number>>();
   const templateNameByKey = new Map(entries.map((entry) => [entry.key, entry.name]));
@@ -1522,9 +1700,13 @@ if (!files.length) {
 
       const solveStartedAt = Date.now();
       const rebalanceLcvPrioritySlack =
-        usageRebalance && usageRebalanceMode === "aggressive"
-          ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
-          : 0;
+        !usageRebalance
+          ? 0
+          : usageRebalanceMode === "aggressive"
+            ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
+            : usageRebalanceMode === "cost"
+              ? COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK
+              : 0;
       const onFail = explainFail && !explainFailLite
         ? (info: SolveFailInfo) => {
             failInfo = info;
@@ -1598,6 +1780,29 @@ if (!files.length) {
       };
 
       let solved: string[] | null = null;
+      const applyEditionHotBan = (baseBlockedWords: Set<string>) => {
+        if (!editionHotBan || !editionHotBannedWords.size) {
+          return {
+            blockedWords: baseBlockedWords,
+            relaxedWords: new Set<string>(),
+            relaxedByLen: new Map<number, number>(),
+            unresolvedDeficitsByLen: new Map<number, number>(),
+            appliedHotWords: 0,
+          };
+        }
+        const relaxed = relaxHotBanForLenDeficits(
+          entry.lenCounts,
+          masterDict,
+          baseBlockedWords,
+          editionHotBannedWords,
+          editionUsageCountByWord
+        );
+        editionHotBanMetrics.applied += relaxed.appliedHotWords;
+        editionHotBanMetrics.relaxed += relaxed.relaxedWords.size;
+        mergeLenCounter(editionHotBanMetrics.relaxedByLen, relaxed.relaxedByLen);
+        mergeLenCounter(editionHotBanMetrics.unresolvedByLen, relaxed.unresolvedDeficitsByLen);
+        return relaxed;
+      };
       if (unique) {
         const neighborBlockedWords = new Set<string>();
         const neighbors = entryNeighbors.get(key);
@@ -1622,6 +1827,9 @@ if (!files.length) {
           editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined
         );
         const buildRebalanceBlockedVariants = (baseBlockedWords: Set<string>): RebalanceBlockedVariant[] => {
+          if (usageRebalancePenaltyOnly) {
+            return [{ kind: "base", blockedWords: baseBlockedWords }];
+          }
           if (!usageRebalanceThresholds || !usageRebalanceContext || !editionUsageCountByWord.size) {
             return [{ kind: "base", blockedWords: baseBlockedWords }];
           }
@@ -1690,6 +1898,9 @@ if (!files.length) {
               overrides.maxMs = options.strictBudget.maxMs;
               appliedStrictBudget = true;
             }
+            if (usageRebalancePenaltyOnly) {
+              overrides.wordPriority = fallbackPriority;
+            }
             if (phase !== "strict") {
               overrides.wordPriority = fallbackPriority;
               overrides.lcv = false;
@@ -1701,8 +1912,9 @@ if (!files.length) {
           return null;
         };
 
-        const strictVariants = buildRebalanceBlockedVariants(strictBlockedWords);
-        const strictPrimaryBlockedWords = strictVariants[0]?.blockedWords ?? strictBlockedWords;
+        const strictHotBan = applyEditionHotBan(strictBlockedWords);
+        const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords);
+        const strictPrimaryBlockedWords = strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
         const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
           entry.lenCounts,
           masterDict,
@@ -1795,9 +2007,10 @@ if (!files.length) {
             wordLengthByWord,
             MAX_WORD_USES
           );
-          if (!areSetsEqual(adaptiveBaseBlockedWords, strictBlockedWords)) {
+          const adaptiveHotBan = applyEditionHotBan(adaptiveBaseBlockedWords);
+          if (!areSetsEqual(adaptiveHotBan.blockedWords, strictHotBan.blockedWords)) {
             uniqueFallbackStats.adaptiveAttempted += 1;
-            const adaptiveVariants = buildRebalanceBlockedVariants(adaptiveBaseBlockedWords);
+            const adaptiveVariants = buildRebalanceBlockedVariants(adaptiveHotBan.blockedWords);
             solved = await solveWithBlockedVariants("adaptive", adaptiveVariants, {
               sortByFallbackPriority: true,
               strictBudget: null,
@@ -1809,7 +2022,8 @@ if (!files.length) {
         }
         if (!solved && canFallbackToNeighbor) {
           uniqueFallbackStats.neighborAttempted += 1;
-          const neighborVariants = buildRebalanceBlockedVariants(neighborCappedBlockedWords);
+          const neighborHotBan = applyEditionHotBan(neighborCappedBlockedWords);
+          const neighborVariants = buildRebalanceBlockedVariants(neighborHotBan.blockedWords);
           solved = await solveWithBlockedVariants("neighbor", neighborVariants, {
             sortByFallbackPriority: true,
             strictBudget: null,
@@ -1819,8 +2033,39 @@ if (!files.length) {
           }
         }
       } else {
-        const dict = new Map<number, string[]>([...masterDict].map(([len, words]) => [len, [...words]]));
-        solved = await solveWithDictionary(dict, "base");
+        const nonUniqueHotBan = applyEditionHotBan(new Set<string>());
+        const hotBanFilteredDict = filterDictionaryByBlockedWords(masterDict, nonUniqueHotBan.blockedWords);
+        const dictForSolve = new Map<number, string[]>(
+          [...hotBanFilteredDict].map(([len, words]) => [len, [...words]])
+        );
+        solved = await solveWithDictionary(dictForSolve, "base");
+      }
+      if (usageRebalancePenaltyOnly && solved) {
+        const polishPriority = buildInBatchUsagePriority(
+          usedWordCountInBatch,
+          editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined
+        );
+        const polish = polishSolvedRowsByCost({
+          solvedRows: solved,
+          slots,
+          dict: masterDict,
+          uniqueWords: unique,
+          maxPasses: COST_REBALANCE_POLISH_PASSES,
+          priorityByWord: polishPriority,
+          usedWordCountByWord: usedWordCountInBatch,
+          forbiddenWords: unique ? usedWordsInBatch : undefined,
+          repeatPenalty: IN_BATCH_REPEAT_PRIORITY_MULTIPLIER,
+        });
+        if (polish.improved) {
+          solved = polish.solvedRows;
+          usageCostMetrics.templatesPolished += 1;
+          usageCostMetrics.replacements += polish.replacements;
+          usageCostMetrics.totalDeltaCost += polish.totalDeltaCost;
+          usageCostMetrics.examinedCandidates += polish.examinedCandidates;
+          console.log(
+            `🧪 cost-polish: passes=${polish.passCount} replacements=${polish.replacements} delta=${polish.totalDeltaCost.toFixed(1)}`
+          );
+        }
       }
       const solveMs = Date.now() - solveStartedAt;
       solveTotalMs += solveMs;
@@ -2016,12 +2261,19 @@ if (!files.length) {
   }
 
   let editionUsageLine: string | null = null;
+  let editionHotBanStateLine: string | null = null;
   if (effectiveEditionId !== null && solvedCount > 0) {
     const batchWordUsage = mergeWordUsageCounts(templateWordCounts);
     const persisted = await persistEditionWordStats(effectiveEditionId, batchWordUsage, issueContext?.issueId ?? null);
     editionUsageLine =
       `📈 edition usage stats updated: editionId=${effectiveEditionId} words=${persisted.updatedWords} skipped=${persisted.skippedWords}`;
     console.log(editionUsageLine);
+    if (editionHotBan) {
+      const hotState = await recomputeEditionHotBanState(effectiveEditionId);
+      editionHotBanStateLine =
+        `🔥 hot-ban state updated: editionId=${effectiveEditionId} tracked=${hotState.trackedWords} banned=${hotState.bannedWords} +${hotState.becameBanned} -${hotState.becameUnbanned}`;
+      console.log(editionHotBanStateLine);
+    }
   }
 
   const totalMin = ((Date.now() - batchStartedAt) / 60000).toFixed(1);
@@ -2038,11 +2290,27 @@ if (!files.length) {
   }
   let usageRebalanceLine: string | null = null;
   let usageRebalanceByLenLine: string | null = null;
+  let usageCostLine: string | null = null;
   if (usageRebalance) {
     usageRebalanceLine = `🧊 ${formatUsageRebalanceMetrics(usageRebalanceMetrics)}`;
     usageRebalanceByLenLine = `🧊 ${formatUsageRebalanceLenMetrics(usageRebalanceMetrics)}`;
     console.log(usageRebalanceLine);
     console.log(usageRebalanceByLenLine);
+    if (usageRebalancePenaltyOnly) {
+      usageCostLine =
+        `🧪 cost-rebalance: strategy=penalty-only polished=${usageCostMetrics.templatesPolished} replacements=${usageCostMetrics.replacements} delta=${usageCostMetrics.totalDeltaCost.toFixed(1)} examined=${usageCostMetrics.examinedCandidates}`;
+      console.log(usageCostLine);
+    }
+  }
+  let editionHotBanLine: string | null = null;
+  let editionHotBanByLenLine: string | null = null;
+  if (editionHotBan) {
+    editionHotBanLine =
+      `🔥 hot-ban: loaded=${editionHotBanMetrics.loaded} applied=${editionHotBanMetrics.applied} relaxed=${editionHotBanMetrics.relaxed}`;
+    editionHotBanByLenLine =
+      `🔥 hot-ban-by-len: relaxed=${formatLenCounter(editionHotBanMetrics.relaxedByLen)} unresolved=${formatLenCounter(editionHotBanMetrics.unresolvedByLen)}`;
+    console.log(editionHotBanLine);
+    console.log(editionHotBanByLenLine);
   }
   let solverStatsLines: string[] = [];
   if (solverStats) {
@@ -2069,11 +2337,15 @@ if (!files.length) {
     `[RUN END] ${formatDateLocal(runFinishedAt)} status=ok duration=${runDurationMin}m`,
     `команда запуска: "${runCommand}"`,
     ...(editionUsageLine ? [editionUsageLine] : []),
+    ...(editionHotBanStateLine ? [editionHotBanStateLine] : []),
     totalLine,
     doneLine,
     ...(uniqueLine ? [uniqueLine] : []),
     ...(usageRebalanceLine ? [usageRebalanceLine] : []),
     ...(usageRebalanceByLenLine ? [usageRebalanceByLenLine] : []),
+    ...(usageCostLine ? [usageCostLine] : []),
+    ...(editionHotBanLine ? [editionHotBanLine] : []),
+    ...(editionHotBanByLenLine ? [editionHotBanByLenLine] : []),
     ...(solverStats ? solverStatsLines : []),
     ...(duplicatesHeaderLine ? [duplicatesHeaderLine] : []),
     ...(duplicatesSummaryLine ? [duplicatesSummaryLine] : []),

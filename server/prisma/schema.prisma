@@ -228,6 +228,7 @@ model word_v {
   updateBy          Int?                @db.SmallInt
   update_at         DateTime?           @db.Timestamp(6)
   word_text_norm    String?             @db.VarChar(255)
+  edition_word_hot_state edition_word_hot_state[]
   edition_word_stat edition_word_stat[]
   issue_word_usage  issue_word_usage[]
   opred_v           opred_v[]
@@ -299,6 +300,19 @@ model edition_word_stat {
   @@index([wordId])
 }
 
+model edition_word_hot_state {
+  editionId Int
+  wordId    BigInt
+  isBanned  Boolean  @default(false)
+  updatedAt DateTime @default(now())
+  editions  editions @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  word_v    word_v   @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@id([editionId, wordId])
+  @@index([editionId, isBanned])
+  @@index([wordId])
+}
+
 model editions {
   id                 Int                  @id @default(autoincrement())
   code               String               @unique @db.VarChar(32)
@@ -307,6 +321,7 @@ model editions {
   updatedAt          DateTime
   deletedAt          DateTime?
   hidden             Boolean              @default(false)
+  edition_word_hot_state edition_word_hot_state[]
   edition_opred_stat edition_opred_stat[]
   edition_word_stat  edition_word_stat[]
   issues             issues[]

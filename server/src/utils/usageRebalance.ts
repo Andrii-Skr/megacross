@@ -4,6 +4,7 @@ type LenCounts = Map<number, number>;
 const HARD_BAN_MIN_HEADROOM_ABS = 1;
 const HARD_BAN_MIN_HEADROOM_NEED_SHARE = 0.15;
 const LEN_THRESHOLD_MIN_SAMPLE = 50;
+const LEN_BLEND_MIN_LOCAL_WEIGHT = 0.2;
 
 const SAFE_HARD_BAN_MAX_APPLIED_ABS = 180;
 const SAFE_HARD_BAN_MAX_APPLIED_SHARE = 0.2;
@@ -17,8 +18,8 @@ const AGGRESSIVE_HARD_BAN_PER_LEN_ABS = 48;
 const AGGRESSIVE_HARD_BAN_PER_LEN_NEED_SHARE = 0.85;
 const AGGRESSIVE_HARD_BAN_SLACK_BUDGET_SHARE = 0.95;
 
-const AGGRESSIVE_LEN_PRESSURE_MID_RATIO = 4;
-const AGGRESSIVE_LEN_PRESSURE_HIGH_RATIO = 6;
+const AGGRESSIVE_LEN_PRESSURE_MID_RATIO = 2.2;
+const AGGRESSIVE_LEN_PRESSURE_HIGH_RATIO = 3.2;
 const AGGRESSIVE_LEN_PRESSURE_MID_MULTIPLIER = 1.6;
 const AGGRESSIVE_LEN_PRESSURE_HIGH_MULTIPLIER = 2.1;
 const AGGRESSIVE_MEAN_SOFT_COEFFICIENT = 0.35;
@@ -37,12 +38,12 @@ const AGGRESSIVE_STRONG_UNDER_MEAN_RATIO = 0.65;
 const AGGRESSIVE_STRONG_UNDER_MEAN_MULTIPLIER = 1.8;
 const AGGRESSIVE_STRONG_OVER_MEAN_RATIO = 1.5;
 const AGGRESSIVE_STRONG_OVER_MEAN_MULTIPLIER = 1.5;
-const AGGRESSIVE_MEAN_PRESSURE_MID_RATIO = 1.6;
-const AGGRESSIVE_MEAN_PRESSURE_HIGH_RATIO = 2.2;
+const AGGRESSIVE_MEAN_PRESSURE_MID_RATIO = 1.35;
+const AGGRESSIVE_MEAN_PRESSURE_HIGH_RATIO = 1.75;
 const AGGRESSIVE_MEAN_PRESSURE_MID_MULTIPLIER = 1.25;
 const AGGRESSIVE_MEAN_PRESSURE_HIGH_MULTIPLIER = 1.45;
 
-export type UsageRebalanceMode = "safe" | "aggressive";
+export type UsageRebalanceMode = "safe" | "aggressive" | "cost";
 
 type HardBanProfile = {
   maxAppliedAbs: number;
@@ -73,6 +74,7 @@ type UsageStats = {
   meanUsage: number;
   p50: number;
   p85: number;
+  p90: number;
   p95: number;
   p99: number;
   maxUsage: number;
@@ -99,8 +101,10 @@ export type UsageBalanceByLen = {
   uniq: number;
   meanUsage: number;
   p50: number;
+  p90: number;
   p95: number;
   max: number;
+  p90ToP50Ratio: number;
   maxToP50Ratio: number;
   meanToP50Ratio: number;
   softThreshold: number;
@@ -185,6 +189,16 @@ function safeUsageCount(value: number | undefined): number {
   return Math.trunc(value);
 }
 
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function blendNumber(globalValue: number, lenValue: number, localWeight: number): number {
+  const weight = clamp01(localWeight);
+  return globalValue * (1 - weight) + lenValue * weight;
+}
+
 function percentileCont(sorted: number[], percentile: number): number {
   if (!sorted.length) return 0;
   const p = Number.isFinite(percentile) ? Math.min(1, Math.max(0, percentile)) : 0;
@@ -231,6 +245,7 @@ function buildUsageStats(words: string[], baseUsageByWord: Map<string, number>):
   const meanUsage = usage.length ? totalUsage / usage.length : 0;
   const p50 = percentileCont(usage, 0.5);
   const p85 = percentileCont(usage, 0.85);
+  const p90 = percentileCont(usage, 0.9);
   const p95 = percentileCont(usage, 0.95);
   const p99 = percentileCont(usage, 0.99);
   const maxUsage = usage.length ? usage[usage.length - 1] : 0;
@@ -242,11 +257,44 @@ function buildUsageStats(words: string[], baseUsageByWord: Map<string, number>):
     meanUsage,
     p50,
     p85,
+    p90,
     p95,
     p99,
     maxUsage,
     maxToP50Ratio,
     meanToP50Ratio,
+  };
+}
+
+function buildBlendedLenStats(globalStats: UsageStats, lenStats: UsageStats): UsageStats {
+  if (lenStats.sample >= LEN_THRESHOLD_MIN_SAMPLE) return lenStats;
+  const localWeight = Math.max(
+    LEN_BLEND_MIN_LOCAL_WEIGHT,
+    clamp01(lenStats.sample / LEN_THRESHOLD_MIN_SAMPLE)
+  );
+  const sample = Math.max(
+    1,
+    Math.round(blendNumber(globalStats.sample, lenStats.sample, localWeight))
+  );
+  const meanUsage = blendNumber(globalStats.meanUsage, lenStats.meanUsage, localWeight);
+  const p50 = blendNumber(globalStats.p50, lenStats.p50, localWeight);
+  const p85 = blendNumber(globalStats.p85, lenStats.p85, localWeight);
+  const p90 = blendNumber(globalStats.p90, lenStats.p90, localWeight);
+  const p95 = blendNumber(globalStats.p95, lenStats.p95, localWeight);
+  const p99 = blendNumber(globalStats.p99, lenStats.p99, localWeight);
+  const maxUsage = Math.max(p99, blendNumber(globalStats.maxUsage, lenStats.maxUsage, localWeight));
+  const denom = Math.max(1, p50);
+  return {
+    sample,
+    meanUsage,
+    p50,
+    p85,
+    p90,
+    p95,
+    p99,
+    maxUsage,
+    maxToP50Ratio: maxUsage / denom,
+    meanToP50Ratio: meanUsage / denom,
   };
 }
 
@@ -258,25 +306,19 @@ function resolveThresholdPair(stats: UsageStats, mode: UsageRebalanceMode): {
     const meanLift = Math.max(0, stats.meanUsage - stats.p50);
     const softByMean = Math.ceil(stats.p50 + meanLift * AGGRESSIVE_MEAN_SOFT_COEFFICIENT);
     const hardByMean = Math.ceil(stats.p85 + meanLift * AGGRESSIVE_MEAN_HARD_COEFFICIENT);
-    let softThreshold = Math.max(3, Math.ceil(stats.p85), Math.ceil(stats.p50 + 1), softByMean);
-    let hardThreshold = Math.max(softThreshold + 1, Math.ceil(stats.p95), hardByMean);
+    const softByPercentile = Math.ceil(Math.max(stats.p50 + 1, stats.p85 - 1));
+    const hardByPercentile = Math.ceil(Math.max(stats.p85, stats.p95 - 1));
+    let softThreshold = Math.max(2, softByPercentile, softByMean);
+    let hardThreshold = Math.max(softThreshold + 1, hardByPercentile, hardByMean);
 
     if (stats.maxToP50Ratio >= AGGRESSIVE_LEN_PRESSURE_HIGH_RATIO) {
-      const skewSoft = Math.max(2, Math.ceil(stats.p50 + 1), Math.ceil(stats.meanUsage));
-      const skewHard = Math.max(
-        skewSoft + 1,
-        Math.ceil(stats.p85),
-        Math.ceil(stats.meanUsage + 1)
-      );
+      const skewSoft = Math.max(2, Math.ceil(stats.p50), Math.ceil(stats.meanUsage));
+      const skewHard = Math.max(skewSoft + 1, Math.ceil(stats.p85), Math.ceil(stats.meanUsage + 1));
       softThreshold = Math.min(softThreshold, skewSoft);
       hardThreshold = Math.min(hardThreshold, skewHard);
     } else if (stats.maxToP50Ratio >= AGGRESSIVE_LEN_PRESSURE_MID_RATIO) {
-      const skewSoft = Math.max(2, Math.ceil(stats.p50 + 1), Math.ceil(stats.meanUsage));
-      const skewHard = Math.max(
-        skewSoft + 1,
-        Math.ceil(stats.p95 - 1),
-        Math.ceil(stats.meanUsage + 1)
-      );
+      const skewSoft = Math.max(2, Math.ceil(stats.p50), Math.ceil(stats.meanUsage));
+      const skewHard = Math.max(skewSoft + 1, Math.ceil(stats.p85), Math.ceil(stats.meanUsage + 1));
       softThreshold = Math.min(softThreshold, skewSoft);
       hardThreshold = Math.min(hardThreshold, skewHard);
     }
@@ -417,18 +459,14 @@ export function buildLenMeanUsagePriority(
 
   const words = collectUniqueDictionaryWords(dict);
   const globalStats = buildUsageStats(words, baseUsageByWord);
-  const globalCoeffs = resolveMeanPriorityCoefficients(globalStats, mode);
   const byLen = collectUniqueDictionaryWordsByLen(dict);
   const priorityByWord = new Map<string, number>();
 
   for (const [len, bucket] of dict) {
     const lenWords = byLen.get(len) ?? [];
     const lenStats = buildUsageStats(lenWords, baseUsageByWord);
-    const effectiveStats = lenStats.sample < LEN_THRESHOLD_MIN_SAMPLE ? globalStats : lenStats;
-    const coeffs =
-      lenStats.sample < LEN_THRESHOLD_MIN_SAMPLE
-        ? globalCoeffs
-        : resolveMeanPriorityCoefficients(effectiveStats, mode);
+    const effectiveStats = buildBlendedLenStats(globalStats, lenStats);
+    const coeffs = resolveMeanPriorityCoefficients(effectiveStats, mode);
     for (const wordRaw of bucket) {
       const word = normalizeWordKey(wordRaw);
       if (!word) continue;
@@ -474,21 +512,21 @@ export function resolveUsageRebalanceThresholds(
   const byLen = collectUniqueDictionaryWordsByLen(dict);
   for (const [len, wordsOfLen] of byLen) {
     const lenStats = buildUsageStats(wordsOfLen, baseUsageByWord);
+    const effectiveStats = buildBlendedLenStats(globalStats, lenStats);
     const fallbackToGlobal = lenStats.sample < LEN_THRESHOLD_MIN_SAMPLE;
-    const thresholdPair = fallbackToGlobal
-      ? globalThresholdPair
-      : resolveThresholdPair(lenStats, mode);
+    const thresholdPair = fallbackToGlobal ? resolveThresholdPair(effectiveStats, mode) : resolveThresholdPair(lenStats, mode);
     thresholdsByLen.set(len, {
       len,
       sample: lenStats.sample,
-      meanUsage: lenStats.meanUsage,
-      p50: lenStats.p50,
-      p85: lenStats.p85,
-      p95: lenStats.p95,
-      p99: lenStats.p99,
-      maxUsage: lenStats.maxUsage,
-      maxToP50Ratio: lenStats.maxToP50Ratio,
-      meanToP50Ratio: lenStats.meanToP50Ratio,
+      meanUsage: effectiveStats.meanUsage,
+      p50: effectiveStats.p50,
+      p85: effectiveStats.p85,
+      p90: effectiveStats.p90,
+      p95: effectiveStats.p95,
+      p99: effectiveStats.p99,
+      maxUsage: effectiveStats.maxUsage,
+      maxToP50Ratio: effectiveStats.maxToP50Ratio,
+      meanToP50Ratio: effectiveStats.meanToP50Ratio,
       softThreshold: thresholdPair.softThreshold,
       hardThreshold: thresholdPair.hardThreshold,
       fallbackToGlobal,
@@ -501,6 +539,7 @@ export function resolveUsageRebalanceThresholds(
     meanUsage: globalStats.meanUsage,
     p50: globalStats.p50,
     p85: globalStats.p85,
+    p90: globalStats.p90,
     p95: globalStats.p95,
     p99: globalStats.p99,
     maxUsage: globalStats.maxUsage,
@@ -547,8 +586,10 @@ export function buildUsageRebalanceContext(
       uniq: lenThreshold?.sample ?? 0,
       meanUsage: lenThreshold?.meanUsage ?? 0,
       p50: lenThreshold?.p50 ?? 0,
+      p90: lenThreshold?.p90 ?? 0,
       p95: lenThreshold?.p95 ?? 0,
       max: lenThreshold?.maxUsage ?? 0,
+      p90ToP50Ratio: (lenThreshold?.p90 ?? 0) / Math.max(1, lenThreshold?.p50 ?? 0),
       maxToP50Ratio: lenThreshold?.maxToP50Ratio ?? 0,
       meanToP50Ratio: lenThreshold?.meanToP50Ratio ?? 0,
       softThreshold,
@@ -794,7 +835,7 @@ export function formatUsageBalanceByLen(context: UsageRebalanceContext): string[
   const lines = ["📐 usage-balance-by-len"];
   for (const row of rows) {
     lines.push(
-      `  len=${row.len} uniq=${row.uniq} mean=${formatNumber(row.meanUsage)} p50=${formatNumber(row.p50)} p95=${formatNumber(row.p95)} max=${row.max} mean/p50=${formatNumber(row.meanToP50Ratio)} max/p50=${formatNumber(row.maxToP50Ratio)} soft=${row.softThreshold} hard=${row.hardThreshold} src=${row.fallbackToGlobal ? "global" : "len"}`
+      `  len=${row.len} uniq=${row.uniq} mean=${formatNumber(row.meanUsage)} p50=${formatNumber(row.p50)} p90=${formatNumber(row.p90)} p95=${formatNumber(row.p95)} max=${row.max} p90/p50=${formatNumber(row.p90ToP50Ratio)} mean/p50=${formatNumber(row.meanToP50Ratio)} max/p50=${formatNumber(row.maxToP50Ratio)} soft=${row.softThreshold} hard=${row.hardThreshold} src=${row.fallbackToGlobal ? "blend" : "len"}`
     );
   }
 
@@ -808,7 +849,7 @@ export function formatUsageBalanceByLen(context: UsageRebalanceContext): string[
   }, rows[0]);
 
   lines.push(
-    `📐 usage-balance-by-len worst=len=${worst.len} max/p50=${formatNumber(worst.maxToP50Ratio)} max=${worst.max} p50=${formatNumber(worst.p50)} uniq=${worst.uniq}`
+    `📐 usage-balance-by-len worst=len=${worst.len} max/p50=${formatNumber(worst.maxToP50Ratio)} p90/p50=${formatNumber(worst.p90ToP50Ratio)} max=${worst.max} p50=${formatNumber(worst.p50)} uniq=${worst.uniq}`
   );
   return lines;
 }

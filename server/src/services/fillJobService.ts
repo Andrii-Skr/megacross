@@ -32,6 +32,15 @@ import {
   type UsageRebalanceMode,
   type UsageRebalanceThresholds,
 } from "../utils/usageRebalance";
+import {
+  formatLenCounter,
+  loadEditionHotBannedWords,
+  loadEditionWordUsageByWord,
+  mergeLenCounter,
+  recomputeEditionHotBanState,
+  relaxHotBanForLenDeficits,
+} from "../utils/editionHotBan";
+import { polishSolvedRowsByCost } from "../utils/solutionPolish";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../utils/nativeDlx";
 import { buildCrw } from "../utils/writeCrw";
 import { DIRS, type Cell, type Grid, type Slot } from "../types";
@@ -88,6 +97,7 @@ type FillJobOptions = {
   usageStats: boolean;
   usageRebalance: boolean;
   usageRebalanceMode: UsageRebalanceMode;
+  editionHotBan: boolean;
   filterTemplateId?: number | null;
 };
 
@@ -260,6 +270,7 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   usageStats: true,
   usageRebalance: false,
   usageRebalanceMode: "aggressive",
+  editionHotBan: false,
   filterTemplateId: null,
 };
 
@@ -309,6 +320,8 @@ const SHORT_DEFINITION_LIMIT = 30;
 const IN_JOB_REPEAT_PRIORITY_MULTIPLIER = 1_000_000_000;
 const MAX_WORD_USES = 2;
 const AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK = 24;
+const COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK = 1_000_000;
+const COST_REBALANCE_POLISH_PASSES = 2;
 
 function detectCpuParallelism(): number {
   if (typeof os.availableParallelism === "function") {
@@ -2288,11 +2301,16 @@ function parseFillJobOptions(value: unknown): FillJobOptions {
   const modeRaw =
     typeof raw.usageRebalanceMode === "string" ? raw.usageRebalanceMode.toLowerCase() : undefined;
   const usageRebalanceMode: UsageRebalanceMode =
-    modeRaw === "safe" || modeRaw === "aggressive" ? modeRaw : defaults.usageRebalanceMode;
+    modeRaw === "safe" || modeRaw === "aggressive" || modeRaw === "cost"
+      ? modeRaw
+      : defaults.usageRebalanceMode;
+  const editionHotBan =
+    typeof raw.editionHotBan === "boolean" ? raw.editionHotBan : defaults.editionHotBan;
   return {
     ...defaults,
     ...raw,
     usageRebalanceMode,
+    editionHotBan,
   };
 }
 
@@ -2353,10 +2371,14 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     if (!dict.size) throw new Error("Dictionary is empty for selected template");
     const wordLengthByWord = buildWordLengthLookup(dict);
     const usageCountByWord = new Map<string, number>();
+    const editionUsageCountByWord = new Map<string, number>();
     const usagePriorityByWord = new Map<string, number>();
+    const editionHotBannedWords = new Set<string>();
     let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
     let usageRebalanceContext: UsageRebalanceContext | null = null;
     let usageRebalanceReason = "off";
+    const usageRebalancePenaltyOnly = options.usageRebalance && options.usageRebalanceMode === "cost";
+    let editionHotBanReason = "off";
     if (options.usageStats) {
       const mainLangId = await resolveLanguageId(template.language);
       if (mainLangId !== null) {
@@ -2366,7 +2388,8 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         }
         if (usageCountByWord.size) {
           const usagePriorityMode: UsageRebalanceMode =
-            options.usageRebalance && options.usageRebalanceMode === "aggressive"
+            options.usageRebalance &&
+            (options.usageRebalanceMode === "aggressive" || options.usageRebalanceMode === "cost")
               ? "aggressive"
               : "safe";
           const meanPriority = buildLenMeanUsagePriority(dict, usageCountByWord, usagePriorityMode);
@@ -2375,6 +2398,20 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           }
           sortDictionaryByUsagePriority(dict, usagePriorityByWord);
         }
+      }
+    }
+    if (options.editionHotBan) {
+      const loadedEditionUsage = await loadEditionWordUsageByWord(issue.editionId, prisma);
+      for (const [word, usage] of loadedEditionUsage) {
+        editionUsageCountByWord.set(word, usage);
+      }
+      const loadedHotBannedWords = await loadEditionHotBannedWords(issue.editionId, prisma);
+      for (const word of loadedHotBannedWords) {
+        editionHotBannedWords.add(word);
+      }
+      editionHotBanReason = `on (edition=${issue.editionId} banned=${editionHotBannedWords.size})`;
+      if (!editionUsageCountByWord.size) {
+        editionHotBanReason = `${editionHotBanReason} noUsage=1`;
       }
     }
     if (!options.usageRebalance) {
@@ -2390,8 +2427,9 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         options.usageRebalanceMode
       );
       usageRebalanceContext = buildUsageRebalanceContext(dict, usageCountByWord, usageRebalanceThresholds);
-      usageRebalanceReason =
-        `on (mode=${options.usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
+      usageRebalanceReason = usageRebalancePenaltyOnly
+        ? `on (mode=cost strategy=penalty-only soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
+        : `on (mode=${options.usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
     }
     const definitionWhere = buildDefinitionWhereFromTemplate(template);
 
@@ -2470,6 +2508,19 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       neighborSolved: 0,
     };
     const usageRebalanceMetrics = buildUsageRebalanceMetrics();
+    const usageCostMetrics = {
+      templatesPolished: 0,
+      replacements: 0,
+      totalDeltaCost: 0,
+      examinedCandidates: 0,
+    };
+    const editionHotBanMetrics = {
+      loaded: editionHotBannedWords.size,
+      applied: 0,
+      relaxed: 0,
+      relaxedByLen: new Map<number, number>(),
+      unresolvedByLen: new Map<number, number>(),
+    };
     const templateWordCounts = new Map<string, Map<string, number>>();
     const templateNameByKey = new Map(sortedEntries.map((entry) => [entry.key, entry.name]));
     const usedDefinitionKeys = new Set<string>();
@@ -2529,7 +2580,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const maxMsLabel =
       typeof options.maxMs === "number" && Number.isFinite(options.maxMs) ? String(options.maxMs) : "none";
     console.log(
-      `⚙ fill options: native=${nativeEngineLabel} shuffle=${options.shuffle ? "on" : "off"} unique=${options.unique ? "on" : "off"} lcv=${options.lcv ? "on" : "off"} restarts=${options.restarts} parallel=${effectiveParallelRestarts} (cfg=${options.parallelRestarts} cpu=${cpuParallel}) maxNodes=${maxNodesLabel} maxMs=${maxMsLabel} style=${options.style} explainFail=${options.explainFail ? "on" : "off"} noDefs=${options.noDefs ? "on" : "off"} usageStats=${options.usageStats ? "on" : "off"} usageRebalance=${usageRebalanceReason}`
+      `⚙ fill options: native=${nativeEngineLabel} shuffle=${options.shuffle ? "on" : "off"} unique=${options.unique ? "on" : "off"} lcv=${options.lcv ? "on" : "off"} restarts=${options.restarts} parallel=${effectiveParallelRestarts} (cfg=${options.parallelRestarts} cpu=${cpuParallel}) maxNodes=${maxNodesLabel} maxMs=${maxMsLabel} style=${options.style} explainFail=${options.explainFail ? "on" : "off"} noDefs=${options.noDefs ? "on" : "off"} usageStats=${options.usageStats ? "on" : "off"} usageRebalance=${usageRebalanceReason} editionHotBan=${editionHotBanReason}`
     );
     if (usageRebalanceThresholds) {
       console.log(
@@ -2585,9 +2636,13 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         } = {}
       ) => {
         const rebalanceLcvPrioritySlack =
-          options.usageRebalance && options.usageRebalanceMode === "aggressive"
-            ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
-            : 0;
+          !options.usageRebalance
+            ? 0
+            : options.usageRebalanceMode === "aggressive"
+              ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
+              : options.usageRebalanceMode === "cost"
+                ? COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK
+                : 0;
         const effectiveWordPriority =
           overrides.wordPriority ?? (options.usageStats ? usagePriorityByWord : undefined);
         const solvedNative = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, {
@@ -2612,6 +2667,29 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
 
       let solved: string[] | null | undefined;
       const solveStartedAt = Date.now();
+      const applyEditionHotBan = (baseBlockedWords: Set<string>) => {
+        if (!options.editionHotBan || !editionHotBannedWords.size) {
+          return {
+            blockedWords: baseBlockedWords,
+            relaxedWords: new Set<string>(),
+            relaxedByLen: new Map<number, number>(),
+            unresolvedDeficitsByLen: new Map<number, number>(),
+            appliedHotWords: 0,
+          };
+        }
+        const relaxed = relaxHotBanForLenDeficits(
+          entry.lenCounts,
+          dict,
+          baseBlockedWords,
+          editionHotBannedWords,
+          editionUsageCountByWord
+        );
+        editionHotBanMetrics.applied += relaxed.appliedHotWords;
+        editionHotBanMetrics.relaxed += relaxed.relaxedWords.size;
+        mergeLenCounter(editionHotBanMetrics.relaxedByLen, relaxed.relaxedByLen);
+        mergeLenCounter(editionHotBanMetrics.unresolvedByLen, relaxed.unresolvedDeficitsByLen);
+        return relaxed;
+      };
       if (options.unique) {
         const neighborBlockedWords = new Set<string>();
         const neighborKeys = templateNeighbors.get(entry.key);
@@ -2636,6 +2714,9 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           options.usageStats ? usagePriorityByWord : undefined
         );
         const buildRebalanceBlockedVariants = (baseBlockedWords: Set<string>): RebalanceBlockedVariant[] => {
+          if (usageRebalancePenaltyOnly) {
+            return [{ kind: "base", blockedWords: baseBlockedWords }];
+          }
           if (!usageRebalanceThresholds || !usageRebalanceContext || !options.usageStats || !usageCountByWord.size) {
             return [{ kind: "base", blockedWords: baseBlockedWords }];
           }
@@ -2704,6 +2785,9 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
               overrides.maxMs = phaseOptions.strictBudget.maxMs;
               appliedStrictBudget = true;
             }
+            if (usageRebalancePenaltyOnly) {
+              overrides.wordPriority = fallbackPriority;
+            }
             if (phase !== "strict") {
               overrides.wordPriority = fallbackPriority;
               overrides.lcv = false;
@@ -2715,8 +2799,9 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           return null;
         };
 
-        const strictVariants = buildRebalanceBlockedVariants(strictBlockedWords);
-        const strictPrimaryBlockedWords = strictVariants[0]?.blockedWords ?? strictBlockedWords;
+        const strictHotBan = applyEditionHotBan(strictBlockedWords);
+        const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords);
+        const strictPrimaryBlockedWords = strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
         const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
           entry.lenCounts,
           dict,
@@ -2816,9 +2901,10 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
             wordLengthByWord,
             MAX_WORD_USES
           );
-          if (!areSetsEqual(adaptiveBaseBlockedWords, strictBlockedWords)) {
+          const adaptiveHotBan = applyEditionHotBan(adaptiveBaseBlockedWords);
+          if (!areSetsEqual(adaptiveHotBan.blockedWords, strictHotBan.blockedWords)) {
             uniqueFallbackStats.adaptiveAttempted += 1;
-            const adaptiveVariants = buildRebalanceBlockedVariants(adaptiveBaseBlockedWords);
+            const adaptiveVariants = buildRebalanceBlockedVariants(adaptiveHotBan.blockedWords);
             solved = await solveWithBlockedVariants("adaptive", adaptiveVariants, {
               sortByFallbackPriority: true,
               strictBudget: null,
@@ -2828,7 +2914,8 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         }
         if (!solved && canFallbackToNeighbor) {
           uniqueFallbackStats.neighborAttempted += 1;
-          const neighborVariants = buildRebalanceBlockedVariants(neighborCappedBlockedWords);
+          const neighborHotBan = applyEditionHotBan(neighborCappedBlockedWords);
+          const neighborVariants = buildRebalanceBlockedVariants(neighborHotBan.blockedWords);
           solved = await solveWithBlockedVariants("neighbor", neighborVariants, {
             sortByFallbackPriority: true,
             strictBudget: null,
@@ -2836,8 +2923,39 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           if (solved) uniqueFallbackStats.neighborSolved += 1;
         }
       } else {
-        const dictForTemplate = new Map<number, string[]>([...dict].map(([len, words]) => [len, [...words]]));
+        const nonUniqueHotBan = applyEditionHotBan(new Set<string>());
+        const hotBanFilteredDict = filterDictionaryByBlockedWords(dict, nonUniqueHotBan.blockedWords);
+        const dictForTemplate = new Map<number, string[]>(
+          [...hotBanFilteredDict].map(([len, words]) => [len, [...words]])
+        );
         solved = await solveWithDictionary(dictForTemplate);
+      }
+      if (usageRebalancePenaltyOnly && solved) {
+        const polishPriority = buildInJobUsagePriority(
+          usedWordCountInJob,
+          options.usageStats ? usagePriorityByWord : undefined
+        );
+        const polish = polishSolvedRowsByCost({
+          solvedRows: solved,
+          slots: entry.slots,
+          dict,
+          uniqueWords: options.unique,
+          maxPasses: COST_REBALANCE_POLISH_PASSES,
+          priorityByWord: polishPriority,
+          usedWordCountByWord: usedWordCountInJob,
+          forbiddenWords: options.unique ? usedWordsInJob : undefined,
+          repeatPenalty: IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
+        });
+        if (polish.improved) {
+          solved = polish.solvedRows;
+          usageCostMetrics.templatesPolished += 1;
+          usageCostMetrics.replacements += polish.replacements;
+          usageCostMetrics.totalDeltaCost += polish.totalDeltaCost;
+          usageCostMetrics.examinedCandidates += polish.examinedCandidates;
+          console.log(
+            `🧪 cost-polish: template=${entry.name} passes=${polish.passCount} replacements=${polish.replacements} delta=${polish.totalDeltaCost.toFixed(1)}`
+          );
+        }
       }
       solveTotalMs += Date.now() - solveStartedAt;
 
@@ -2967,6 +3085,19 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     if (options.usageRebalance) {
       console.log(`🧊 ${formatUsageRebalanceMetrics(usageRebalanceMetrics)}`);
       console.log(`🧊 ${formatUsageRebalanceLenMetrics(usageRebalanceMetrics)}`);
+      if (usageRebalancePenaltyOnly) {
+        console.log(
+          `🧪 cost-rebalance: strategy=penalty-only polished=${usageCostMetrics.templatesPolished} replacements=${usageCostMetrics.replacements} delta=${usageCostMetrics.totalDeltaCost.toFixed(1)} examined=${usageCostMetrics.examinedCandidates}`
+        );
+      }
+    }
+    if (options.editionHotBan) {
+      console.log(
+        `🔥 hot-ban: loaded=${editionHotBanMetrics.loaded} applied=${editionHotBanMetrics.applied} relaxed=${editionHotBanMetrics.relaxed}`
+      );
+      console.log(
+        `🔥 hot-ban-by-len: relaxed=${formatLenCounter(editionHotBanMetrics.relaxedByLen)} unresolved=${formatLenCounter(editionHotBanMetrics.unresolvedByLen)}`
+      );
     }
     console.log("\n📊 отчёт по дублям слов");
     console.log(
@@ -3322,6 +3453,9 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       issueWordUsage,
       issueOpredUsage
     );
+    if (options.editionHotBan) {
+      await recomputeEditionHotBanState(review.issue.editionId, prisma);
+    }
   }
 
   const archivePath = path.join(issueRoot, `scanwords_${jobId.toString()}.zip`);

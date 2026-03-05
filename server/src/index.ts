@@ -50,6 +50,7 @@ function parseFillOverrides(input: unknown) {
     usageStats?: boolean;
     usageRebalance?: boolean;
     usageRebalanceMode?: UsageRebalanceMode;
+    editionHotBan?: boolean;
     filterTemplateId?: number;
   } = {};
   const maxNodes = Number(raw.maxNodes);
@@ -71,9 +72,14 @@ function parseFillOverrides(input: unknown) {
   if (typeof raw.writeCrw === "boolean") overrides.writeCrw = raw.writeCrw;
   if (typeof raw.usageStats === "boolean") overrides.usageStats = raw.usageStats;
   if (typeof raw.usageRebalance === "boolean") overrides.usageRebalance = raw.usageRebalance;
-  if (raw.usageRebalanceMode === "safe" || raw.usageRebalanceMode === "aggressive") {
+  if (
+    raw.usageRebalanceMode === "safe" ||
+    raw.usageRebalanceMode === "aggressive" ||
+    raw.usageRebalanceMode === "cost"
+  ) {
     overrides.usageRebalanceMode = raw.usageRebalanceMode;
   }
+  if (typeof raw.editionHotBan === "boolean") overrides.editionHotBan = raw.editionHotBan;
   if (typeof raw.requireNative === "boolean") overrides.requireNative = raw.requireNative;
   const filterTemplateId = Number(raw.filterTemplateId);
   if (Number.isFinite(filterTemplateId) && filterTemplateId > 0) {

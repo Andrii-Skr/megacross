@@ -71,6 +71,7 @@ export type SolveOptions = {
   shuffle?: boolean;
   lcv?: boolean;
   lcvPrioritySlack?: number;
+  beamWidth?: number;
   restarts?: number;
   parallelRestarts?: number;
   uniqueWords?: boolean;
@@ -94,6 +95,7 @@ type ResolvedOptions = {
   shuffle: boolean;
   lcv: boolean;
   lcvPrioritySlack: number;
+  beamWidth: number;
   restarts: number;
   parallelRestarts: number;
   uniqueWords: boolean;
@@ -497,7 +499,10 @@ function runAttemptCsp(
       weights.set(slot.id, (weights.get(slot.id) ?? 1) + 1);
       return false;
     }
-    const cand = orderCandidates(slot.id, candidates);
+    let cand = orderCandidates(slot.id, candidates);
+    if (options.beamWidth > 0 && cand.length > options.beamWidth) {
+      cand = cand.slice(0, options.beamWidth);
+    }
 
     unfilled.delete(slot.id);
     lastPick = {
@@ -1108,6 +1113,10 @@ export function solve(
     lcvPrioritySlack:
       Number.isFinite(optionsRaw.lcvPrioritySlack) && (optionsRaw.lcvPrioritySlack as number) > 0
         ? Math.floor(optionsRaw.lcvPrioritySlack as number)
+        : 0,
+    beamWidth:
+      Number.isFinite(optionsRaw.beamWidth) && (optionsRaw.beamWidth as number) > 0
+        ? Math.floor(optionsRaw.beamWidth as number)
         : 0,
     restarts,
     parallelRestarts: optionsRaw.parallelRestarts ?? 1,

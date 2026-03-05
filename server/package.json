@@ -14,6 +14,8 @@
     "fill-batch-rebalance-loop": "ts-node scripts/fill-batch-rebalance-loop.ts",
     "test:usage-rebalance-smoke": "ts-node scripts/usage-rebalance-smoke.ts",
     "test:rebalance-cascade-smoke": "ts-node scripts/rebalance-cascade-smoke.ts",
+    "test:edition-hot-ban-smoke": "ts-node scripts/edition-hot-ban-smoke.ts",
+    "test:solution-polish-smoke": "ts-node scripts/solution-polish-smoke.ts",
     "test:solver-priority-slack-smoke": "ts-node scripts/solver-priority-slack-smoke.ts",
     "dev": "pnpm run fill-batch -- --native-dlx -s -u --style corel --lcv --restarts 4 --max-nodes 2000000 --parallel 2 -p --no-defs --explain-fail",
     "lint": "biome check . --max-diagnostics none",

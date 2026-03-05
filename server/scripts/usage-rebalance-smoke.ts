@@ -52,8 +52,16 @@ function main(): void {
 
   assert.equal(len3Thresholds.fallbackToGlobal, false);
   assert.equal(len9Thresholds.fallbackToGlobal, true);
-  assert.equal(len9Thresholds.softThreshold, thresholds.softThreshold);
-  assert.equal(len9Thresholds.hardThreshold, thresholds.hardThreshold);
+  assert.ok(
+    len9Thresholds.softThreshold <= thresholds.softThreshold,
+    "small-sample len should not be stricter than global threshold"
+  );
+  assert.ok(
+    len9Thresholds.hardThreshold <= thresholds.hardThreshold,
+    "small-sample len hard threshold should be blended toward local stats"
+  );
+  assert.ok(len9Thresholds.softThreshold >= 2);
+  assert.ok(len9Thresholds.hardThreshold >= len9Thresholds.softThreshold + 1);
   assert.ok(len3Thresholds.softThreshold >= 3);
   assert.ok(len3Thresholds.hardThreshold >= len3Thresholds.softThreshold + 1);
   assert.ok(len3Thresholds.meanUsage > 0);
@@ -62,6 +70,7 @@ function main(): void {
   const len3Balance = context.balanceByLen.get(3);
   assert.ok(len3Balance, "len=3 balance row is expected");
   assert.ok((len3Balance?.maxToP50Ratio ?? 0) >= 4, "len=3 should be pressure-heavy");
+  assert.ok((len3Balance?.p90ToP50Ratio ?? 0) >= 1, "len=3 should include p90/p50 skew metric");
   assert.ok((len3Balance?.meanToP50Ratio ?? 0) >= 1, "len=3 should expose mean/p50 ratio");
 
   const meanPriority = buildLenMeanUsagePriority(dict, usageByWord, "aggressive");
