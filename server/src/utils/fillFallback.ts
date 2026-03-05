@@ -22,13 +22,13 @@ const STRICT_LIMITED_MS_BASE = 40_000;
 
 export type ProbeOutcome = "solved" | "unsat" | "unknown";
 
-export type CspProbeResult = {
+export type DlxProbeResult = {
   solved: string[] | null;
   outcome: ProbeOutcome;
   failInfo: SolveFailInfo | null;
 };
 
-type CspProbeOptions = {
+type DlxProbeOptions = {
   label?: string;
   maxNodes?: number;
   maxMs?: number;
@@ -88,17 +88,17 @@ export function resolveProbeOutcome(
   return failInfo.reason === "aborted" ? "unknown" : "unsat";
 }
 
-export function runCspProbe(
+export function runDlxProbe(
   rawRows: string[],
   slots: Slot[],
   dict: Map<number, string[]>,
-  options: CspProbeOptions = {}
-): CspProbeResult {
+  options: DlxProbeOptions = {}
+): DlxProbeResult {
   const budget = resolveProbeBudget(options.maxNodes, options.maxMs);
   let failInfo: SolveFailInfo | null = null;
   const solved = solve(rawRows, slots, dict, {
-    engine: "csp",
-    nativeDlx: false,
+    engine: "dlx",
+    nativeDlx: true,
     shuffle: false,
     lcv: true,
     lcvPrioritySlack: options.lcvPrioritySlack,

@@ -97,7 +97,7 @@ export function solveDlxNative(
   if (!native) {
     if (!loggedMissing) {
       const tried = lastTriedPaths?.length ? lastTriedPaths.join(", ") : "(none)";
-      console.warn(`[native-dlx] not found, fallback to JS. tried: ${tried}`);
+      console.warn(`[native-dlx] not found. tried: ${tried}`);
       loggedMissing = true;
     }
     return undefined;
@@ -110,7 +110,7 @@ export function solveDlxNative(
   if (!solveFn) {
     if (!loggedCallError) {
       const keys = Object.keys(native);
-      console.warn(`[native-dlx] missing solve function, fallback to JS. exports: ${keys.join(", ") || "(none)"}`);
+      console.warn(`[native-dlx] missing solve function. exports: ${keys.join(", ") || "(none)"}`);
       loggedCallError = true;
     }
     return undefined;
@@ -183,7 +183,7 @@ export function solveDlxNative(
   } catch (err) {
     if (!loggedCallError) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[native-dlx] call failed, fallback to JS. ${msg}`);
+      console.warn(`[native-dlx] call failed. ${msg}`);
       loggedCallError = true;
     }
     return undefined;
@@ -201,7 +201,7 @@ export async function solveDlxNativeAsync(
   if (!native) {
     if (!loggedMissing) {
       const tried = lastTriedPaths?.length ? lastTriedPaths.join(", ") : "(none)";
-      console.warn(`[native-dlx] not found, fallback to JS. tried: ${tried}`);
+      console.warn(`[native-dlx] not found. tried: ${tried}`);
       loggedMissing = true;
     }
     return undefined;
@@ -214,7 +214,7 @@ export async function solveDlxNativeAsync(
   if (!solveAsync) {
     if (!loggedAsyncMissing) {
       const keys = Object.keys(native);
-      console.warn(`[native-dlx] missing async solve function, fallback to JS. exports: ${keys.join(", ") || "(none)"}`);
+      console.warn(`[native-dlx] missing async solve function. exports: ${keys.join(", ") || "(none)"}`);
       loggedAsyncMissing = true;
     }
     return undefined;
@@ -288,7 +288,7 @@ export async function solveDlxNativeAsync(
   } catch (err) {
     if (!loggedAsyncError) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[native-dlx] async call failed, fallback to JS. ${msg}`);
+      console.warn(`[native-dlx] async call failed. ${msg}`);
       loggedAsyncError = true;
     }
     return undefined;

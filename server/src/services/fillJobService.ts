@@ -11,12 +11,12 @@ import { scanSlotsDetailed, type SlotStart, validate } from "../utils/grid";
 import type { SolveFailInfo, SolveProgress } from "../utils/solver";
 import {
   resolveStrictLimitedBudget,
-  runCspProbe,
+  runDlxProbe,
   sortDictionaryByPriority,
 } from "../utils/fillFallback";
 import {
   applyHardHotBanLengthSafe,
-  buildLenMeanUsagePriority,
+  buildCostHardFirstRebalanceBlockedVariants,
   buildRebalanceBlockedVariantCascade,
   buildUsageRebalanceContext,
   buildSoftHotDuplicateBlock,
@@ -35,11 +35,11 @@ import {
 import {
   formatLenCounter,
   loadEditionHotBannedWords,
-  loadEditionWordUsageByWord,
   mergeLenCounter,
   recomputeEditionHotBanState,
   relaxHotBanForLenDeficits,
 } from "../utils/editionHotBan";
+import { loadEditionUsageSnapshot, type EditionUsageSnapshot } from "../utils/editionUsageSnapshot";
 import { polishSolvedRowsByCost } from "../utils/solutionPolish";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../utils/nativeDlx";
 import { buildCrw } from "../utils/writeCrw";
@@ -92,7 +92,6 @@ type FillJobOptions = {
   style: "default" | "corel";
   explainFail: boolean;
   noDefs: boolean;
-  requireNative: boolean;
   writeCrw: boolean;
   usageStats: boolean;
   usageRebalance: boolean;
@@ -265,7 +264,6 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   style: "corel",
   explainFail: true,
   noDefs: true,
-  requireNative: true,
   writeCrw: false,
   usageStats: true,
   usageRebalance: false,
@@ -286,11 +284,6 @@ type TemplateStats = {
   avgDegree: number;
   degreeSqSum: number;
   pressure?: number;
-};
-
-type WordPriorityRow = {
-  word: string | null;
-  useCount: number | bigint | null;
 };
 
 type WordDefinitionCandidate = {
@@ -315,7 +308,6 @@ type WordSelection = {
 
 type UsageCountMap = Map<bigint, number>;
 
-const WORD_USE_PRIORITY_MULTIPLIER = 1_000_000;
 const SHORT_DEFINITION_LIMIT = 30;
 const IN_JOB_REPEAT_PRIORITY_MULTIPLIER = 1_000_000_000;
 const MAX_WORD_USES = 2;
@@ -380,89 +372,6 @@ async function resolveLanguageId(langCode: string): Promise<number | null> {
   `;
   const id = rows[0]?.id;
   return typeof id === "number" ? id : null;
-}
-
-async function loadEditionUsagePriority(
-  editionId: number,
-  excludeIssueId?: bigint
-): Promise<Map<string, number>> {
-  const [wordRows, opredRows] = await Promise.all([
-    excludeIssueId === undefined
-      ? prisma.$queryRaw<WordPriorityRow[]>`
-          SELECT
-            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
-            SUM(iwu."useCount")::int AS "useCount"
-          FROM issue_word_usage iwu
-          JOIN issues i ON i.id = iwu."issueId"
-          JOIN word_v w ON w.id = iwu."wordId"
-          WHERE i."editionId" = ${editionId}
-          GROUP BY 1
-        `
-      : prisma.$queryRaw<WordPriorityRow[]>`
-          SELECT
-            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
-            SUM(iwu."useCount")::int AS "useCount"
-          FROM issue_word_usage iwu
-          JOIN issues i ON i.id = iwu."issueId"
-          JOIN word_v w ON w.id = iwu."wordId"
-          WHERE i."editionId" = ${editionId}
-            AND iwu."issueId" <> ${excludeIssueId}
-          GROUP BY 1
-        `,
-    excludeIssueId === undefined
-      ? prisma.$queryRaw<WordPriorityRow[]>`
-          SELECT
-            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
-            SUM(iou."useCount")::int AS "useCount"
-          FROM issue_opred_usage iou
-          JOIN issues i ON i.id = iou."issueId"
-          JOIN opred_v o ON o.id = iou."opredId"
-          JOIN word_v w ON w.id = o.word_id
-          WHERE i."editionId" = ${editionId}
-          GROUP BY 1, iou."opredId"
-        `
-      : prisma.$queryRaw<WordPriorityRow[]>`
-          SELECT
-            UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
-            SUM(iou."useCount")::int AS "useCount"
-          FROM issue_opred_usage iou
-          JOIN issues i ON i.id = iou."issueId"
-          JOIN opred_v o ON o.id = iou."opredId"
-          JOIN word_v w ON w.id = o.word_id
-          WHERE i."editionId" = ${editionId}
-            AND iou."issueId" <> ${excludeIssueId}
-          GROUP BY 1, iou."opredId"
-        `,
-  ]);
-
-  const wordUse = new Map<string, number>();
-  for (const row of wordRows) {
-    if (!row.word) continue;
-    wordUse.set(normalizeWordKey(row.word), toNumber(row.useCount));
-  }
-
-  const minOpredUse = new Map<string, number>();
-  for (const row of opredRows) {
-    if (!row.word) continue;
-    const key = normalizeWordKey(row.word);
-    const usage = toNumber(row.useCount);
-    const current = minOpredUse.get(key);
-    if (current === undefined || usage < current) {
-      minOpredUse.set(key, usage);
-    }
-  }
-
-  const priority = new Map<string, number>();
-  for (const [word, usage] of wordUse) {
-    const minDefUsage = minOpredUse.get(word) ?? 0;
-    priority.set(word, usage * WORD_USE_PRIORITY_MULTIPLIER + minDefUsage);
-  }
-  for (const [word, minDefUsage] of minOpredUse) {
-    if (!priority.has(word)) {
-      priority.set(word, minDefUsage);
-    }
-  }
-  return priority;
 }
 
 function pickBestOpred(
@@ -729,7 +638,169 @@ async function persistUsageStatsForIssue(
   wordUsage: UsageCountMap,
   opredUsage: UsageCountMap
 ) {
+  const normalizeUsageMap = (source: UsageCountMap): Map<bigint, number> => {
+    const normalized = new Map<bigint, number>();
+    for (const [id, rawCount] of source) {
+      const useCount = Number.isFinite(rawCount) ? Math.trunc(rawCount) : 0;
+      if (useCount <= 0) continue;
+      normalized.set(id, useCount);
+    }
+    return normalized;
+  };
+
+  const buildUsageDeltaMap = (
+    previous: Map<bigint, number>,
+    next: Map<bigint, number>
+  ): Map<bigint, number> => {
+    const delta = new Map<bigint, number>();
+    const ids = new Set<bigint>([...previous.keys(), ...next.keys()]);
+    for (const id of ids) {
+      const prevCount = previous.get(id) ?? 0;
+      const nextCount = next.get(id) ?? 0;
+      const diff = nextCount - prevCount;
+      if (diff !== 0) delta.set(id, diff);
+    }
+    return delta;
+  };
+
+  const loadIssueWordUsageMap = async (
+    tx: Prisma.TransactionClient,
+    targetIssueId: bigint
+  ): Promise<Map<bigint, number>> => {
+    const rows = await tx.$queryRaw<Array<{ wordId: bigint; useCount: number | bigint | null }>>`
+      SELECT "wordId", "useCount"
+      FROM issue_word_usage
+      WHERE "issueId" = ${targetIssueId}
+    `;
+    const usage = new Map<bigint, number>();
+    for (const row of rows) {
+      const useCount = Math.trunc(toNumber(row.useCount));
+      if (useCount <= 0) continue;
+      usage.set(row.wordId, useCount);
+    }
+    return usage;
+  };
+
+  const loadIssueOpredUsageMap = async (
+    tx: Prisma.TransactionClient,
+    targetIssueId: bigint
+  ): Promise<Map<bigint, number>> => {
+    const rows = await tx.$queryRaw<Array<{ opredId: bigint; useCount: number | bigint | null }>>`
+      SELECT "opredId", "useCount"
+      FROM issue_opred_usage
+      WHERE "issueId" = ${targetIssueId}
+    `;
+    const usage = new Map<bigint, number>();
+    for (const row of rows) {
+      const useCount = Math.trunc(toNumber(row.useCount));
+      if (useCount <= 0) continue;
+      usage.set(row.opredId, useCount);
+    }
+    return usage;
+  };
+
+  const applyEditionWordStatDelta = async (
+    tx: Prisma.TransactionClient,
+    deltaByWordId: Map<bigint, number>
+  ): Promise<void> => {
+    if (!deltaByWordId.size) return;
+    const now = new Date();
+    for (const [wordId, delta] of deltaByWordId) {
+      if (!Number.isFinite(delta) || delta === 0) continue;
+      if (delta > 0) {
+        await tx.edition_word_stat.upsert({
+          where: { editionId_wordId: { editionId, wordId } },
+          update: {
+            useCount: { increment: delta },
+            lastIssueId: issueId,
+            lastUsedAt: now,
+          },
+          create: {
+            editionId,
+            wordId,
+            useCount: delta,
+            lastIssueId: issueId,
+            lastUsedAt: now,
+          },
+        });
+        continue;
+      }
+
+      const existing = await tx.edition_word_stat.findUnique({
+        where: { editionId_wordId: { editionId, wordId } },
+        select: { useCount: true },
+      });
+      if (!existing) continue;
+      const nextCount = existing.useCount + delta;
+      if (nextCount > 0) {
+        await tx.edition_word_stat.update({
+          where: { editionId_wordId: { editionId, wordId } },
+          data: { useCount: nextCount },
+        });
+      } else {
+        await tx.edition_word_stat.delete({
+          where: { editionId_wordId: { editionId, wordId } },
+        });
+      }
+    }
+  };
+
+  const applyEditionOpredStatDelta = async (
+    tx: Prisma.TransactionClient,
+    deltaByOpredId: Map<bigint, number>
+  ): Promise<void> => {
+    if (!deltaByOpredId.size) return;
+    const now = new Date();
+    for (const [opredId, delta] of deltaByOpredId) {
+      if (!Number.isFinite(delta) || delta === 0) continue;
+      if (delta > 0) {
+        await tx.edition_opred_stat.upsert({
+          where: { editionId_opredId: { editionId, opredId } },
+          update: {
+            useCount: { increment: delta },
+            lastIssueId: issueId,
+            lastUsedAt: now,
+          },
+          create: {
+            editionId,
+            opredId,
+            useCount: delta,
+            lastIssueId: issueId,
+            lastUsedAt: now,
+          },
+        });
+        continue;
+      }
+
+      const existing = await tx.edition_opred_stat.findUnique({
+        where: { editionId_opredId: { editionId, opredId } },
+        select: { useCount: true },
+      });
+      if (!existing) continue;
+      const nextCount = existing.useCount + delta;
+      if (nextCount > 0) {
+        await tx.edition_opred_stat.update({
+          where: { editionId_opredId: { editionId, opredId } },
+          data: { useCount: nextCount },
+        });
+      } else {
+        await tx.edition_opred_stat.delete({
+          where: { editionId_opredId: { editionId, opredId } },
+        });
+      }
+    }
+  };
+
   await prisma.$transaction(async (tx) => {
+    const [previousWordUsage, previousOpredUsage] = await Promise.all([
+      loadIssueWordUsageMap(tx, issueId),
+      loadIssueOpredUsageMap(tx, issueId),
+    ]);
+    const nextWordUsage = normalizeUsageMap(wordUsage);
+    const nextOpredUsage = normalizeUsageMap(opredUsage);
+    const wordDelta = buildUsageDeltaMap(previousWordUsage, nextWordUsage);
+    const opredDelta = buildUsageDeltaMap(previousOpredUsage, nextOpredUsage);
+
     await tx.$executeRaw`
       DELETE FROM issue_word_usage
       WHERE "issueId" = ${issueId}
@@ -739,7 +810,7 @@ async function persistUsageStatsForIssue(
       WHERE "issueId" = ${issueId}
     `;
 
-    for (const [wordId, useCount] of wordUsage) {
+    for (const [wordId, useCount] of nextWordUsage) {
       if (useCount <= 0) continue;
       await tx.$executeRaw`
         INSERT INTO issue_word_usage ("issueId", "wordId", "useCount", "createdAt")
@@ -747,81 +818,15 @@ async function persistUsageStatsForIssue(
       `;
     }
 
-    for (const [opredId, useCount] of opredUsage) {
+    for (const [opredId, useCount] of nextOpredUsage) {
       if (useCount <= 0) continue;
       await tx.$executeRaw`
         INSERT INTO issue_opred_usage ("issueId", "opredId", "useCount", "createdAt")
         VALUES (${issueId}, ${opredId}, ${useCount}, now())
       `;
     }
-
-    await tx.$executeRaw`
-      DELETE FROM edition_word_stat
-      WHERE "editionId" = ${editionId}
-    `;
-    await tx.$executeRaw`
-      INSERT INTO edition_word_stat ("editionId", "wordId", "useCount", "lastIssueId", "lastUsedAt")
-      SELECT
-        ${editionId} AS "editionId",
-        agg."wordId",
-        agg."useCount",
-        last_use."issueId" AS "lastIssueId",
-        last_use."createdAt" AS "lastUsedAt"
-      FROM (
-        SELECT
-          iwu."wordId",
-          SUM(iwu."useCount")::int AS "useCount"
-        FROM issue_word_usage iwu
-        JOIN issues i ON i.id = iwu."issueId"
-        WHERE i."editionId" = ${editionId}
-        GROUP BY iwu."wordId"
-      ) agg
-      LEFT JOIN LATERAL (
-        SELECT
-          iwu2."issueId",
-          iwu2."createdAt"
-        FROM issue_word_usage iwu2
-        JOIN issues i2 ON i2.id = iwu2."issueId"
-        WHERE i2."editionId" = ${editionId}
-          AND iwu2."wordId" = agg."wordId"
-        ORDER BY iwu2."createdAt" DESC, iwu2."issueId" DESC
-        LIMIT 1
-      ) last_use ON true
-    `;
-
-    await tx.$executeRaw`
-      DELETE FROM edition_opred_stat
-      WHERE "editionId" = ${editionId}
-    `;
-    await tx.$executeRaw`
-      INSERT INTO edition_opred_stat ("editionId", "opredId", "useCount", "lastIssueId", "lastUsedAt")
-      SELECT
-        ${editionId} AS "editionId",
-        agg."opredId",
-        agg."useCount",
-        last_use."issueId" AS "lastIssueId",
-        last_use."createdAt" AS "lastUsedAt"
-      FROM (
-        SELECT
-          iou."opredId",
-          SUM(iou."useCount")::int AS "useCount"
-        FROM issue_opred_usage iou
-        JOIN issues i ON i.id = iou."issueId"
-        WHERE i."editionId" = ${editionId}
-        GROUP BY iou."opredId"
-      ) agg
-      LEFT JOIN LATERAL (
-        SELECT
-          iou2."issueId",
-          iou2."createdAt"
-        FROM issue_opred_usage iou2
-        JOIN issues i2 ON i2.id = iou2."issueId"
-        WHERE i2."editionId" = ${editionId}
-          AND iou2."opredId" = agg."opredId"
-        ORDER BY iou2."createdAt" DESC, iou2."issueId" DESC
-        LIMIT 1
-      ) last_use ON true
-    `;
+    await applyEditionWordStatDelta(tx, wordDelta);
+    await applyEditionOpredStatDelta(tx, opredDelta);
   });
 }
 
@@ -1415,6 +1420,11 @@ function emitJobUpdate(jobId: string, update: FillJobUpdate) {
   if (!runtime) return;
   runtime.lastUpdate = update;
   runtime.emitter.emit("update", update);
+  if (update.status === "done" || update.status === "error") {
+    if (runtime.emitter.listenerCount("update") === 0) {
+      jobRuntimes.delete(jobId);
+    }
+  }
 }
 
 function ensureRuntime(jobId: string) {
@@ -1605,15 +1615,21 @@ function buildSnapshotKey(file: SnapshotFile, order: number, seen: Map<string, n
 }
 
 function resolveTemplatePaths(files: SnapshotFile[], samplesDir: string): ResolvedTemplate[] {
+  const baseDir = path.resolve(samplesDir);
   const seen = new Map<string, number>();
   return files.map((file, idx) => {
     const key = buildSnapshotKey(file, idx, seen);
     const sourceName = file.name;
     const name = normalizeTemplateDisplayName(file.name);
     const sanitized = sanitizeName(file.name);
-    const candidates = [sanitized, file.name];
+    const basenamed = path.basename(file.name);
+    const candidates = [...new Set([sanitized, basenamed])].filter((candidate) => candidate.length > 0);
     const found = candidates
-      .map((candidate) => path.join(samplesDir, candidate))
+      .map((candidate) => path.resolve(baseDir, candidate))
+      .filter((resolvedPath) => {
+        const relative = path.relative(baseDir, resolvedPath);
+        return !relative.startsWith("..") && !path.isAbsolute(relative);
+      })
       .find((p) => existsSync(p));
     return {
       key,
@@ -1810,21 +1826,39 @@ async function updateJob(jobId: bigint, data: Partial<Omit<FillJobUpdate, "id" |
   outputPath?: string | null;
   outputSize?: number | null;
 }) {
-  const templatesJson = data.templates ? JSON.stringify(data.templates) : null;
-  const reviewJson = data.reviewData ? JSON.stringify(data.reviewData) : null;
+  const hasStatus = data.status !== undefined;
+  const hasProgress = data.progress !== undefined;
+  const hasCurrentTemplate = data.currentTemplate !== undefined;
+  const hasCompletedTemplates = data.completedTemplates !== undefined;
+  const hasTotalTemplates = data.totalTemplates !== undefined;
+  const hasError = data.error !== undefined;
+  const hasTemplates = data.templates !== undefined;
+  const hasReviewData = data.reviewData !== undefined;
+  const hasOutputPath = data.outputPath !== undefined;
+  const hasOutputSize = data.outputSize !== undefined;
+  const statusValue = hasStatus ? (data.status ?? null) : null;
+  const progressValue = hasProgress ? (data.progress ?? null) : null;
+  const currentTemplateValue = hasCurrentTemplate ? (data.currentTemplate ?? null) : null;
+  const completedTemplatesValue = hasCompletedTemplates ? (data.completedTemplates ?? null) : null;
+  const totalTemplatesValue = hasTotalTemplates ? (data.totalTemplates ?? null) : null;
+  const errorValue = hasError ? (data.error ?? null) : null;
+  const outputPathValue = hasOutputPath ? (data.outputPath ?? null) : null;
+  const outputSizeValue = hasOutputSize ? (data.outputSize ?? null) : null;
+  const templatesJson = hasTemplates && data.templates !== null ? JSON.stringify(data.templates) : null;
+  const reviewJson = hasReviewData && data.reviewData !== null ? JSON.stringify(data.reviewData) : null;
   await prisma.$executeRaw`
     UPDATE scanword_fill_jobs
     SET
-      status = COALESCE(${data.status}, status),
-      progress = COALESCE(${data.progress}, progress),
-      "currentTemplate" = COALESCE(${data.currentTemplate ?? null}, "currentTemplate"),
-      "completedTemplates" = COALESCE(${data.completedTemplates ?? null}, "completedTemplates"),
-      "totalTemplates" = COALESCE(${data.totalTemplates ?? null}, "totalTemplates"),
-      error = COALESCE(${data.error ?? null}, error),
-      templates = COALESCE(${templatesJson}::jsonb, templates),
-      "reviewData" = COALESCE(${reviewJson}::jsonb, "reviewData"),
-      "outputPath" = COALESCE(${data.outputPath ?? null}, "outputPath"),
-      "outputSize" = COALESCE(${data.outputSize ?? null}, "outputSize"),
+      status = CASE WHEN ${hasStatus} THEN ${statusValue} ELSE status END,
+      progress = CASE WHEN ${hasProgress} THEN ${progressValue} ELSE progress END,
+      "currentTemplate" = CASE WHEN ${hasCurrentTemplate} THEN ${currentTemplateValue} ELSE "currentTemplate" END,
+      "completedTemplates" = CASE WHEN ${hasCompletedTemplates} THEN ${completedTemplatesValue} ELSE "completedTemplates" END,
+      "totalTemplates" = CASE WHEN ${hasTotalTemplates} THEN ${totalTemplatesValue} ELSE "totalTemplates" END,
+      error = CASE WHEN ${hasError} THEN ${errorValue} ELSE error END,
+      templates = CASE WHEN ${hasTemplates} THEN ${templatesJson}::jsonb ELSE templates END,
+      "reviewData" = CASE WHEN ${hasReviewData} THEN ${reviewJson}::jsonb ELSE "reviewData" END,
+      "outputPath" = CASE WHEN ${hasOutputPath} THEN ${outputPathValue} ELSE "outputPath" END,
+      "outputSize" = CASE WHEN ${hasOutputSize} THEN ${outputSizeValue} ELSE "outputSize" END,
       "updatedAt" = now()
     WHERE id = ${jobId}
   `;
@@ -2377,32 +2411,37 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
     let usageRebalanceContext: UsageRebalanceContext | null = null;
     let usageRebalanceReason = "off";
-    const usageRebalancePenaltyOnly = options.usageRebalance && options.usageRebalanceMode === "cost";
+    const usageRebalanceCostMode = options.usageRebalance && options.usageRebalanceMode === "cost";
     let editionHotBanReason = "off";
+    let editionUsageSnapshot: EditionUsageSnapshot | null = null;
+    const ensureEditionUsageSnapshot = async (): Promise<EditionUsageSnapshot> => {
+      if (!editionUsageSnapshot) {
+        editionUsageSnapshot = await loadEditionUsageSnapshot(dict, issue.editionId, {
+          usageRebalanceEnabled: options.usageRebalance,
+          usageRebalanceMode: options.usageRebalanceMode,
+          db: prisma,
+        });
+      }
+      return editionUsageSnapshot;
+    };
     if (options.usageStats) {
       const mainLangId = await resolveLanguageId(template.language);
       if (mainLangId !== null) {
-        const loadedPriority = await loadEditionUsagePriority(issue.editionId, issue.issueId);
-        for (const [word, priority] of loadedPriority) {
-          usageCountByWord.set(word, priority);
+        const loadedEditionUsage = await ensureEditionUsageSnapshot();
+        for (const [word, usage] of loadedEditionUsage.usageByWord) {
+          usageCountByWord.set(word, usage);
         }
-        if (usageCountByWord.size) {
-          const usagePriorityMode: UsageRebalanceMode =
-            options.usageRebalance &&
-            (options.usageRebalanceMode === "aggressive" || options.usageRebalanceMode === "cost")
-              ? "aggressive"
-              : "safe";
-          const meanPriority = buildLenMeanUsagePriority(dict, usageCountByWord, usagePriorityMode);
-          for (const [word, priority] of meanPriority) {
-            usagePriorityByWord.set(word, priority);
-          }
+        for (const [word, priority] of loadedEditionUsage.priorityByWord) {
+          usagePriorityByWord.set(word, priority);
+        }
+        if (usagePriorityByWord.size) {
           sortDictionaryByUsagePriority(dict, usagePriorityByWord);
         }
       }
     }
     if (options.editionHotBan) {
-      const loadedEditionUsage = await loadEditionWordUsageByWord(issue.editionId, prisma);
-      for (const [word, usage] of loadedEditionUsage) {
+      const loadedEditionUsage = await ensureEditionUsageSnapshot();
+      for (const [word, usage] of loadedEditionUsage.usageByWord) {
         editionUsageCountByWord.set(word, usage);
       }
       const loadedHotBannedWords = await loadEditionHotBannedWords(issue.editionId, prisma);
@@ -2427,8 +2466,8 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         options.usageRebalanceMode
       );
       usageRebalanceContext = buildUsageRebalanceContext(dict, usageCountByWord, usageRebalanceThresholds);
-      usageRebalanceReason = usageRebalancePenaltyOnly
-        ? `on (mode=cost strategy=penalty-only soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
+      usageRebalanceReason = usageRebalanceCostMode
+        ? `on (mode=cost strategy=hard-lite+soft+cost soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
         : `on (mode=${options.usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
     }
     const definitionWhere = buildDefinitionWhereFromTemplate(template);
@@ -2623,6 +2662,14 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           : 0;
         updateLocal({ progress, currentTemplate: entry.name });
       };
+      const rebalanceLcvPrioritySlack =
+        !options.usageRebalance
+          ? 0
+          : options.usageRebalanceMode === "aggressive"
+            ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
+            : options.usageRebalanceMode === "cost"
+              ? COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK
+              : 0;
 
       const solveWithDictionary = async (
         dictForSolve: Map<number, string[]>,
@@ -2635,14 +2682,6 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           lcvPrioritySlack?: number;
         } = {}
       ) => {
-        const rebalanceLcvPrioritySlack =
-          !options.usageRebalance
-            ? 0
-            : options.usageRebalanceMode === "aggressive"
-              ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
-              : options.usageRebalanceMode === "cost"
-                ? COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK
-                : 0;
         const effectiveWordPriority =
           overrides.wordPriority ?? (options.usageStats ? usagePriorityByWord : undefined);
         const solvedNative = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, {
@@ -2713,12 +2752,22 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           usedWordCountInJob,
           options.usageStats ? usagePriorityByWord : undefined
         );
-        const buildRebalanceBlockedVariants = (baseBlockedWords: Set<string>): RebalanceBlockedVariant[] => {
-          if (usageRebalancePenaltyOnly) {
-            return [{ kind: "base", blockedWords: baseBlockedWords }];
-          }
+        const buildRebalanceBlockedVariants = (
+          baseBlockedWords: Set<string>,
+          variantOptions: { allowCostHardFirst?: boolean } = {}
+        ): RebalanceBlockedVariant[] => {
           if (!usageRebalanceThresholds || !usageRebalanceContext || !options.usageStats || !usageCountByWord.size) {
             return [{ kind: "base", blockedWords: baseBlockedWords }];
+          }
+          if (usageRebalanceCostMode) {
+            return buildCostHardFirstRebalanceBlockedVariants(
+              baseBlockedWords,
+              usedWordCountInJob,
+              entry.lenCounts,
+              usageRebalanceContext,
+              usageRebalanceMetrics,
+              { allowHardFirst: variantOptions.allowCostHardFirst === true }
+            );
           }
           const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
           const softBlockedWords = buildSoftHotDuplicateBlock(
@@ -2785,7 +2834,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
               overrides.maxMs = phaseOptions.strictBudget.maxMs;
               appliedStrictBudget = true;
             }
-            if (usageRebalancePenaltyOnly) {
+            if (usageRebalanceCostMode) {
               overrides.wordPriority = fallbackPriority;
             }
             if (phase !== "strict") {
@@ -2800,8 +2849,17 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         };
 
         const strictHotBan = applyEditionHotBan(strictBlockedWords);
-        const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords);
-        const strictPrimaryBlockedWords = strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
+        const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords, {
+          allowCostHardFirst: usageRebalanceCostMode,
+        });
+        const strictPrimaryVariant = usageRebalanceCostMode
+          ? strictVariants.find((variant) => variant.kind !== "hardAggressive")
+          : strictVariants[0];
+        const strictPrimaryBlockedWords =
+          strictPrimaryVariant?.blockedWords ?? strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
+        const strictProbeBlockedWords = usageRebalanceCostMode
+          ? (strictVariants[0]?.blockedWords ?? strictPrimaryBlockedWords)
+          : strictPrimaryBlockedWords;
         const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
           entry.lenCounts,
           dict,
@@ -2809,18 +2867,15 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         );
         let adaptiveDeficitLengths = strictDeficitLengths;
         if (strictDeficitLengths.size === 0) {
-          const strictDict = filterDictionaryByBlockedWords(dict, strictPrimaryBlockedWords);
+          const strictDict = filterDictionaryByBlockedWords(dict, strictProbeBlockedWords);
           uniqueFallbackStats.probeAttempted += 1;
-          const probeResult = runCspProbe(entry.grid.data, entry.slots, strictDict, {
+          const probeResult = runDlxProbe(entry.grid.data, entry.slots, strictDict, {
             label: `${entry.name}:probe`,
             maxNodes: options.maxNodes,
             maxMs: options.maxMs,
             uniqueWords: true,
             wordPriority: options.usageStats ? usagePriorityByWord : undefined,
-            lcvPrioritySlack:
-              options.usageRebalance && options.usageRebalanceMode === "aggressive"
-                ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
-                : 0,
+            lcvPrioritySlack: rebalanceLcvPrioritySlack,
           });
           lastFail = probeResult.failInfo ?? lastFail;
           if (probeResult.solved) {
@@ -2930,7 +2985,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         );
         solved = await solveWithDictionary(dictForTemplate);
       }
-      if (usageRebalancePenaltyOnly && solved) {
+      if (usageRebalanceCostMode && solved) {
         const polishPriority = buildInJobUsagePriority(
           usedWordCountInJob,
           options.usageStats ? usagePriorityByWord : undefined
@@ -3085,9 +3140,9 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     if (options.usageRebalance) {
       console.log(`🧊 ${formatUsageRebalanceMetrics(usageRebalanceMetrics)}`);
       console.log(`🧊 ${formatUsageRebalanceLenMetrics(usageRebalanceMetrics)}`);
-      if (usageRebalancePenaltyOnly) {
+      if (usageRebalanceCostMode) {
         console.log(
-          `🧪 cost-rebalance: strategy=penalty-only polished=${usageCostMetrics.templatesPolished} replacements=${usageCostMetrics.replacements} delta=${usageCostMetrics.totalDeltaCost.toFixed(1)} examined=${usageCostMetrics.examinedCandidates}`
+          `🧪 cost-rebalance: strategy=hard-lite+soft+cost polished=${usageCostMetrics.templatesPolished} replacements=${usageCostMetrics.replacements} delta=${usageCostMetrics.totalDeltaCost.toFixed(1)} examined=${usageCostMetrics.examinedCandidates}`
         );
       }
     }
@@ -3490,5 +3545,13 @@ export function subscribeFillJob(jobId: string, listener: (update: FillJobUpdate
   if (!runtime) return () => {};
   runtime.emitter.on("update", listener);
   if (runtime.lastUpdate) listener(runtime.lastUpdate);
-  return () => runtime.emitter.off("update", listener);
+  return () => {
+    runtime.emitter.off("update", listener);
+    if (
+      runtime.emitter.listenerCount("update") === 0 &&
+      (runtime.lastUpdate?.status === "done" || runtime.lastUpdate?.status === "error")
+    ) {
+      jobRuntimes.delete(jobId);
+    }
+  };
 }

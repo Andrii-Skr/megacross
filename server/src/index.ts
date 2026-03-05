@@ -45,7 +45,6 @@ function parseFillOverrides(input: unknown) {
     style?: "default" | "corel";
     explainFail?: boolean;
     noDefs?: boolean;
-    requireNative?: boolean;
     writeCrw?: boolean;
     usageStats?: boolean;
     usageRebalance?: boolean;
@@ -80,7 +79,6 @@ function parseFillOverrides(input: unknown) {
     overrides.usageRebalanceMode = raw.usageRebalanceMode;
   }
   if (typeof raw.editionHotBan === "boolean") overrides.editionHotBan = raw.editionHotBan;
-  if (typeof raw.requireNative === "boolean") overrides.requireNative = raw.requireNative;
   const filterTemplateId = Number(raw.filterTemplateId);
   if (Number.isFinite(filterTemplateId) && filterTemplateId > 0) {
     overrides.filterTemplateId = Math.floor(filterTemplateId);
@@ -93,6 +91,17 @@ function parseFillOverrides(input: unknown) {
     overrides.restarts = overrides.parallelRestarts;
   }
   return overrides;
+}
+
+function parseBigIntStrict(value: unknown): bigint | null {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!/^\d+$/u.test(normalized)) return null;
+  try {
+    return BigInt(normalized);
+  } catch {
+    return null;
+  }
 }
 
 // Allow CORS for the client application
@@ -147,8 +156,12 @@ app.post("/api/fill/start", async (req, res) => {
     res.status(400).json({ error: "issueId is required" });
     return;
   }
+  const issueId = parseBigIntStrict(issueIdRaw);
+  if (issueId === null) {
+    res.status(400).json({ error: "Invalid issueId" });
+    return;
+  }
   try {
-    const issueId = BigInt(issueIdRaw);
     const overrides = parseFillOverrides(req.body?.options);
     const job = await startFillJob(issueId, overrides);
     res.json(job);
@@ -164,8 +177,12 @@ app.get("/api/fill/latest", async (req, res) => {
     res.status(400).json({ error: "issueId is required" });
     return;
   }
+  const issueId = parseBigIntStrict(issueIdRaw);
+  if (issueId === null) {
+    res.status(400).json({ error: "Invalid issueId" });
+    return;
+  }
   try {
-    const issueId = BigInt(String(issueIdRaw));
     const job = await getLatestFillJob(issueId);
     res.json(job ?? {});
   } catch (error) {
@@ -175,8 +192,12 @@ app.get("/api/fill/latest", async (req, res) => {
 });
 
 app.get("/api/fill/:jobId", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
   try {
-    const jobId = BigInt(req.params.jobId);
     const job = await getFillJob(jobId);
     if (!job) {
       res.status(404).json({ error: "Job not found" });
@@ -190,8 +211,12 @@ app.get("/api/fill/:jobId", async (req, res) => {
 });
 
 app.get("/api/fill/:jobId/review", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
   try {
-    const jobId = BigInt(req.params.jobId);
     const review = await getFillJobReview(jobId);
     if (!review) {
       res.status(404).json({ error: "Review data not found" });
@@ -205,8 +230,12 @@ app.get("/api/fill/:jobId/review", async (req, res) => {
 });
 
 app.post("/api/fill/:jobId/candidates", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
   try {
-    const jobId = BigInt(req.params.jobId);
     const payload = req.body ?? {};
     const result = await getFillWordCandidates(jobId, {
       templateKey: typeof payload.templateKey === "string" ? payload.templateKey : undefined,
@@ -222,8 +251,12 @@ app.post("/api/fill/:jobId/candidates", async (req, res) => {
 });
 
 app.post("/api/fill/:jobId/finalize", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
   try {
-    const jobId = BigInt(req.params.jobId);
     const job = await finalizeFillJob(jobId, req.body ?? {});
     res.json(job);
   } catch (error) {
@@ -233,8 +266,12 @@ app.post("/api/fill/:jobId/finalize", async (req, res) => {
 });
 
 app.get("/api/fill/:jobId/stream", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
   try {
-    const jobId = BigInt(req.params.jobId);
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -259,13 +296,22 @@ app.get("/api/fill/:jobId/stream", async (req, res) => {
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to stream job";
+    if (res.headersSent) {
+      res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`);
+      res.end();
+      return;
+    }
     res.status(500).json({ error: msg });
   }
 });
 
 app.get("/api/fill/:jobId/archive", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
   try {
-    const jobId = BigInt(req.params.jobId);
     const archivePath = await getJobArchivePath(jobId);
     if (!archivePath || !existsSync(archivePath)) {
       res.status(404).json({ error: "Archive not found" });

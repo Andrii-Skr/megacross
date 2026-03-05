@@ -17,12 +17,12 @@ import { validate, scanSlots } from "../src/utils/grid";
 import type { SolveFailInfo, SolveProgress } from "../src/utils/solver";
 import {
   resolveStrictLimitedBudget,
-  runCspProbe,
+  runDlxProbe,
   sortDictionaryByPriority,
 } from "../src/utils/fillFallback";
 import {
   applyHardHotBanLengthSafe,
-  buildLenMeanUsagePriority,
+  buildCostHardFirstRebalanceBlockedVariants,
   buildRebalanceBlockedVariantCascade,
   buildUsageRebalanceContext,
   buildSoftHotDuplicateBlock,
@@ -45,6 +45,7 @@ import {
   recomputeEditionHotBanState,
   relaxHotBanForLenDeficits,
 } from "../src/utils/editionHotBan";
+import { loadEditionUsageSnapshot } from "../src/utils/editionUsageSnapshot";
 import { polishSolvedRowsByCost } from "../src/utils/solutionPolish";
 import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
 import {
@@ -139,11 +140,6 @@ function resolveParallelRestarts(
       : 1;
   return Math.max(1, Math.min(safeRestarts, safeConfigured));
 }
-
-type WordPriorityRow = {
-  word: string | null;
-  useCount: number | bigint | null;
-};
 
 type IssueTemplateContext = {
   issueId: bigint;
@@ -472,12 +468,6 @@ async function tryLoadIssueContext(issueId: bigint): Promise<IssueContext | null
   }
 }
 
-function toNumber(value: number | bigint | null | undefined): number {
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  if (typeof value === "bigint") return Number(value);
-  return 0;
-}
-
 function getWordPriority(priorityByWord: Map<string, number>, word: string): number {
   return priorityByWord.get(normalizeWordKey(word)) ?? 0;
 }
@@ -490,29 +480,6 @@ function sortDictionaryByUsagePriority(dict: Map<number, string[]>, priorityByWo
       if (scoreDiff !== 0) return scoreDiff;
       return a.localeCompare(b, "ru");
     });
-  }
-}
-
-async function loadEditionUsagePriority(editionId: number): Promise<Map<string, number>> {
-  const prisma = new PrismaClient();
-  try {
-    const rows = await prisma.$queryRaw<WordPriorityRow[]>`
-      SELECT
-        UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) AS word,
-        SUM(ews."useCount")::int AS "useCount"
-      FROM edition_word_stat ews
-      JOIN word_v w ON w.id = ews."wordId"
-      WHERE ews."editionId" = ${editionId}
-      GROUP BY 1
-    `;
-    const priority = new Map<string, number>();
-    for (const row of rows) {
-      if (!row.word) continue;
-      priority.set(normalizeWordKey(row.word), toNumber(row.useCount));
-    }
-    return priority;
-  } finally {
-    await prisma.$disconnect();
   }
 }
 
@@ -1312,7 +1279,7 @@ const reportDuplicates = !!values.reportDuplicates || !!values["report-duplicate
 const usageRebalance = !!values.usageRebalance || !!values["usage-rebalance"];
 const usageRebalanceModeRaw = values.usageRebalanceMode ?? values["usage-rebalance-mode"];
 const usageRebalanceMode = parseUsageRebalanceMode(usageRebalanceModeRaw, usageRebalance);
-const usageRebalancePenaltyOnly = usageRebalance && usageRebalanceMode === "cost";
+const usageRebalanceCostMode = usageRebalance && usageRebalanceMode === "cost";
 const editionHotBan = !!values.editionHotBan || !!values["edition-hot-ban"];
 const solverStats = !!values.solverStats || !!values["solver-stats"];
 const templateParallelRaw = values.templateParallel ?? values["template-parallel"];
@@ -1486,23 +1453,17 @@ if (!files.length) {
     masterDict = await loadDictionary({ langCode: "ru", lengths });
   }
   if (effectiveEditionId !== null) {
-    const loadedPriority = await loadEditionUsagePriority(effectiveEditionId);
-    for (const [word, priority] of loadedPriority) {
-      editionUsageCountByWord.set(word, priority);
+    const editionUsageSnapshot = await loadEditionUsageSnapshot(masterDict, effectiveEditionId, {
+      usageRebalanceEnabled: usageRebalance,
+      usageRebalanceMode,
+    });
+    for (const [word, usage] of editionUsageSnapshot.usageByWord) {
+      editionUsageCountByWord.set(word, usage);
     }
-    if (editionUsageCountByWord.size) {
-      const usagePriorityMode: UsageRebalanceMode =
-        usageRebalance && (usageRebalanceMode === "aggressive" || usageRebalanceMode === "cost")
-          ? "aggressive"
-          : "safe";
-      const meanPriority = buildLenMeanUsagePriority(
-        masterDict,
-        editionUsageCountByWord,
-        usagePriorityMode
-      );
-      for (const [word, priority] of meanPriority) {
-        editionUsagePriorityByWord.set(word, priority);
-      }
+    for (const [word, priority] of editionUsageSnapshot.priorityByWord) {
+      editionUsagePriorityByWord.set(word, priority);
+    }
+    if (editionUsagePriorityByWord.size) {
       sortDictionaryByUsagePriority(masterDict, editionUsagePriorityByWord);
     }
     console.log(
@@ -1542,8 +1503,8 @@ if (!files.length) {
       editionUsageCountByWord,
       usageRebalanceThresholds
     );
-    usageRebalanceReason = usageRebalancePenaltyOnly
-      ? `on (mode=cost strategy=penalty-only soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
+    usageRebalanceReason = usageRebalanceCostMode
+      ? `on (mode=cost strategy=hard-lite+soft+cost soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
       : `on (mode=${usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
   }
   const wordLengthByWord = buildWordLengthLookup(masterDict);
@@ -1826,12 +1787,22 @@ if (!files.length) {
           usedWordCountInBatch,
           editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined
         );
-        const buildRebalanceBlockedVariants = (baseBlockedWords: Set<string>): RebalanceBlockedVariant[] => {
-          if (usageRebalancePenaltyOnly) {
-            return [{ kind: "base", blockedWords: baseBlockedWords }];
-          }
+        const buildRebalanceBlockedVariants = (
+          baseBlockedWords: Set<string>,
+          options: { allowCostHardFirst?: boolean } = {}
+        ): RebalanceBlockedVariant[] => {
           if (!usageRebalanceThresholds || !usageRebalanceContext || !editionUsageCountByWord.size) {
             return [{ kind: "base", blockedWords: baseBlockedWords }];
+          }
+          if (usageRebalanceCostMode) {
+            return buildCostHardFirstRebalanceBlockedVariants(
+              baseBlockedWords,
+              usedWordCountInBatch,
+              entry.lenCounts,
+              usageRebalanceContext,
+              usageRebalanceMetrics,
+              { allowHardFirst: options.allowCostHardFirst === true }
+            );
           }
           const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
           const softBlockedWords = buildSoftHotDuplicateBlock(
@@ -1898,7 +1869,7 @@ if (!files.length) {
               overrides.maxMs = options.strictBudget.maxMs;
               appliedStrictBudget = true;
             }
-            if (usageRebalancePenaltyOnly) {
+            if (usageRebalanceCostMode) {
               overrides.wordPriority = fallbackPriority;
             }
             if (phase !== "strict") {
@@ -1913,8 +1884,17 @@ if (!files.length) {
         };
 
         const strictHotBan = applyEditionHotBan(strictBlockedWords);
-        const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords);
-        const strictPrimaryBlockedWords = strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
+        const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords, {
+          allowCostHardFirst: usageRebalanceCostMode,
+        });
+        const strictPrimaryVariant = usageRebalanceCostMode
+          ? strictVariants.find((variant) => variant.kind !== "hardAggressive")
+          : strictVariants[0];
+        const strictPrimaryBlockedWords =
+          strictPrimaryVariant?.blockedWords ?? strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
+        const strictProbeBlockedWords = usageRebalanceCostMode
+          ? (strictVariants[0]?.blockedWords ?? strictPrimaryBlockedWords)
+          : strictPrimaryBlockedWords;
         const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
           entry.lenCounts,
           masterDict,
@@ -1922,9 +1902,9 @@ if (!files.length) {
         );
         let adaptiveDeficitLengths = strictDeficitLengths;
         if (strictDeficitLengths.size === 0) {
-          const strictDict = filterDictionaryByBlockedWords(masterDict, strictPrimaryBlockedWords);
+          const strictDict = filterDictionaryByBlockedWords(masterDict, strictProbeBlockedWords);
           uniqueFallbackStats.probeAttempted += 1;
-          const probeResult = runCspProbe(grid.data, slots, strictDict, {
+          const probeResult = runDlxProbe(grid.data, slots, strictDict, {
             label: `${name}:probe`,
             maxNodes,
             maxMs,
@@ -2040,7 +2020,7 @@ if (!files.length) {
         );
         solved = await solveWithDictionary(dictForSolve, "base");
       }
-      if (usageRebalancePenaltyOnly && solved) {
+      if (usageRebalanceCostMode && solved) {
         const polishPriority = buildInBatchUsagePriority(
           usedWordCountInBatch,
           editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined
@@ -2296,9 +2276,9 @@ if (!files.length) {
     usageRebalanceByLenLine = `🧊 ${formatUsageRebalanceLenMetrics(usageRebalanceMetrics)}`;
     console.log(usageRebalanceLine);
     console.log(usageRebalanceByLenLine);
-    if (usageRebalancePenaltyOnly) {
+    if (usageRebalanceCostMode) {
       usageCostLine =
-        `🧪 cost-rebalance: strategy=penalty-only polished=${usageCostMetrics.templatesPolished} replacements=${usageCostMetrics.replacements} delta=${usageCostMetrics.totalDeltaCost.toFixed(1)} examined=${usageCostMetrics.examinedCandidates}`;
+        `🧪 cost-rebalance: strategy=hard-lite+soft+cost polished=${usageCostMetrics.templatesPolished} replacements=${usageCostMetrics.replacements} delta=${usageCostMetrics.totalDeltaCost.toFixed(1)} examined=${usageCostMetrics.examinedCandidates}`;
       console.log(usageCostLine);
     }
   }

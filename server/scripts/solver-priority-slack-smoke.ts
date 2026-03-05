@@ -38,22 +38,8 @@ const baseOptions = {
 };
 
 function main(): void {
-  const jsSlack0 = solve(rows, slots, dict, {
-    ...baseOptions,
-    nativeDlx: false,
-    lcvPrioritySlack: 0,
-  });
-  const jsSlack4 = solve(rows, slots, dict, {
-    ...baseOptions,
-    nativeDlx: false,
-    lcvPrioritySlack: 4,
-  });
-
-  assert.ok(jsSlack0, "JS solve with slack=0 should succeed");
-  assert.ok(jsSlack4, "JS solve with slack=4 should succeed");
-
   if (!isNativeDlxAvailable()) {
-    console.log("solver priority slack parity smoke checks skipped (native solver not available)");
+    console.log("solver priority slack smoke checks skipped (native solver not available)");
     return;
   }
 
@@ -70,10 +56,9 @@ function main(): void {
 
   assert.ok(nativeSlack0, "native solve with slack=0 should succeed");
   assert.ok(nativeSlack4, "native solve with slack=4 should succeed");
-  assert.deepEqual(nativeSlack0, jsSlack0, "native/js parity mismatch for slack=0");
-  assert.deepEqual(nativeSlack4, jsSlack4, "native/js parity mismatch for slack=4");
 
-  console.log("solver priority slack parity smoke checks passed");
+  assert.deepEqual(nativeSlack0, nativeSlack4, "native slack smoke: solutions differ");
+  console.log("solver priority slack smoke checks passed");
 }
 
 main();

@@ -42,6 +42,10 @@ const AGGRESSIVE_MEAN_PRESSURE_MID_RATIO = 1.35;
 const AGGRESSIVE_MEAN_PRESSURE_HIGH_RATIO = 1.75;
 const AGGRESSIVE_MEAN_PRESSURE_MID_MULTIPLIER = 1.25;
 const AGGRESSIVE_MEAN_PRESSURE_HIGH_MULTIPLIER = 1.45;
+const SAFE_ZERO_USAGE_PRIORITY_BONUS_ABS = 2;
+const SAFE_ZERO_USAGE_PRIORITY_BONUS_MEAN_SHARE = 0.35;
+const AGGRESSIVE_ZERO_USAGE_PRIORITY_BONUS_ABS = 5;
+const AGGRESSIVE_ZERO_USAGE_PRIORITY_BONUS_MEAN_SHARE = 0.8;
 
 export type UsageRebalanceMode = "safe" | "aggressive" | "cost";
 
@@ -450,6 +454,20 @@ function applyMeanPriorityAdjustment(
   return usage;
 }
 
+function resolveZeroUsagePriorityBonus(meanUsage: number, mode: UsageRebalanceMode): number {
+  const safeMean = Number.isFinite(meanUsage) ? Math.max(0, meanUsage) : 0;
+  if (mode === "aggressive") {
+    return Math.max(
+      AGGRESSIVE_ZERO_USAGE_PRIORITY_BONUS_ABS,
+      Math.ceil(safeMean * AGGRESSIVE_ZERO_USAGE_PRIORITY_BONUS_MEAN_SHARE)
+    );
+  }
+  return Math.max(
+    SAFE_ZERO_USAGE_PRIORITY_BONUS_ABS,
+    Math.ceil(safeMean * SAFE_ZERO_USAGE_PRIORITY_BONUS_MEAN_SHARE)
+  );
+}
+
 export function buildLenMeanUsagePriority(
   dict: Dict,
   baseUsageByWord: Map<string, number>,
@@ -471,7 +489,10 @@ export function buildLenMeanUsagePriority(
       const word = normalizeWordKey(wordRaw);
       if (!word) continue;
       const usage = safeUsageCount(baseUsageByWord.get(word));
-      const adjusted = applyMeanPriorityAdjustment(usage, effectiveStats.meanUsage, coeffs);
+      let adjusted = applyMeanPriorityAdjustment(usage, effectiveStats.meanUsage, coeffs);
+      if (usage === 0) {
+        adjusted -= resolveZeroUsagePriorityBonus(effectiveStats.meanUsage, mode);
+      }
       priorityByWord.set(word, adjusted);
     }
   }
@@ -560,6 +581,88 @@ export function buildSoftHotDuplicateBlock(
     if ((usedWordCountInRun.get(word) ?? 0) > 0) blocked.add(word);
   }
   return blocked;
+}
+
+export function buildSoftOnlyRebalanceBlockedVariants(
+  baseBlockedWords: Set<string>,
+  usedWordCountInRun: Map<string, number>,
+  context: UsageRebalanceContext,
+  metrics?: UsageRebalanceMetrics
+): RebalanceBlockedVariant[] {
+  const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
+  const softBlockedWords = buildSoftHotDuplicateBlock(usedWordCountInRun, context);
+  for (const word of softBlockedWords) {
+    if (softOnlyBlockedWords.has(word)) continue;
+    softOnlyBlockedWords.add(word);
+    if (metrics) {
+      metrics.softBlocked += 1;
+      const len = context.wordLenInfoByWord.get(word)?.len;
+      if (typeof len === "number") {
+        incrementUsageRebalanceMetricByLen(metrics.softBlockedByLen, len, 1);
+      }
+    }
+  }
+
+  if (areSetsEqual(softOnlyBlockedWords, baseBlockedWords)) {
+    return [{ kind: "base", blockedWords: baseBlockedWords }];
+  }
+  return [
+    { kind: "softOnly", blockedWords: softOnlyBlockedWords },
+    { kind: "base", blockedWords: baseBlockedWords },
+  ];
+}
+
+export function buildCostHardFirstRebalanceBlockedVariants(
+  baseBlockedWords: Set<string>,
+  usedWordCountInRun: Map<string, number>,
+  lenCounts: LenCounts,
+  context: UsageRebalanceContext,
+  metrics?: UsageRebalanceMetrics,
+  options?: { allowHardFirst?: boolean }
+): RebalanceBlockedVariant[] {
+  const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
+  const softBlockedWords = buildSoftHotDuplicateBlock(usedWordCountInRun, context);
+  for (const word of softBlockedWords) {
+    if (softOnlyBlockedWords.has(word)) continue;
+    softOnlyBlockedWords.add(word);
+    if (metrics) {
+      metrics.softBlocked += 1;
+      const len = context.wordLenInfoByWord.get(word)?.len;
+      if (typeof len === "number") {
+        incrementUsageRebalanceMetricByLen(metrics.softBlockedByLen, len, 1);
+      }
+    }
+  }
+
+  const softVariants: RebalanceBlockedVariant[] = areSetsEqual(softOnlyBlockedWords, baseBlockedWords)
+    ? [{ kind: "base", blockedWords: baseBlockedWords }]
+    : [
+        { kind: "softOnly", blockedWords: softOnlyBlockedWords },
+        { kind: "base", blockedWords: baseBlockedWords },
+      ];
+
+  if (!options?.allowHardFirst) {
+    return softVariants;
+  }
+
+  const hard = applyHardHotBanLengthSafe(lenCounts, softOnlyBlockedWords, context);
+  if (metrics) {
+    metrics.hardCandidates += hard.hardCandidates;
+    metrics.hardApplied += hard.hardApplied;
+    metrics.hardRelaxed += hard.hardRelaxed;
+    if (hard.disabledBySafety) metrics.hardDisabledBySafety += 1;
+    mergeUsageRebalanceMetricByLen(metrics.hardAppliedByLen, hard.hardAppliedByLen);
+  }
+
+  if (areSetsEqual(hard.blockedWords, softOnlyBlockedWords)) {
+    return softVariants;
+  }
+
+  return buildRebalanceBlockedVariantCascade(
+    baseBlockedWords,
+    softOnlyBlockedWords,
+    hard.blockedWords
+  );
 }
 
 export function buildUsageRebalanceContext(

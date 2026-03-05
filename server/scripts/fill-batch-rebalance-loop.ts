@@ -23,12 +23,14 @@ const FILL_BATCH_ARGS = [
   "--filter-template-id",
   "1",
   "--edition-id",
-  "18",
+  "5",
   "--usage-rebalance",
   "--usage-rebalance-mode",
   "cost",
   "--template-parallel",
   "1",
+  "--sample-subdir",
+    "./01"
 ];
 
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
