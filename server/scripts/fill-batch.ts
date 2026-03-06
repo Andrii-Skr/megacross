@@ -2036,12 +2036,12 @@ if (!files.length) {
           forbiddenWords: unique ? usedWordsInBatch : undefined,
           repeatPenalty: IN_BATCH_REPEAT_PRIORITY_MULTIPLIER,
         });
+        usageCostMetrics.examinedCandidates += polish.examinedCandidates;
         if (polish.improved) {
           solved = polish.solvedRows;
           usageCostMetrics.templatesPolished += 1;
           usageCostMetrics.replacements += polish.replacements;
           usageCostMetrics.totalDeltaCost += polish.totalDeltaCost;
-          usageCostMetrics.examinedCandidates += polish.examinedCandidates;
           console.log(
             `🧪 cost-polish: passes=${polish.passCount} replacements=${polish.replacements} delta=${polish.totalDeltaCost.toFixed(1)}`
           );

@@ -3001,12 +3001,12 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           forbiddenWords: options.unique ? usedWordsInJob : undefined,
           repeatPenalty: IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
         });
+        usageCostMetrics.examinedCandidates += polish.examinedCandidates;
         if (polish.improved) {
           solved = polish.solvedRows;
           usageCostMetrics.templatesPolished += 1;
           usageCostMetrics.replacements += polish.replacements;
           usageCostMetrics.totalDeltaCost += polish.totalDeltaCost;
-          usageCostMetrics.examinedCandidates += polish.examinedCandidates;
           console.log(
             `🧪 cost-polish: template=${entry.name} passes=${polish.passCount} replacements=${polish.replacements} delta=${polish.totalDeltaCost.toFixed(1)}`
           );
