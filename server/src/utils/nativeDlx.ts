@@ -26,6 +26,10 @@ type NativeModule = {
   solveDlx?: (inputJson: string, progress?: (payload: unknown) => void) => string[] | null;
   solve_dlx_async?: (inputJson: string, progress?: (payload: unknown) => void) => Promise<string[] | null>;
   solveDlxAsync?: (inputJson: string, progress?: (payload: unknown) => void) => Promise<string[] | null>;
+  solve_csp?: (inputJson: string, progress?: (payload: unknown) => void) => string[] | null;
+  solveCsp?: (inputJson: string, progress?: (payload: unknown) => void) => string[] | null;
+  solve_csp_async?: (inputJson: string, progress?: (payload: unknown) => void) => Promise<string[] | null>;
+  solveCspAsync?: (inputJson: string, progress?: (payload: unknown) => void) => Promise<string[] | null>;
 };
 
 let nativeModule: NativeModule | null | undefined;
@@ -35,8 +39,17 @@ let loggedMissing = false;
 let loggedCallError = false;
 let loggedAsyncMissing = false;
 let loggedAsyncError = false;
+let loggedCspCallError = false;
+let loggedCspAsyncMissing = false;
+let loggedCspAsyncError = false;
 let lastTriedPaths: string[] | null = null;
 let lastFail: Parameters<NonNullable<SolveOptions["onFail"]>>[0] | null = null;
+
+function logLoadedNativeModuleOnce(): void {
+  if (loggedLoaded) return;
+  console.log(`[native-solver] loaded native module from ${nativeModulePath ?? "unknown path"}`);
+  loggedLoaded = true;
+}
 
 function serializeWordPriority(priority?: Map<string, number>): Record<string, number> | undefined {
   if (!priority?.size) return undefined;
@@ -86,6 +99,12 @@ export function isNativeDlxAvailable(): boolean {
   return loadNative() !== null;
 }
 
+export function isNativeCspAvailable(): boolean {
+  const native = loadNative();
+  if (!native) return false;
+  return !!(native.solve_csp ?? native.solveCsp);
+}
+
 export function solveDlxNative(
   rawRows: string[],
   slots: Slot[],
@@ -102,10 +121,7 @@ export function solveDlxNative(
     }
     return undefined;
   }
-  if (!loggedLoaded) {
-    console.log(`[native-dlx] loaded from ${nativeModulePath ?? "unknown path"}`);
-    loggedLoaded = true;
-  }
+  logLoadedNativeModuleOnce();
   const solveFn = native.solve_dlx ?? native.solveDlx;
   if (!solveFn) {
     if (!loggedCallError) {
@@ -190,6 +206,106 @@ export function solveDlxNative(
   }
 }
 
+export function solveCspNative(
+  rawRows: string[],
+  slots: Slot[],
+  dict: Dict,
+  options?: SolveOptions
+): string[] | null | undefined {
+  lastFail = null;
+  const native = loadNative();
+  if (!native) {
+    if (!loggedMissing) {
+      const tried = lastTriedPaths?.length ? lastTriedPaths.join(", ") : "(none)";
+      console.warn(`[native-csp] not found. tried: ${tried}`);
+      loggedMissing = true;
+    }
+    return undefined;
+  }
+  logLoadedNativeModuleOnce();
+  const solveFn = native.solve_csp ?? native.solveCsp;
+  if (!solveFn) {
+    if (!loggedCspCallError) {
+      const keys = Object.keys(native);
+      console.warn(`[native-csp] missing solve function. exports: ${keys.join(", ") || "(none)"}`);
+      loggedCspCallError = true;
+    }
+    return undefined;
+  }
+
+  const onProgress = options?.onProgress;
+  const onFail = options?.onFail;
+  let progressSeen = false;
+  const progressWrapper = onProgress || onFail
+    ? (payloadOrErr: unknown, payloadMaybe?: unknown) => {
+        try {
+          const payload = payloadMaybe ?? payloadOrErr;
+          const data = typeof payload === "string" ? JSON.parse(payload) : payload;
+          if (data && typeof data === "object") {
+            if (!progressSeen) {
+              progressSeen = true;
+              if (options?.debugDlx) {
+                console.log("[native-csp] progress callback fired");
+              }
+            }
+            if ((data as { type?: string }).type === "fail") {
+              lastFail = data as Parameters<NonNullable<SolveOptions["onFail"]>>[0];
+              onFail?.(lastFail);
+              return;
+            }
+            onProgress?.(data as Parameters<NonNullable<SolveOptions["onProgress"]>>[0]);
+          }
+        } catch {
+          // ignore malformed progress payloads
+        }
+      }
+    : undefined;
+
+  const dictObj: Record<string, string[]> = {};
+  for (const [len, words] of dict) dictObj[String(len)] = words;
+  const wordPriorityObj = serializeWordPriority(options?.wordPriority);
+  const input = {
+    rows: rawRows,
+    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells })),
+    dict: dictObj,
+    options: {
+      shuffle: options?.shuffle,
+      lcv: options?.lcv,
+      lcvPrioritySlack: options?.lcvPrioritySlack,
+      restarts: options?.restarts,
+      parallelRestarts: options?.parallelRestarts,
+      uniqueWords: options?.uniqueWords,
+      splitComponents: options?.splitComponents,
+      maxMs: options?.maxMs,
+      maxNodes: options?.maxNodes,
+      logEveryMs: options?.logEveryMs,
+      logEveryNodes: options?.logEveryNodes,
+      label: options?.label,
+      debugDlx: options?.debugDlx,
+      progressStdout: options?.progressStdout,
+      failStdout: options?.failStdout,
+      wordPriority: wordPriorityObj,
+    } satisfies NativeSolveOptions,
+  };
+
+  try {
+    const result = solveFn(JSON.stringify(input), progressWrapper);
+    if (options?.debugDlx && onProgress && !progressSeen) {
+      console.warn(
+        `[native-csp] progress callback never fired (logEveryMs=${options?.logEveryMs ?? 0} logEveryNodes=${options?.logEveryNodes ?? 0})`
+      );
+    }
+    return result;
+  } catch (err) {
+    if (!loggedCspCallError) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[native-csp] call failed. ${msg}`);
+      loggedCspCallError = true;
+    }
+    return undefined;
+  }
+}
+
 export async function solveDlxNativeAsync(
   rawRows: string[],
   slots: Slot[],
@@ -206,10 +322,7 @@ export async function solveDlxNativeAsync(
     }
     return undefined;
   }
-  if (!loggedLoaded) {
-    console.log(`[native-dlx] loaded from ${nativeModulePath ?? "unknown path"}`);
-    loggedLoaded = true;
-  }
+  logLoadedNativeModuleOnce();
   const solveAsync = native.solve_dlx_async ?? native.solveDlxAsync;
   if (!solveAsync) {
     if (!loggedAsyncMissing) {
@@ -290,6 +403,107 @@ export async function solveDlxNativeAsync(
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[native-dlx] async call failed. ${msg}`);
       loggedAsyncError = true;
+    }
+    return undefined;
+  }
+}
+
+export async function solveCspNativeAsync(
+  rawRows: string[],
+  slots: Slot[],
+  dict: Dict,
+  options?: SolveOptions
+): Promise<string[] | null | undefined> {
+  lastFail = null;
+  const native = loadNative();
+  if (!native) {
+    if (!loggedMissing) {
+      const tried = lastTriedPaths?.length ? lastTriedPaths.join(", ") : "(none)";
+      console.warn(`[native-csp] not found. tried: ${tried}`);
+      loggedMissing = true;
+    }
+    return undefined;
+  }
+  logLoadedNativeModuleOnce();
+  const solveAsync = native.solve_csp_async ?? native.solveCspAsync;
+  if (!solveAsync) {
+    if (!loggedCspAsyncMissing) {
+      const keys = Object.keys(native);
+      console.warn(`[native-csp] missing async solve function. exports: ${keys.join(", ") || "(none)"}`);
+      loggedCspAsyncMissing = true;
+    }
+    return undefined;
+  }
+
+  const onProgress = options?.onProgress;
+  const onFail = options?.onFail;
+  let progressSeen = false;
+  const progressWrapper = onProgress || onFail
+    ? (payloadOrErr: unknown, payloadMaybe?: unknown) => {
+        try {
+          const payload = payloadMaybe ?? payloadOrErr;
+          const data = typeof payload === "string" ? JSON.parse(payload) : payload;
+          if (data && typeof data === "object") {
+            if (!progressSeen) {
+              progressSeen = true;
+              if (options?.debugDlx) {
+                console.log("[native-csp] progress callback fired");
+              }
+            }
+            if ((data as { type?: string }).type === "fail") {
+              lastFail = data as Parameters<NonNullable<SolveOptions["onFail"]>>[0];
+              onFail?.(lastFail);
+              return;
+            }
+            onProgress?.(data as Parameters<NonNullable<SolveOptions["onProgress"]>>[0]);
+          }
+        } catch {
+          // ignore malformed progress payloads
+        }
+      }
+    : undefined;
+
+  const dictObj: Record<string, string[]> = {};
+  for (const [len, words] of dict) dictObj[String(len)] = words;
+  const wordPriorityObj = serializeWordPriority(options?.wordPriority);
+
+  const input = {
+    rows: rawRows,
+    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells })),
+    dict: dictObj,
+    options: {
+      shuffle: options?.shuffle,
+      lcv: options?.lcv,
+      lcvPrioritySlack: options?.lcvPrioritySlack,
+      restarts: options?.restarts,
+      parallelRestarts: options?.parallelRestarts,
+      uniqueWords: options?.uniqueWords,
+      splitComponents: options?.splitComponents,
+      maxMs: options?.maxMs,
+      maxNodes: options?.maxNodes,
+      logEveryMs: options?.logEveryMs,
+      logEveryNodes: options?.logEveryNodes,
+      label: options?.label,
+      debugDlx: options?.debugDlx,
+      progressStdout: options?.progressStdout,
+      failStdout: options?.failStdout,
+      wordPriority: wordPriorityObj,
+    } satisfies NativeSolveOptions,
+  };
+
+  try {
+    const result = await solveAsync(JSON.stringify(input), progressWrapper);
+    if (options?.debugDlx && onProgress && !progressSeen) {
+      console.warn(
+        `[native-csp] progress callback never fired (logEveryMs=${options?.logEveryMs ?? 0} logEveryNodes=${options?.logEveryNodes ?? 0})`
+      );
+    }
+    return result;
+  } catch (err) {
+    if (!loggedCspAsyncError) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[native-csp] async call failed. ${msg}`);
+      loggedCspAsyncError = true;
     }
     return undefined;
   }

@@ -35,6 +35,7 @@ function parseFillOverrides(input: unknown) {
   if (!input || typeof input !== "object") return {};
   const raw = input as Record<string, unknown>;
   const overrides: {
+    engine?: "dlx" | "csp";
     maxNodes?: number;
     maxMs?: number;
     restarts?: number;
@@ -52,6 +53,7 @@ function parseFillOverrides(input: unknown) {
     editionHotBan?: boolean;
     filterTemplateId?: number;
   } = {};
+  if (raw.engine === "dlx" || raw.engine === "csp") overrides.engine = raw.engine;
   const maxNodes = Number(raw.maxNodes);
   if (Number.isFinite(maxNodes) && maxNodes > 0) overrides.maxNodes = Math.floor(maxNodes);
   const maxMs = Number(raw.maxMs);

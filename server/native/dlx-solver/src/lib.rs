@@ -89,6 +89,7 @@ struct WordIndex {
   pos_index: Vec<Vec<HashMap<char, IndexCell>>>,
 }
 
+#[derive(Clone, Copy)]
 struct Cross {
   other: usize,
   i_self: usize,
@@ -156,6 +157,7 @@ struct SearchState {
   backtracks: u64,
   zero_pick: u64,
   reject_intersect: u64,
+  reject_forward: u64,
   start: Instant,
   aborted: bool,
   abort_reason: Option<&'static str>,
@@ -354,6 +356,7 @@ struct ProgressCtx<'a> {
   label: Option<String>,
   attempt: usize,
   restarts: usize,
+  engine: &'static str,
   total_slots: usize,
   next_log_at: u64,
   next_log_node: u64,
@@ -481,6 +484,227 @@ impl Task for SolveDlxTask {
   fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
     Ok(output)
   }
+}
+
+fn normalize_csp_options(mut options: ResolveOptions) -> ResolveOptions {
+  if options.max_ms.is_none() && options.max_nodes.is_none() {
+    options.restarts = 1;
+    options.parallel_restarts = 1;
+  }
+  options
+}
+
+#[napi]
+pub fn solve_csp(env: Env, input_json: String, progress: Option<JsFunction>) -> Result<Option<Vec<String>>> {
+  let mut input: SolveInput = serde_json::from_str(&input_json)
+    .map_err(|e| Error::from_reason(format!("invalid input: {e}")))?;
+  let options = normalize_csp_options(resolve_options(input.options.take().unwrap_or_default()));
+  let use_tsfn = progress.is_some() && options.parallel_restarts > 1;
+  let progress_tsfn = if use_tsfn {
+    let cb = progress.as_ref().expect("progress callback missing");
+    let tsfn: ThreadsafeFunction<String> = cb.create_threadsafe_function(1024, |ctx: ThreadSafeCallContext<String>| {
+      let value = ctx.value;
+      Ok(vec![ctx.env.create_string(&value)?.into_unknown()])
+    })?;
+    Some(Arc::new(tsfn))
+  } else {
+    None
+  };
+  Ok(solve_csp_internal(Some(env), input, options, progress.as_ref(), progress_tsfn))
+}
+
+#[napi]
+pub fn solve_csp_async(
+  _env: Env,
+  input_json: String,
+  progress: Option<JsFunction>,
+) -> Result<AsyncTask<SolveCspTask>> {
+  let mut input: SolveInput = serde_json::from_str(&input_json)
+    .map_err(|e| Error::from_reason(format!("invalid input: {e}")))?;
+  let options = normalize_csp_options(resolve_options(input.options.take().unwrap_or_default()));
+  let progress_tsfn = if let Some(cb) = progress {
+    let tsfn: ThreadsafeFunction<String> = cb.create_threadsafe_function(1024, |ctx: ThreadSafeCallContext<String>| {
+      let value = ctx.value;
+      Ok(vec![ctx.env.create_string(&value)?.into_unknown()])
+    })?;
+    Some(Arc::new(tsfn))
+  } else {
+    None
+  };
+  Ok(AsyncTask::new(SolveCspTask {
+    input: Some(input),
+    options,
+    progress: progress_tsfn,
+  }))
+}
+
+pub struct SolveCspTask {
+  input: Option<SolveInput>,
+  options: ResolveOptions,
+  progress: Option<Arc<ThreadsafeFunction<String>>>,
+}
+
+impl Task for SolveCspTask {
+  type Output = Option<Vec<String>>;
+  type JsValue = Option<Vec<String>>;
+
+  fn compute(&mut self) -> Result<Self::Output> {
+    let input = self
+      .input
+      .take()
+      .ok_or_else(|| Error::from_reason("missing input"))?;
+    Ok(solve_csp_internal(
+      None,
+      input,
+      self.options.clone(),
+      None,
+      self.progress.clone(),
+    ))
+  }
+
+  fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+    Ok(output)
+  }
+}
+
+fn solve_csp_internal(
+  env: Option<Env>,
+  input: SolveInput,
+  options: ResolveOptions,
+  progress_js: Option<&JsFunction>,
+  progress_tsfn: Option<Arc<ThreadsafeFunction<String>>>,
+) -> Option<Vec<String>> {
+  let slots: Vec<Slot> = input
+    .slots
+    .into_iter()
+    .enumerate()
+    .map(|(i, s)| Slot {
+      id: i,
+      len: s.len,
+      cells: s.cells.into_iter().map(|c| (c[0], c[1])).collect(),
+    })
+    .collect();
+
+  let dict = Arc::new(Dict::from_map(input.dict));
+  if dict.max_len == 0 || slots.is_empty() {
+    return None;
+  }
+
+  let components = if options.split_components {
+    let (_, adjacency, _) = build_cross_data(&slots);
+    build_components(&slots, &adjacency)
+  } else {
+    vec![slots.iter().map(|s| s.id).collect()]
+  };
+
+  let parallel_restarts = options.parallel_restarts.min(options.restarts).max(1);
+  let use_tsfn = progress_tsfn.is_some();
+
+  if parallel_restarts > 1 {
+    let rows = Arc::new(input.rows);
+    let slots = Arc::new(slots);
+    let components = Arc::new(components);
+    let options = Arc::new(options);
+    let progress = progress_tsfn.clone();
+    let best = Mutex::new(None::<(i64, Vec<String>)>);
+
+    let run = || {
+      (1..=options.restarts).into_par_iter().for_each(|attempt| {
+        let solved = match progress.as_ref() {
+          Some(tsfn) => solve_attempt_with_progress_tsfn_csp(
+            tsfn,
+            rows.as_ref(),
+            slots.as_ref(),
+            dict.as_ref(),
+            components.as_ref(),
+            options.as_ref(),
+            attempt,
+          ),
+          None => solve_attempt_no_progress_csp(
+            rows.as_ref(),
+            slots.as_ref(),
+            dict.as_ref(),
+            components.as_ref(),
+            options.as_ref(),
+            attempt,
+          ),
+        };
+        let (grid, score) = match solved {
+          Some(ok) => ok,
+          None => return,
+        };
+        let as_strings = grid_to_strings(&grid);
+        if let Ok(mut guard) = best.lock() {
+          let replace = match guard.as_ref() {
+            Some((best_score, _)) => score < *best_score,
+            None => true,
+          };
+          if replace {
+            *guard = Some((score, as_strings));
+          }
+        }
+      });
+    };
+
+    if let Some(pool) = get_or_create_thread_pool(parallel_restarts) {
+      pool.install(run);
+    } else {
+      run();
+    }
+
+    return best
+      .lock()
+      .ok()
+      .and_then(|item| item.as_ref().map(|(_, rows)| rows.clone()));
+  }
+
+  let mut best: Option<(i64, Vec<String>)> = None;
+
+  for attempt in 1..=options.restarts {
+    let solved = match (use_tsfn, progress_js, progress_tsfn.as_ref(), env.as_ref()) {
+      (true, _, Some(tsfn), _) => solve_attempt_with_progress_tsfn_csp(
+        tsfn,
+        &input.rows,
+        &slots,
+        dict.as_ref(),
+        &components,
+        &options,
+        attempt,
+      ),
+      (false, Some(cb), _, Some(env_ref)) => solve_attempt_with_progress_direct_csp(
+        env_ref,
+        cb,
+        &input.rows,
+        &slots,
+        dict.as_ref(),
+        &components,
+        &options,
+        attempt,
+      ),
+      _ => solve_attempt_no_progress_csp(
+        &input.rows,
+        &slots,
+        dict.as_ref(),
+        &components,
+        &options,
+        attempt,
+      ),
+    };
+    let (grid, score) = match solved {
+      Some(ok) => ok,
+      None => continue,
+    };
+    let rows = grid_to_strings(&grid);
+    let replace = match best.as_ref() {
+      Some((best_score, _)) => score < *best_score,
+      None => true,
+    };
+    if replace {
+      best = Some((score, rows));
+    }
+  }
+
+  best.map(|(_, rows)| rows)
 }
 
 fn solve_dlx_internal(
@@ -1054,6 +1278,962 @@ fn grid_to_strings(grid: &[Vec<char>]) -> Vec<String> {
   grid.iter().map(|r| r.iter().collect()).collect()
 }
 
+const DEFAULT_REPEAT_PENALTY: i64 = 1_000_000_000;
+
+#[derive(Clone, Copy)]
+struct CspTrailEntry {
+  slot: usize,
+  block: usize,
+  removed: u64,
+}
+
+struct CspSearch<'a> {
+  slots: &'a [Slot],
+  dict: &'a Dict,
+  options: &'a ResolveOptions,
+  crosses: Vec<Vec<Cross>>,
+  adjacency: Vec<HashSet<usize>>,
+  index: WordIndex,
+  domains: Vec<Vec<u64>>,
+  domain_counts: Vec<usize>,
+  assigned: Vec<Option<usize>>,
+  assigned_count: usize,
+  trail: Vec<CspTrailEntry>,
+  weighted_degree: Vec<u32>,
+  slot_ids_by_len: HashMap<usize, Vec<usize>>,
+  word_gid_by_len: Vec<Vec<usize>>,
+  gid_indices_by_len: Vec<HashMap<usize, Vec<usize>>>,
+  priority_by_len: Vec<Vec<i64>>,
+  used_gid_count: HashMap<usize, u32>,
+  current_score: i64,
+  best_score: i64,
+  best_assignment: Option<Vec<usize>>,
+  repeat_penalty: i64,
+  rng: Rng,
+}
+
+impl<'a> CspSearch<'a> {
+  fn new(
+    slots: &'a [Slot],
+    dict: &'a Dict,
+    options: &'a ResolveOptions,
+    crosses: Vec<Vec<Cross>>,
+    adjacency: Vec<HashSet<usize>>,
+    index: WordIndex,
+    seed: u64,
+  ) -> Self {
+    let mut slot_ids_by_len: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut domains: Vec<Vec<u64>> = Vec::with_capacity(slots.len());
+    let mut domain_counts: Vec<usize> = Vec::with_capacity(slots.len());
+
+    for slot in slots {
+      slot_ids_by_len.entry(slot.len).or_default().push(slot.id);
+      let words_len = if slot.len <= dict.max_len {
+        dict.words[slot.len].len()
+      } else {
+        0
+      };
+      let blocks = (words_len + 63) / 64;
+      let mut bits = vec![u64::MAX; blocks];
+      if blocks > 0 && words_len % 64 != 0 {
+        bits[blocks - 1] = (1u64 << (words_len % 64)) - 1;
+      }
+      domains.push(bits);
+      domain_counts.push(words_len);
+    }
+
+    let mut word_gid_by_len: Vec<Vec<usize>> = vec![Vec::new(); dict.max_len + 1];
+    let mut gid_indices_by_len: Vec<HashMap<usize, Vec<usize>>> =
+      (0..=dict.max_len).map(|_| HashMap::new()).collect();
+    let mut gid_by_word: HashMap<String, usize> = HashMap::new();
+    let mut next_gid: usize = 0;
+
+    for len in 0..=dict.max_len {
+      let words = &dict.words[len];
+      if words.is_empty() {
+        continue;
+      }
+      let mut gids: Vec<usize> = Vec::with_capacity(words.len());
+      for (idx, word) in words.iter().enumerate() {
+        let gid = if let Some(existing) = gid_by_word.get(word) {
+          *existing
+        } else {
+          let created = next_gid;
+          next_gid += 1;
+          gid_by_word.insert(word.clone(), created);
+          created
+        };
+        gids.push(gid);
+        gid_indices_by_len[len].entry(gid).or_default().push(idx);
+      }
+      word_gid_by_len[len] = gids;
+    }
+
+    let mut priority_by_len: Vec<Vec<i64>> = vec![Vec::new(); dict.max_len + 1];
+    for len in 0..=dict.max_len {
+      if dict.words[len].is_empty() {
+        continue;
+      }
+      let mut priorities = Vec::with_capacity(dict.words[len].len());
+      for word in &dict.words[len] {
+        priorities.push(word_priority(options, word));
+      }
+      priority_by_len[len] = priorities;
+    }
+
+    Self {
+      slots,
+      dict,
+      options,
+      crosses,
+      adjacency,
+      index,
+      domains,
+      domain_counts,
+      assigned: vec![None; slots.len()],
+      assigned_count: 0,
+      trail: Vec::new(),
+      weighted_degree: vec![1; slots.len()],
+      slot_ids_by_len,
+      word_gid_by_len,
+      gid_indices_by_len,
+      priority_by_len,
+      used_gid_count: HashMap::new(),
+      current_score: 0,
+      best_score: i64::MAX,
+      best_assignment: None,
+      repeat_penalty: DEFAULT_REPEAT_PENALTY,
+      rng: Rng::new(seed),
+    }
+  }
+
+  fn domain_has_word(&self, slot: usize, word_idx: usize) -> bool {
+    bit_is_set(self.domains.get(slot).map(|d| d.as_slice()).unwrap_or(&[]), word_idx)
+  }
+
+  fn remove_word_from_domain(&mut self, slot: usize, word_idx: usize) -> bool {
+    if self.assigned.get(slot).and_then(|v| *v).is_some() {
+      return false;
+    }
+    let block = word_idx / 64;
+    if block >= self.domains[slot].len() {
+      return false;
+    }
+    let bit = 1u64 << (word_idx % 64);
+    if self.domains[slot][block] & bit == 0 {
+      return false;
+    }
+    self.domains[slot][block] &= !bit;
+    self.domain_counts[slot] = self.domain_counts[slot].saturating_sub(1);
+    self.trail.push(CspTrailEntry {
+      slot,
+      block,
+      removed: bit,
+    });
+    true
+  }
+
+  fn apply_allowed_mask(&mut self, slot: usize, allowed: Option<&[u64]>) {
+    if self.assigned.get(slot).and_then(|v| *v).is_some() {
+      return;
+    }
+    match allowed {
+      Some(mask) => {
+        for block in 0..self.domains[slot].len() {
+          let allow = mask.get(block).copied().unwrap_or(0);
+          let current = self.domains[slot][block];
+          let removed = current & !allow;
+          if removed == 0 {
+            continue;
+          }
+          self.domains[slot][block] = current & allow;
+          self.domain_counts[slot] =
+            self.domain_counts[slot].saturating_sub(removed.count_ones() as usize);
+          self.trail.push(CspTrailEntry { slot, block, removed });
+        }
+      }
+      None => {
+        for block in 0..self.domains[slot].len() {
+          let removed = self.domains[slot][block];
+          if removed == 0 {
+            continue;
+          }
+          self.domains[slot][block] = 0;
+          self.domain_counts[slot] =
+            self.domain_counts[slot].saturating_sub(removed.count_ones() as usize);
+          self.trail.push(CspTrailEntry { slot, block, removed });
+        }
+      }
+    }
+  }
+
+  fn undo_to(&mut self, mark: usize) {
+    while self.trail.len() > mark {
+      if let Some(change) = self.trail.pop() {
+        self.domains[change.slot][change.block] |= change.removed;
+        self.domain_counts[change.slot] =
+          self.domain_counts[change.slot].saturating_add(change.removed.count_ones() as usize);
+      }
+    }
+  }
+
+  fn count_group_in_domain(&self, slot: usize, len: usize, gid: usize) -> usize {
+    let indices = match self
+      .gid_indices_by_len
+      .get(len)
+      .and_then(|by_gid| by_gid.get(&gid))
+    {
+      Some(items) => items,
+      None => return 0,
+    };
+    indices
+      .iter()
+      .filter(|&&idx| self.domain_has_word(slot, idx))
+      .count()
+  }
+
+  fn count_group_with_char_in_domain(
+    &self,
+    slot: usize,
+    len: usize,
+    gid: usize,
+    pos: usize,
+    ch: char,
+  ) -> usize {
+    let indices = match self
+      .gid_indices_by_len
+      .get(len)
+      .and_then(|by_gid| by_gid.get(&gid))
+    {
+      Some(items) => items,
+      None => return 0,
+    };
+    indices
+      .iter()
+      .filter(|&&idx| {
+        self.domain_has_word(slot, idx)
+          && self
+            .dict
+            .chars
+            .get(len)
+            .and_then(|words| words.get(idx))
+            .and_then(|letters| letters.get(pos))
+            .copied()
+            == Some(ch)
+      })
+      .count()
+  }
+
+  fn count_domain_after_cross(
+    &self,
+    slot: usize,
+    pos: usize,
+    ch: char,
+    unique_gid: Option<usize>,
+  ) -> usize {
+    let len = self.slots[slot].len;
+    let allowed = self
+      .index
+      .pos_index
+      .get(len)
+      .and_then(|positions| positions.get(pos))
+      .and_then(|by_char| by_char.get(&ch));
+    let mut count = match allowed {
+      Some(index_cell) => bitset_intersection_count(&self.domains[slot], &index_cell.bits),
+      None => 0,
+    };
+    if count == 0 {
+      return 0;
+    }
+    if self.options.unique_words {
+      if let Some(gid) = unique_gid {
+        let remove = self.count_group_with_char_in_domain(slot, len, gid, pos, ch);
+        count = count.saturating_sub(remove);
+      }
+    }
+    count
+  }
+
+  fn set_forward_fail(&mut self, state: &mut SearchState, slot_id: usize) {
+    state.reject_forward += 1;
+    let slot = self
+      .slots
+      .get(slot_id)
+      .cloned()
+      .map(|s| slot_to_fail(&s))
+      .unwrap_or(FailSlot {
+        id: slot_id,
+        r: 0,
+        c: 0,
+        len: 0,
+        dir: "right".to_string(),
+      });
+    state.last_fail = Some(FailInfo {
+      reason: "forward-check",
+      slot: Some(slot),
+      column: None,
+      limit: None,
+    });
+  }
+
+  fn apply_forward(&mut self, picked_slot: usize, word_idx: usize, state: &mut SearchState) -> bool {
+    let slot_len = self.slots[picked_slot].len;
+    let word_chars = match self
+      .dict
+      .chars
+      .get(slot_len)
+      .and_then(|words| words.get(word_idx))
+    {
+      Some(chars) => chars,
+      None => {
+        self.set_forward_fail(state, picked_slot);
+        return false;
+      }
+    };
+
+    let crosses = self.crosses[picked_slot].clone();
+    for cross in crosses {
+      let other = cross.other;
+      if self.assigned[other].is_some() {
+        continue;
+      }
+      let needed = word_chars[cross.i_self];
+      let allowed_bits = self
+        .index
+        .pos_index
+        .get(self.slots[other].len)
+        .and_then(|positions| positions.get(cross.i_other))
+        .and_then(|by_char| by_char.get(&needed))
+        .map(|cell| cell.bits.clone());
+      self.apply_allowed_mask(other, allowed_bits.as_deref());
+      if self.domain_counts[other] == 0 {
+        self.weighted_degree[picked_slot] = self.weighted_degree[picked_slot].saturating_add(1);
+        self.weighted_degree[other] = self.weighted_degree[other].saturating_add(1);
+        self.set_forward_fail(state, other);
+        return false;
+      }
+    }
+
+    if self.options.unique_words {
+      let gid = self.word_gid_by_len[slot_len][word_idx];
+      let slots_same_len = self
+        .slot_ids_by_len
+        .get(&slot_len)
+        .cloned()
+        .unwrap_or_default();
+      let gid_indices = self
+        .gid_indices_by_len
+        .get(slot_len)
+        .and_then(|by_gid| by_gid.get(&gid))
+        .cloned()
+        .unwrap_or_default();
+      for slot_id in slots_same_len {
+        if slot_id == picked_slot || self.assigned[slot_id].is_some() {
+          continue;
+        }
+        for idx in &gid_indices {
+          self.remove_word_from_domain(slot_id, *idx);
+        }
+        if self.domain_counts[slot_id] == 0 {
+          self.weighted_degree[picked_slot] = self.weighted_degree[picked_slot].saturating_add(1);
+          self.weighted_degree[slot_id] = self.weighted_degree[slot_id].saturating_add(1);
+          self.set_forward_fail(state, slot_id);
+          return false;
+        }
+      }
+    }
+
+    true
+  }
+
+  fn choose_variable(&self) -> Option<usize> {
+    let mut best_slot: Option<usize> = None;
+    let mut best_count: usize = usize::MAX;
+    let mut best_degree: usize = 0;
+    let mut best_weight: u32 = 0;
+
+    for slot in self.slots {
+      let slot_id = slot.id;
+      if self.assigned[slot_id].is_some() {
+        continue;
+      }
+      let count = self.domain_counts[slot_id];
+      let degree = self
+        .adjacency
+        .get(slot_id)
+        .map(|neighbors| {
+          neighbors
+            .iter()
+            .filter(|&&n| self.assigned.get(n).and_then(|v| *v).is_none())
+            .count()
+        })
+        .unwrap_or(0);
+      let weight = *self.weighted_degree.get(slot_id).unwrap_or(&0);
+      let replace = best_slot.is_none()
+        || count < best_count
+        || (count == best_count
+          && (degree > best_degree
+            || (degree == best_degree
+              && (weight > best_weight
+                || (weight == best_weight && slot_id < best_slot.unwrap_or(slot_id))))));
+      if replace {
+        best_slot = Some(slot_id);
+        best_count = count;
+        best_degree = degree;
+        best_weight = weight;
+      }
+    }
+
+    best_slot
+  }
+
+  fn lcv_support(&self, slot_id: usize, word_idx: usize) -> Option<i32> {
+    let slot_len = self.slots[slot_id].len;
+    let gid = self.word_gid_by_len[slot_len][word_idx];
+    let word_chars = self.dict.chars.get(slot_len)?.get(word_idx)?;
+    let mut support: i32 = 0;
+
+    for cross in &self.crosses[slot_id] {
+      let other = cross.other;
+      if self.assigned[other].is_some() {
+        continue;
+      }
+      let needed = word_chars[cross.i_self];
+      let after = self.count_domain_after_cross(
+        other,
+        cross.i_other,
+        needed,
+        if self.options.unique_words { Some(gid) } else { None },
+      );
+      if after == 0 {
+        return None;
+      }
+      support = support.saturating_add(after as i32);
+    }
+
+    if self.options.unique_words {
+      if let Some(slots_same_len) = self.slot_ids_by_len.get(&slot_len) {
+        for &other in slots_same_len {
+          if other == slot_id || self.assigned[other].is_some() {
+            continue;
+          }
+          let after = self.domain_counts[other].saturating_sub(self.count_group_in_domain(other, slot_len, gid));
+          if after == 0 {
+            return None;
+          }
+        }
+      }
+    }
+
+    Some(support)
+  }
+
+  fn order_candidates(&mut self, slot_id: usize) -> Vec<usize> {
+    let len = self.slots[slot_id].len;
+    let mut candidates: Vec<usize> = Vec::with_capacity(self.domain_counts[slot_id]);
+    collect_set_bits(&self.domains[slot_id], &mut candidates);
+
+    if self.options.unique_words {
+      candidates.retain(|idx| {
+        let gid = self.word_gid_by_len[len][*idx];
+        self.used_gid_count.get(&gid).copied().unwrap_or(0) == 0
+      });
+    }
+
+    if candidates.len() < 2 {
+      return candidates;
+    }
+
+    if self.options.lcv {
+      let mut scored: Vec<(i32, i64, u32, usize)> = Vec::with_capacity(candidates.len());
+      for (i, idx) in candidates.iter().copied().enumerate() {
+        let support = self.lcv_support(slot_id, idx).unwrap_or(-1);
+        let priority = self.priority_by_len[len][idx];
+        let tie = if self.options.shuffle {
+          self.rng.next_u32()
+        } else {
+          i as u32
+        };
+        scored.push((support, priority, tie, idx));
+      }
+      scored.sort_by(|a, b| {
+        compare_scored_candidates(a.0, a.1, a.2, b.0, b.1, b.2, self.options.lcv_priority_slack)
+      });
+      return scored.into_iter().map(|s| s.3).collect();
+    }
+
+    if self.options.word_priority.is_some() {
+      let mut scored: Vec<(i64, u32, usize)> = Vec::with_capacity(candidates.len());
+      for (i, idx) in candidates.iter().copied().enumerate() {
+        let priority = self.priority_by_len[len][idx];
+        let tie = if self.options.shuffle {
+          self.rng.next_u32()
+        } else {
+          i as u32
+        };
+        scored.push((priority, tie, idx));
+      }
+      scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+      return scored.into_iter().map(|s| s.2).collect();
+    }
+
+    if self.options.shuffle {
+      self.rng.shuffle(&mut candidates);
+    }
+    candidates
+  }
+
+  fn optimistic_lower_bound(&self) -> Option<i64> {
+    let mut bound: i64 = 0;
+    for slot in self.slots {
+      let slot_id = slot.id;
+      if self.assigned[slot_id].is_some() {
+        continue;
+      }
+      let len = slot.len;
+      let mut min_priority = i64::MAX;
+      let mut words: Vec<usize> = Vec::with_capacity(self.domain_counts[slot_id]);
+      collect_set_bits(&self.domains[slot_id], &mut words);
+      for word_idx in words {
+        let gid = self.word_gid_by_len[len][word_idx];
+        if self.options.unique_words && self.used_gid_count.get(&gid).copied().unwrap_or(0) > 0 {
+          continue;
+        }
+        let priority = self.priority_by_len[len][word_idx];
+        if priority < min_priority {
+          min_priority = priority;
+        }
+      }
+      if min_priority == i64::MAX {
+        return None;
+      }
+      bound = bound.saturating_add(min_priority);
+    }
+    Some(bound)
+  }
+
+  fn score_delta(&self, len: usize, word_idx: usize) -> i64 {
+    let gid = self.word_gid_by_len[len][word_idx];
+    let used = self.used_gid_count.get(&gid).copied().unwrap_or(0) as i64;
+    self.priority_by_len[len][word_idx].saturating_add(used.saturating_mul(self.repeat_penalty))
+  }
+
+  fn current_assignment(&self) -> Option<Vec<usize>> {
+    self.assigned.iter().copied().collect()
+  }
+
+  fn update_best_if_complete(&mut self) {
+    if self.assigned_count != self.slots.len() {
+      return;
+    }
+    if self.current_score >= self.best_score {
+      return;
+    }
+    if let Some(assign) = self.current_assignment() {
+      self.best_score = self.current_score;
+      self.best_assignment = Some(assign);
+    }
+  }
+
+  fn search(
+    &mut self,
+    state: &mut SearchState,
+    progress_ctx: &mut ProgressCtx<'_>,
+    abort_flag: Option<&AtomicBool>,
+  ) -> bool {
+    if should_abort(state, self.options, abort_flag) {
+      return true;
+    }
+
+    if self.assigned_count == self.slots.len() {
+      self.update_best_if_complete();
+      return false;
+    }
+
+    if self.best_assignment.is_some() {
+      match self.optimistic_lower_bound() {
+        Some(lower_bound) => {
+          if self.current_score.saturating_add(lower_bound) >= self.best_score {
+            return false;
+          }
+        }
+        None => {
+          return false;
+        }
+      }
+    }
+
+    let slot_id = match self.choose_variable() {
+      Some(slot) => slot,
+      None => return false,
+    };
+    if self.domain_counts[slot_id] == 0 {
+      state.zero_pick += 1;
+      self.weighted_degree[slot_id] = self.weighted_degree[slot_id].saturating_add(1);
+      state.last_fail = Some(FailInfo {
+        reason: "zero-pick",
+        slot: self.slots.get(slot_id).map(slot_to_fail),
+        column: None,
+        limit: None,
+      });
+      return false;
+    }
+
+    let candidates = self.order_candidates(slot_id);
+    if candidates.is_empty() {
+      state.zero_pick += 1;
+      self.weighted_degree[slot_id] = self.weighted_degree[slot_id].saturating_add(1);
+      state.last_fail = Some(FailInfo {
+        reason: "zero-pick",
+        slot: self.slots.get(slot_id).map(slot_to_fail),
+        column: None,
+        limit: None,
+      });
+      return false;
+    }
+
+    for word_idx in candidates {
+      if should_abort(state, self.options, abort_flag) {
+        return true;
+      }
+      state.nodes += 1;
+      let len = self.slots[slot_id].len;
+      let word = &self.dict.words[len][word_idx];
+      let degree = self
+        .adjacency
+        .get(slot_id)
+        .map(|neighbors| neighbors.len())
+        .unwrap_or(0);
+      let pick = ProgressLastPickRef {
+        id: slot_id,
+        len,
+        degree,
+        candidates: self.domain_counts[slot_id] as i32,
+        pattern: word,
+      };
+      maybe_report(
+        state,
+        progress_ctx,
+        self.assigned_count + 1,
+        self.slots.len(),
+        false,
+        Some(pick),
+      );
+
+      let gid = self.word_gid_by_len[len][word_idx];
+      let prev_used = self.used_gid_count.get(&gid).copied().unwrap_or(0);
+      self.assigned[slot_id] = Some(word_idx);
+      self.assigned_count += 1;
+      self.used_gid_count.insert(gid, prev_used + 1);
+      let prev_score = self.current_score;
+      self.current_score = self.current_score.saturating_add(self.score_delta(len, word_idx));
+
+      let mark = self.trail.len();
+      let ok = self.apply_forward(slot_id, word_idx, state);
+      let aborted = if ok {
+        self.search(state, progress_ctx, abort_flag)
+      } else {
+        false
+      };
+
+      self.undo_to(mark);
+      self.current_score = prev_score;
+      if prev_used == 0 {
+        self.used_gid_count.remove(&gid);
+      } else {
+        self.used_gid_count.insert(gid, prev_used);
+      }
+      self.assigned[slot_id] = None;
+      self.assigned_count = self.assigned_count.saturating_sub(1);
+
+      if aborted {
+        return true;
+      }
+    }
+
+    state.backtracks += 1;
+    self.weighted_degree[slot_id] = self.weighted_degree[slot_id].saturating_add(1);
+    false
+  }
+}
+
+fn bit_is_set(bits: &[u64], idx: usize) -> bool {
+  let block = idx / 64;
+  if block >= bits.len() {
+    return false;
+  }
+  let bit = 1u64 << (idx % 64);
+  bits[block] & bit != 0
+}
+
+fn collect_set_bits(bits: &[u64], out: &mut Vec<usize>) {
+  for (block_idx, block) in bits.iter().copied().enumerate() {
+    let mut value = block;
+    while value != 0 {
+      let bit = value.trailing_zeros() as usize;
+      out.push(block_idx * 64 + bit);
+      value &= value - 1;
+    }
+  }
+}
+
+fn bitset_intersection_count(a: &[u64], b: &[u64]) -> usize {
+  let mut total = 0usize;
+  let blocks = a.len().min(b.len());
+  for i in 0..blocks {
+    total += (a[i] & b[i]).count_ones() as usize;
+  }
+  total
+}
+
+fn run_attempt_csp<'a>(
+  emitter: Option<Box<dyn ProgressEmitter + 'a>>,
+  raw_rows: &[String],
+  slots: &[Slot],
+  dict: &Dict,
+  options: &ResolveOptions,
+  attempt: usize,
+  attempt_start: Instant,
+  next_log_at: &mut u64,
+  abort_flag: Option<&AtomicBool>,
+) -> Option<(Vec<Vec<char>>, i64)> {
+  let index = build_word_index(dict);
+  let (crosses, adjacency, _) = build_cross_data(slots);
+  let total_slots = slots.len();
+  let seed = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_nanos() as u64
+    ^ ((attempt as u64) << 1);
+
+  let mut state = SearchState {
+    nodes: 0,
+    backtracks: 0,
+    zero_pick: 0,
+    reject_intersect: 0,
+    reject_forward: 0,
+    start: attempt_start,
+    aborted: false,
+    abort_reason: None,
+    last_fail: None,
+  };
+
+  let mut progress_ctx = ProgressCtx {
+    emitter,
+    label: options.label.clone(),
+    attempt,
+    restarts: options.restarts,
+    engine: "csp",
+    total_slots,
+    next_log_at: if options.log_every_ms > 0 {
+      *next_log_at
+    } else {
+      u64::MAX
+    },
+    next_log_node: if options.log_every_nodes > 0 {
+      options.log_every_nodes
+    } else {
+      u64::MAX
+    },
+    log_every_ms: options.log_every_ms,
+    log_every_nodes: options.log_every_nodes,
+    stdout: options.progress_stdout,
+    fail_stdout: options.fail_stdout,
+  };
+  maybe_report(&state, &mut progress_ctx, 0, total_slots, true, None);
+
+  let mut search = CspSearch::new(slots, dict, options, crosses, adjacency, index, seed);
+  let _ = search.search(&mut state, &mut progress_ctx, abort_flag);
+  if options.log_every_ms > 0 {
+    *next_log_at = progress_ctx.next_log_at;
+  }
+
+  let assignment = match search.best_assignment.clone() {
+    Some(assign) => assign,
+    None => {
+      emit_fail(&state, &mut progress_ctx);
+      return None;
+    }
+  };
+
+  let mut grid = init_grid(raw_rows);
+  for slot in slots {
+    let word_idx = assignment[slot.id];
+    let chars = &dict.chars[slot.len][word_idx];
+    for (i, (r, c)) in slot.cells.iter().enumerate() {
+      grid[*r][*c] = chars[i];
+    }
+  }
+
+  Some((grid, search.best_score))
+}
+
+fn solve_attempt_with_progress_direct_csp(
+  env: &Env,
+  progress: &JsFunction,
+  rows: &[String],
+  slots: &[Slot],
+  dict: &Dict,
+  components: &[Vec<usize>],
+  options: &ResolveOptions,
+  attempt: usize,
+) -> Option<(Vec<Vec<char>>, i64)> {
+  let mut grid = init_grid(rows);
+  let mut used_global: HashSet<String> = HashSet::new();
+  let mut total_score: i64 = 0;
+  let attempt_start = Instant::now();
+  let mut next_log_at = if options.log_every_ms > 0 {
+    options.log_every_ms
+  } else {
+    u64::MAX
+  };
+
+  for comp in components {
+    let sub_slots = remap_slots(slots, comp);
+    let dict_for_comp = if options.unique_words && !used_global.is_empty() {
+      DictRef::Owned(dict.filter(&used_global))
+    } else {
+      DictRef::Borrowed(dict)
+    };
+
+    let emitter: Box<dyn ProgressEmitter> = Box::new(DirectEmitter {
+      env,
+      callback: progress,
+    });
+    let (solved, score) = run_attempt_csp(
+      Some(emitter),
+      rows,
+      &sub_slots,
+      dict_for_comp.as_ref(),
+      options,
+      attempt,
+      attempt_start,
+      &mut next_log_at,
+      None,
+    )?;
+
+    if options.unique_words {
+      for slot in &sub_slots {
+        let word: String = slot.cells.iter().map(|(r, c)| solved[*r][*c]).collect();
+        used_global.insert(word);
+      }
+    }
+
+    total_score = total_score.saturating_add(score);
+    merge_grid(&mut grid, &solved);
+  }
+
+  Some((grid, total_score))
+}
+
+fn solve_attempt_with_progress_tsfn_csp(
+  progress: &Arc<ThreadsafeFunction<String>>,
+  rows: &[String],
+  slots: &[Slot],
+  dict: &Dict,
+  components: &[Vec<usize>],
+  options: &ResolveOptions,
+  attempt: usize,
+) -> Option<(Vec<Vec<char>>, i64)> {
+  let mut grid = init_grid(rows);
+  let mut used_global: HashSet<String> = HashSet::new();
+  let mut total_score: i64 = 0;
+  let attempt_start = Instant::now();
+  let mut next_log_at = if options.log_every_ms > 0 {
+    options.log_every_ms
+  } else {
+    u64::MAX
+  };
+
+  for comp in components {
+    let sub_slots = remap_slots(slots, comp);
+    let dict_for_comp = if options.unique_words && !used_global.is_empty() {
+      DictRef::Owned(dict.filter(&used_global))
+    } else {
+      DictRef::Borrowed(dict)
+    };
+
+    let emitter: Box<dyn ProgressEmitter> = Box::new(TsfnEmitter {
+      callback: Arc::clone(progress),
+      call_mode: ThreadsafeFunctionCallMode::NonBlocking,
+      debug: options.debug_dlx,
+      logged: false,
+    });
+    let (solved, score) = run_attempt_csp(
+      Some(emitter),
+      rows,
+      &sub_slots,
+      dict_for_comp.as_ref(),
+      options,
+      attempt,
+      attempt_start,
+      &mut next_log_at,
+      None,
+    )?;
+
+    if options.unique_words {
+      for slot in &sub_slots {
+        let word: String = slot.cells.iter().map(|(r, c)| solved[*r][*c]).collect();
+        used_global.insert(word);
+      }
+    }
+
+    total_score = total_score.saturating_add(score);
+    merge_grid(&mut grid, &solved);
+  }
+
+  Some((grid, total_score))
+}
+
+fn solve_attempt_no_progress_csp(
+  rows: &[String],
+  slots: &[Slot],
+  dict: &Dict,
+  components: &[Vec<usize>],
+  options: &ResolveOptions,
+  attempt: usize,
+) -> Option<(Vec<Vec<char>>, i64)> {
+  let mut grid = init_grid(rows);
+  let mut used_global: HashSet<String> = HashSet::new();
+  let mut total_score: i64 = 0;
+  let attempt_start = Instant::now();
+  let mut next_log_at = if options.log_every_ms > 0 {
+    options.log_every_ms
+  } else {
+    u64::MAX
+  };
+
+  for comp in components {
+    let sub_slots = remap_slots(slots, comp);
+    let dict_for_comp = if options.unique_words && !used_global.is_empty() {
+      DictRef::Owned(dict.filter(&used_global))
+    } else {
+      DictRef::Borrowed(dict)
+    };
+    let (solved, score) = run_attempt_csp(
+      None,
+      rows,
+      &sub_slots,
+      dict_for_comp.as_ref(),
+      options,
+      attempt,
+      attempt_start,
+      &mut next_log_at,
+      None,
+    )?;
+    if options.unique_words {
+      for slot in &sub_slots {
+        let word: String = slot.cells.iter().map(|(r, c)| solved[*r][*c]).collect();
+        used_global.insert(word);
+      }
+    }
+    total_score = total_score.saturating_add(score);
+    merge_grid(&mut grid, &solved);
+  }
+
+  Some((grid, total_score))
+}
+
 fn run_attempt_dlx<'a>(
   emitter: Option<Box<dyn ProgressEmitter + 'a>>,
   raw_rows: &[String],
@@ -1199,6 +2379,7 @@ fn run_attempt_dlx<'a>(
     backtracks: 0,
     zero_pick: 0,
     reject_intersect: 0,
+    reject_forward: 0,
     start: attempt_start,
     aborted: false,
     abort_reason: None,
@@ -1210,6 +2391,7 @@ fn run_attempt_dlx<'a>(
     label: options.label.clone(),
     attempt,
     restarts: options.restarts,
+    engine: "dlx",
     total_slots,
     next_log_at: if options.log_every_ms > 0 { *next_log_at } else { u64::MAX },
     next_log_node: if options.log_every_nodes > 0 { options.log_every_nodes } else { u64::MAX },
@@ -1390,6 +2572,7 @@ fn run_attempt_dlx_no_progress(
     backtracks: 0,
     zero_pick: 0,
     reject_intersect: 0,
+    reject_forward: 0,
     start: attempt_start,
     aborted: false,
     abort_reason: None,
@@ -1807,7 +2990,7 @@ fn maybe_report(
     label: ctx.label.clone(),
     attempt: ctx.attempt,
     restarts: ctx.restarts,
-    engine: "dlx".to_string(),
+    engine: ctx.engine.to_string(),
     nodes: state.nodes,
     elapsed_ms,
     nodes_per_sec,
@@ -1816,7 +2999,7 @@ fn maybe_report(
     last_pick: payload_last_pick,
     stats: ProgressStats {
       reject_intersect: state.reject_intersect,
-      reject_forward: 0,
+      reject_forward: state.reject_forward,
       zero_pick: state.zero_pick,
       backtracks: state.backtracks,
     },
@@ -1902,7 +3085,7 @@ fn emit_fail(state: &SearchState, ctx: &mut ProgressCtx<'_>) {
     kind: "fail".to_string(),
     label: ctx.label.clone(),
     attempt: ctx.attempt,
-    engine: "dlx".to_string(),
+    engine: ctx.engine.to_string(),
     reason: reason.to_string(),
     detail,
   };
@@ -2122,4 +3305,104 @@ fn unpurify(
     nodes[up].down = j;
   }
   columns[col].color = None;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn csp_options() -> ResolveOptions {
+    normalize_csp_options(resolve_options(SolveOptionsInput {
+      shuffle: Some(false),
+      lcv: Some(true),
+      lcv_priority_slack: Some(0),
+      restarts: Some(1),
+      unique_words: Some(true),
+      split_components: Some(false),
+      max_ms: None,
+      max_nodes: None,
+      parallel_restarts: Some(1),
+      log_every_ms: Some(0),
+      log_every_nodes: Some(0),
+      label: None,
+      debug_dlx: Some(false),
+      progress_stdout: Some(false),
+      fail_stdout: Some(false),
+      word_priority: None,
+    }))
+  }
+
+  #[test]
+  fn csp_sat_small_grid() {
+    let input = SolveInput {
+      rows: vec!["..".to_string(), "..".to_string()],
+      slots: vec![
+        SlotInput {
+          len: 2,
+          cells: vec![[0, 0], [0, 1]],
+        },
+        SlotInput {
+          len: 2,
+          cells: vec![[1, 0], [1, 1]],
+        },
+        SlotInput {
+          len: 2,
+          cells: vec![[0, 0], [1, 0]],
+        },
+        SlotInput {
+          len: 2,
+          cells: vec![[0, 1], [1, 1]],
+        },
+      ],
+      dict: HashMap::from([(
+        "2".to_string(),
+        vec![
+          "AB".to_string(),
+          "CD".to_string(),
+          "AC".to_string(),
+          "BD".to_string(),
+          "AD".to_string(),
+          "CB".to_string(),
+        ],
+      )]),
+      options: None,
+    };
+
+    let solved = solve_csp_internal(None, input, csp_options(), None, None);
+    assert!(solved.is_some(), "expected SAT instance to be solved");
+  }
+
+  #[test]
+  fn csp_unsat_returns_none() {
+    let input = SolveInput {
+      rows: vec!["..".to_string(), "..".to_string()],
+      slots: vec![
+        SlotInput {
+          len: 2,
+          cells: vec![[0, 0], [0, 1]],
+        },
+        SlotInput {
+          len: 2,
+          cells: vec![[0, 1], [1, 1]],
+        },
+      ],
+      dict: HashMap::from([("2".to_string(), vec!["AA".to_string(), "CC".to_string()])]),
+      options: None,
+    };
+
+    let solved = solve_csp_internal(None, input, csp_options(), None, None);
+    assert!(solved.is_none(), "expected UNSAT instance to return None");
+  }
+
+  #[test]
+  fn csp_unbounded_forces_single_restart() {
+    let raw = resolve_options(SolveOptionsInput {
+      restarts: Some(4),
+      parallel_restarts: Some(4),
+      ..Default::default()
+    });
+    let normalized = normalize_csp_options(raw);
+    assert_eq!(normalized.restarts, 1);
+    assert_eq!(normalized.parallel_restarts, 1);
+  }
 }

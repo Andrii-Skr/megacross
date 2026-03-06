@@ -1,5 +1,5 @@
 import type { Slot } from "../types";
-import { solveDlxNative } from "./nativeDlx";
+import { solveCspNative, solveDlxNative } from "./nativeDlx";
 
 export type Dict = Map<number, string[]>;
 
@@ -7,7 +7,7 @@ export type SolveProgress = {
   label?: string;
   attempt: number;
   restarts: number;
-  engine: "dlx";
+  engine: "dlx" | "csp";
   nodes: number;
   elapsedMs: number;
   nodesPerSec: number;
@@ -31,7 +31,7 @@ export type SolveProgress = {
 export type SolveFailInfo = {
   label?: string;
   attempt: number;
-  engine: "dlx";
+  engine: "dlx" | "csp";
   reason: "zero-pick" | "forward-check" | "aborted" | "no-solution";
   detail?: {
     slot?: {
@@ -67,7 +67,7 @@ export type SolveOptions = {
   restarts?: number;
   parallelRestarts?: number;
   uniqueWords?: boolean;
-  engine?: "dlx";
+  engine?: "dlx" | "csp";
   splitComponents?: boolean;
   nativeDlx?: boolean;
   debugDlx?: boolean;
@@ -102,14 +102,13 @@ export function solve(
   const optionsRaw =
     typeof shuffleOrOptions === "boolean" ? { shuffle: shuffleOrOptions } : shuffleOrOptions ?? {};
   const engine = optionsRaw.engine ?? "dlx";
-  if (engine !== "dlx") throw new Error("Only DLX engine is supported.");
-  if (optionsRaw.nativeDlx === false) {
+  if (engine === "dlx" && optionsRaw.nativeDlx === false) {
     throw new Error("nativeDlx=false is no longer supported. Native DLX is required.");
   }
 
-  const result = solveDlxNative(rawRows, slots, dict, {
+  const resolved = {
     ...optionsRaw,
-    engine: "dlx",
+    engine,
     nativeDlx: true,
     shuffle: optionsRaw.shuffle ?? false,
     lcv: optionsRaw.lcv ?? false,
@@ -120,9 +119,17 @@ export function solve(
     splitComponents: optionsRaw.splitComponents ?? true,
     logEveryMs: normalizeNonNegativeInt(optionsRaw.logEveryMs, 0),
     logEveryNodes: normalizeNonNegativeInt(optionsRaw.logEveryNodes, 0),
-  });
+  } satisfies SolveOptions;
+  const result =
+    engine === "csp"
+      ? solveCspNative(rawRows, slots, dict, resolved)
+      : solveDlxNative(rawRows, slots, dict, resolved);
   if (result === undefined) {
-    throw new Error("Native DLX solver is not available or failed to run.");
+    throw new Error(
+      engine === "csp"
+        ? "Native CSP solver is not available or failed to run."
+        : "Native DLX solver is not available or failed to run."
+    );
   }
   return result;
 }

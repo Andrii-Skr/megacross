@@ -16,6 +16,8 @@ import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
 import type { SolveFailInfo, SolveProgress } from "../src/utils/solver";
 import {
+  resolveProbeBudget,
+  resolveProbeOutcome,
   resolveStrictLimitedBudget,
   runDlxProbe,
   sortDictionaryByPriority,
@@ -47,7 +49,13 @@ import {
 } from "../src/utils/editionHotBan";
 import { loadEditionUsageSnapshot } from "../src/utils/editionUsageSnapshot";
 import { polishSolvedRowsByCost } from "../src/utils/solutionPolish";
-import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../src/utils/nativeDlx";
+import {
+  consumeLastNativeFail,
+  isNativeCspAvailable,
+  isNativeDlxAvailable,
+  solveCspNativeAsync,
+  solveDlxNativeAsync,
+} from "../src/utils/nativeDlx";
 import {
   loadDictionary,
   loadDictionaryByTemplate,
@@ -1183,6 +1191,9 @@ const parsedCli = (() => {
         "debug-dlx":{ type: "boolean" },
         nativeDlx:{ type: "boolean" },
         "native-dlx":{ type: "boolean" },
+        nativeCsp:{ type: "boolean" },
+        "native-csp":{ type: "boolean" },
+        engine: { type: "string" },
         parallel: { type: "string" },
         "parallel-restarts": { type: "string" },
         restarts:{ type: "string" },
@@ -1251,7 +1262,15 @@ const maxMs = Number.isFinite(maxMsRaw) ? maxMsRaw : undefined;
 const maxNodes = Number.isFinite(maxNodesRaw) ? maxNodesRaw : undefined;
 const doLcv = !!values.lcv;
 const debugDlx = !!values.debugDlx || !!values["debug-dlx"];
-const nativeDlx = true;
+const nativeDlxFlag = !!values.nativeDlx || !!values["native-dlx"];
+const nativeCspFlag = !!values.nativeCsp || !!values["native-csp"];
+const engineRaw = typeof values.engine === "string" ? values.engine.trim().toLowerCase() : "";
+const engineFromValue = engineRaw === "dlx" || engineRaw === "csp" ? engineRaw : "";
+const solverEngine: "dlx" | "csp" =
+  engineFromValue === "csp" || (!engineFromValue && nativeCspFlag) ? "csp" : "dlx";
+if (nativeDlxFlag && nativeCspFlag) {
+  console.warn("Both --native-dlx and --native-csp passed; using CSP.");
+}
 const restartsRaw = values.restarts ? Number(values.restarts) : 1;
 const restarts = Number.isFinite(restartsRaw) && restartsRaw > 0 ? Math.floor(restartsRaw) : 1;
 const parallelValueRaw = values.parallel ?? values["parallel-restarts"];
@@ -1523,11 +1542,15 @@ if (!files.length) {
   }
   const totalSlotLengths = [...totalSlotCounts.keys()].sort((a, b) => a - b);
   const parallelLabel = `${parallelRestarts} (cfg=${configuredParallelRestarts} explicit=${parallelExplicit ? "yes" : "no"}${parallelRestarts > 1 ? " early-stop" : ""})`;
-  const nativeAvailable = isNativeDlxAvailable();
+  const nativeAvailable = solverEngine === "csp" ? isNativeCspAvailable() : isNativeDlxAvailable();
   if (!nativeAvailable) {
-    throw new Error("Native DLX solver is not available (JS solver is disabled)");
+    throw new Error(
+      solverEngine === "csp"
+        ? "Native CSP solver is not available (JS solver is disabled)"
+        : "Native DLX solver is not available (JS solver is disabled)"
+    );
   }
-  const engineLabel = "dlx(native,required)";
+  const engineLabel = `${solverEngine}(native,required)`;
   const prefixNeed = "📚 нужно (все) → ";
   const prefixDict = "📖 словарь → ";
   const prefixPad = " ".repeat(Math.max(0, prefixNeed.length - prefixDict.length));
@@ -1691,6 +1714,7 @@ if (!files.length) {
         const solveCallStartedAt = Date.now();
         let solveCallResult: string[] | null = null;
         const solveBaseOptions = {
+          engine: solverEngine,
           shuffle: overrides.shuffle ?? shuffleOpt,
           lcv: overrides.lcv ?? doLcv,
           lcvPrioritySlack: overrides.lcvPrioritySlack ?? rebalanceLcvPrioritySlack,
@@ -1719,9 +1743,16 @@ if (!files.length) {
           : solveOptions;
         nativeActive = useNativeStreaming;
         try {
-          const nativeSolved = await solveDlxNativeAsync(grid.data, slots, dictForSolve, nativeOptions);
+          const nativeSolved =
+            solverEngine === "csp"
+              ? await solveCspNativeAsync(grid.data, slots, dictForSolve, nativeOptions)
+              : await solveDlxNativeAsync(grid.data, slots, dictForSolve, nativeOptions);
           if (nativeSolved === undefined) {
-            throw new Error("Native DLX solver is not available (JS solver is disabled)");
+            throw new Error(
+              solverEngine === "csp"
+                ? "Native CSP solver is not available (JS solver is disabled)"
+                : "Native DLX solver is not available (JS solver is disabled)"
+            );
           }
           solveCallResult = nativeSolved;
           return nativeSolved;
@@ -1904,14 +1935,47 @@ if (!files.length) {
         if (strictDeficitLengths.size === 0) {
           const strictDict = filterDictionaryByBlockedWords(masterDict, strictProbeBlockedWords);
           uniqueFallbackStats.probeAttempted += 1;
-          const probeResult = runDlxProbe(grid.data, slots, strictDict, {
-            label: `${name}:probe`,
-            maxNodes,
-            maxMs,
-            uniqueWords: true,
-            wordPriority: editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined,
-            lcvPrioritySlack: rebalanceLcvPrioritySlack,
-          });
+          const probeResult =
+            solverEngine === "csp"
+              ? await (async () => {
+                  const budget = resolveProbeBudget(maxNodes, maxMs);
+                  let probeFailInfo: SolveFailInfo | null = null;
+                  const solvedProbe = await solveCspNativeAsync(grid.data, slots, strictDict, {
+                    engine: "csp",
+                    nativeDlx: true,
+                    shuffle: false,
+                    lcv: true,
+                    lcvPrioritySlack: rebalanceLcvPrioritySlack,
+                    uniqueWords: true,
+                    splitComponents: true,
+                    restarts: 1,
+                    parallelRestarts: 1,
+                    maxNodes: budget.maxNodes,
+                    maxMs: budget.maxMs,
+                    label: `${name}:probe`,
+                    wordPriority:
+                      editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined,
+                    onFail: (info) => {
+                      probeFailInfo = info;
+                    },
+                  });
+                  if (solvedProbe === undefined) {
+                    throw new Error("Native CSP solver is not available (JS solver is disabled)");
+                  }
+                  return {
+                    solved: solvedProbe,
+                    outcome: resolveProbeOutcome(solvedProbe, probeFailInfo),
+                    failInfo: probeFailInfo,
+                  };
+                })()
+              : runDlxProbe(grid.data, slots, strictDict, {
+                  label: `${name}:probe`,
+                  maxNodes,
+                  maxMs,
+                  uniqueWords: true,
+                  wordPriority: editionUsagePriorityByWord.size ? editionUsagePriorityByWord : undefined,
+                  lcvPrioritySlack: rebalanceLcvPrioritySlack,
+                });
           failInfo = probeResult.failInfo ?? failInfo;
           if (probeResult.solved) {
             solved = probeResult.solved;
@@ -2050,7 +2114,7 @@ if (!files.length) {
       const solveMs = Date.now() - solveStartedAt;
       solveTotalMs += solveMs;
       if (!solved) {
-        if (explainFail && !explainFailLite && !failInfo && nativeDlx) {
+        if (explainFail && !explainFailLite && !failInfo) {
           failInfo = await waitForNativeFail();
         }
         const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);

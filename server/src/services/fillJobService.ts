@@ -41,7 +41,13 @@ import {
 } from "../utils/editionHotBan";
 import { loadEditionUsageSnapshot, type EditionUsageSnapshot } from "../utils/editionUsageSnapshot";
 import { polishSolvedRowsByCost } from "../utils/solutionPolish";
-import { consumeLastNativeFail, isNativeDlxAvailable, solveDlxNativeAsync } from "../utils/nativeDlx";
+import {
+  consumeLastNativeFail,
+  isNativeCspAvailable,
+  isNativeDlxAvailable,
+  solveCspNativeAsync,
+  solveDlxNativeAsync,
+} from "../utils/nativeDlx";
 import { buildCrw } from "../utils/writeCrw";
 import { DIRS, type Cell, type Grid, type Slot } from "../types";
 import { loadDefinitions, loadDictionaryByTemplate, type DictionaryFilterTemplate } from "./dictionary";
@@ -82,6 +88,7 @@ export type FillJobUpdate = {
 };
 
 type FillJobOptions = {
+  engine: "dlx" | "csp";
   shuffle: boolean;
   unique: boolean;
   lcv: boolean;
@@ -254,6 +261,7 @@ const jobRuntimes = new Map<string, JobRuntime>();
 let fillTableReady = false;
 
 const DEFAULT_OPTIONS: FillJobOptions = {
+  engine: "dlx",
   shuffle: true,
   unique: true,
   lcv: true,
@@ -2338,11 +2346,13 @@ function parseFillJobOptions(value: unknown): FillJobOptions {
     modeRaw === "safe" || modeRaw === "aggressive" || modeRaw === "cost"
       ? modeRaw
       : defaults.usageRebalanceMode;
+  const engine = raw.engine === "csp" || raw.engine === "dlx" ? raw.engine : defaults.engine;
   const editionHotBan =
     typeof raw.editionHotBan === "boolean" ? raw.editionHotBan : defaults.editionHotBan;
   return {
     ...defaults,
     ...raw,
+    engine,
     usageRebalanceMode,
     editionHotBan,
   };
@@ -2601,8 +2611,15 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       return;
     }
 
-    const nativeAvailable = isNativeDlxAvailable();
-    if (!nativeAvailable) throw new Error("Native DLX solver is not available (JS solver is disabled)");
+    const nativeAvailable =
+      options.engine === "csp" ? isNativeCspAvailable() : isNativeDlxAvailable();
+    if (!nativeAvailable) {
+      throw new Error(
+        options.engine === "csp"
+          ? "Native CSP solver is not available (JS solver is disabled)"
+          : "Native DLX solver is not available (JS solver is disabled)"
+      );
+    }
     const cpuParallel = detectCpuParallelism();
     const effectiveParallelRestarts = resolveParallelRestarts(options.restarts, options.parallelRestarts);
     const templateSource =
@@ -2611,7 +2628,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         : issue.filterTemplateId !== null
           ? "issue.filterTemplateId"
           : "issue.snapshotTemplateId";
-    const nativeEngineLabel = "required(native)";
+    const nativeEngineLabel = `${options.engine}(native,required)`;
     const maxNodesLabel =
       typeof options.maxNodes === "number" && Number.isFinite(options.maxNodes)
         ? String(options.maxNodes)
@@ -2684,7 +2701,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       ) => {
         const effectiveWordPriority =
           overrides.wordPriority ?? (options.usageStats ? usagePriorityByWord : undefined);
-        const solvedNative = await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, {
+        const nativeOptions = {
           shuffle: overrides.shuffle ?? options.shuffle,
           lcv: overrides.lcv ?? options.lcv,
           lcvPrioritySlack: overrides.lcvPrioritySlack ?? rebalanceLcvPrioritySlack,
@@ -2697,9 +2714,17 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           wordPriority: effectiveWordPriority,
           onProgress,
           onFail,
-        });
+        };
+        const solvedNative =
+          options.engine === "csp"
+            ? await solveCspNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions)
+            : await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions);
         if (solvedNative === undefined) {
-          throw new Error("Native DLX solver is not available (JS solver is disabled)");
+          throw new Error(
+            options.engine === "csp"
+              ? "Native CSP solver is not available (JS solver is disabled)"
+              : "Native DLX solver is not available (JS solver is disabled)"
+          );
         }
         return solvedNative;
       };
