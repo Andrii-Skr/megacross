@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Cell } from "../src/types";
+import { CELL_STROKE_COLOR } from "./svg-theme";
 
 const base = join(__dirname, "../src/arrows");
 
@@ -32,7 +33,10 @@ const readArrow = (name: string): ArrowAsset => {
     if (widthMatch) width = Number.parseFloat(widthMatch[1]) || width;
     if (heightMatch) height = Number.parseFloat(heightMatch[1]) || height;
   }
-  const body = bodyRaw.replace(/\s+id="[^"]*"/g, "").trim();
+  const body = bodyRaw
+    .replace(/\s+id="[^"]*"/g, "")
+    .replace(/stroke:(?:blue|#393185)/gi, `stroke:${CELL_STROKE_COLOR}`)
+    .trim();
   return { body, width, height };
 };
 

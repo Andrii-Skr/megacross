@@ -7,6 +7,8 @@ type ClueCell = {
   text: string;
 };
 
+const MIN_CLUE_FONT_SIZE = 8;
+
 function escapeXml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -144,12 +146,12 @@ export function renderClueText(
   const mode = options.mode ?? "default";
   const padding = 1;
   const normalized = text.replace(/\s+/g, " ").trim();
-  const minFloor = 5;
+  const minFloor = MIN_CLUE_FONT_SIZE;
   const baseMin = Math.max(minFloor, Math.floor(cell * 0.12));
   const minFontSize = normalized.length <= 30
     ? Math.max(minFloor, Math.floor(cell * 0.1))
     : baseMin;
-  let currentSize = fontSize;
+  let currentSize = Math.max(fontSize, minFontSize);
   let lineHeight = Math.round(currentSize * 1.0 * 10) / 10;
   let maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * 0.6)));
   let maxLines = Math.max(1, Math.floor((cell - padding * 2) / lineHeight));

@@ -17,6 +17,8 @@ import {
   CELL_STROKE_COLOR,
   CELL_STROKE_WIDTH,
   CLUE_TEXT_FILL,
+  COREL_CELL_SIZE_UNITS,
+  COREL_STROKE_WIDTH_UNITS,
   WORD_TEXT_FILL,
 } from "./svg-theme";
 
@@ -47,11 +49,9 @@ const useCorelStyle = styleName === "corel";
 if (!["default", "corel"].includes(styleName)) {
   console.warn(`Unknown SVG style "${values.style}", using default.`);
 }
-const CELL = useCorelStyle ? 118 : DEFAULT_CELL;
+const CELL = useCorelStyle ? COREL_CELL_SIZE_UNITS : DEFAULT_CELL;
 const EMPTY_CELL_FILL = useCorelStyle ? "#FEFEFE" : "#fff";
-const STROKE_WIDTH = useCorelStyle
-  ? Math.round(CELL * 0.07 * 1000) / 1000
-  : CELL_STROKE_WIDTH;
+const STROKE_WIDTH = useCorelStyle ? COREL_STROKE_WIDTH_UNITS : CELL_STROKE_WIDTH;
 const SVG_PAD = STROKE_WIDTH / 2;
 const GRID_PAD = useCorelStyle ? 0 : SVG_PAD;
 const GRID_OFFSET_X = (useCorelStyle ? -CELL / 2 : 0) + GRID_PAD;

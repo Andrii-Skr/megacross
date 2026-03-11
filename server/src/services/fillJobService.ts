@@ -58,6 +58,8 @@ import {
   CELL_STROKE_COLOR,
   CELL_STROKE_WIDTH,
   CLUE_TEXT_FILL,
+  COREL_CELL_SIZE_UNITS,
+  COREL_STROKE_WIDTH_UNITS,
   WORD_TEXT_FILL,
 } from "../../scripts/svg-theme";
 
@@ -265,17 +267,17 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   shuffle: true,
   unique: true,
   lcv: true,
-  restarts: 4,
-  parallelRestarts: 2,
-  maxNodes: 2_000_000,
+  restarts: 1,
+  parallelRestarts: 1,
+  maxNodes: 200_000,
   maxMs: undefined,
   style: "corel",
   explainFail: true,
   noDefs: true,
   writeCrw: false,
   usageStats: true,
-  usageRebalance: false,
-  usageRebalanceMode: "aggressive",
+  usageRebalance: true,
+  usageRebalanceMode: "cost",
   editionHotBan: false,
   filterTemplateId: null,
 };
@@ -1698,11 +1700,9 @@ function buildSvg(
 ): { svg: string; svgRaw: string; usedWords: string } {
   const useCorelStyle = options.style === "corel";
   const DEFAULT_CELL = 30;
-  const CELL = useCorelStyle ? 118 : DEFAULT_CELL;
+  const CELL = useCorelStyle ? COREL_CELL_SIZE_UNITS : DEFAULT_CELL;
   const EMPTY_CELL_FILL = useCorelStyle ? "#FEFEFE" : "#fff";
-  const STROKE_WIDTH = useCorelStyle
-    ? Math.round(CELL * 0.07 * 1000) / 1000
-    : CELL_STROKE_WIDTH;
+  const STROKE_WIDTH = useCorelStyle ? COREL_STROKE_WIDTH_UNITS : CELL_STROKE_WIDTH;
   const SVG_PAD = STROKE_WIDTH / 2;
   const GRID_PAD = useCorelStyle ? 0 : SVG_PAD;
   const GRID_OFFSET_X = (useCorelStyle ? -CELL / 2 : 0) + GRID_PAD;
