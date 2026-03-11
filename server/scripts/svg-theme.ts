@@ -1,6 +1,12 @@
 const COREL_A4_WIDTH_UNITS = 2480;
 const COREL_A4_WIDTH_MM = 210;
-const COREL_UNITS_PER_MM = COREL_A4_WIDTH_UNITS / COREL_A4_WIDTH_MM;
+const COREL_A4_HEIGHT_UNITS = 3508;
+export const COREL_UNITS_PER_MM = COREL_A4_WIDTH_UNITS / COREL_A4_WIDTH_MM;
+export const COREL_MIN_SVG_WIDTH_UNITS = COREL_A4_WIDTH_UNITS;
+export const COREL_MIN_SVG_HEIGHT_UNITS = COREL_A4_HEIGHT_UNITS;
+
+export const formatCorelSizeMm = (units: number): string =>
+  `${Math.round((units / COREL_UNITS_PER_MM) * 1000) / 1000}mm`;
 
 export const COREL_CELL_SIZE_MM = 11;
 export const COREL_STROKE_WIDTH_MM = 0.1;

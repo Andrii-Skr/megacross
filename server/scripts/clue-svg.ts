@@ -1,13 +1,46 @@
 import Hypher from "hypher";
 import ru from "hyphenation.ru";
 import { ClueEntry } from "../src/utils/clues";
+import { COREL_UNITS_PER_MM } from "./svg-theme";
 
 type ClueCell = {
   dir: "down" | "right";
   text: string;
 };
 
-const MIN_CLUE_FONT_SIZE = 8;
+export const MIN_CLUE_FONT_SIZE = 7;
+const MIN_CLUE_FONT_SIZE_PT = 7;
+const MM_PER_PT = 25.4 / 72;
+const MIN_COREL_CLUE_FONT_SIZE =
+  Math.round(MIN_CLUE_FONT_SIZE_PT * MM_PER_PT * COREL_UNITS_PER_MM * 1000) / 1000;
+const CLUE_MAX_LINES = 4;
+const CLUE_TARGET_CHARS_PER_LINE = 8;
+const CLUE_CHAR_WIDTH_FACTOR = 0.56;
+const CLUE_TEXT_CONDENSE_RATIO = 0.88;
+const CLUE_CONDENSE_TRIGGER_RATIO = 0.96;
+const CLUE_LINE_HEIGHT_FACTOR = 1.0;
+const CLUE_MIN_LINE_HEIGHT_FACTOR = 0.85;
+
+export function resolveMinClueFontSize(mode: "default" | "corel"): number {
+  return mode === "corel" ? MIN_COREL_CLUE_FONT_SIZE : MIN_CLUE_FONT_SIZE;
+}
+
+function buildCondensedTextAttrs(line: string, fontSize: number, availableWidth: number): string {
+  if (!line || availableWidth <= 0) return "";
+  const estimatedWidth = Math.max(1, line.length * fontSize * CLUE_CHAR_WIDTH_FACTOR);
+  if (line.length < CLUE_TARGET_CHARS_PER_LINE) return "";
+  if (estimatedWidth < availableWidth * CLUE_CONDENSE_TRIGGER_RATIO) return "";
+  const condensedWidth = Math.min(availableWidth, estimatedWidth * CLUE_TEXT_CONDENSE_RATIO);
+  const textLength = Math.round(condensedWidth * 1000) / 1000;
+  return ` textLength="${textLength}" lengthAdjust="spacingAndGlyphs"`;
+}
+
+function resolveLineHeight(fontSize: number, innerHeight: number): number {
+  const rawLineHeight = fontSize * CLUE_LINE_HEIGHT_FACTOR;
+  const targetLineHeightForMaxLines = innerHeight / CLUE_MAX_LINES;
+  const minLineHeight = fontSize * CLUE_MIN_LINE_HEIGHT_FACTOR;
+  return Math.max(minLineHeight, Math.min(rawLineHeight, targetLineHeightForMaxLines));
+}
 
 function escapeXml(text: string): string {
   return text
@@ -146,38 +179,62 @@ export function renderClueText(
   const mode = options.mode ?? "default";
   const padding = 1;
   const normalized = text.replace(/\s+/g, " ").trim();
-  const minFloor = MIN_CLUE_FONT_SIZE;
-  const baseMin = Math.max(minFloor, Math.floor(cell * 0.12));
-  const minFontSize = normalized.length <= 30
-    ? Math.max(minFloor, Math.floor(cell * 0.1))
-    : baseMin;
-  let currentSize = Math.max(fontSize, minFontSize);
-  let lineHeight = Math.round(currentSize * 1.0 * 10) / 10;
-  let maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * 0.6)));
-  let maxLines = Math.max(1, Math.floor((cell - padding * 2) / lineHeight));
+  const softMinFloor = resolveMinClueFontSize(mode);
+  const baseSoftMin = Math.max(softMinFloor, Math.floor(cell * 0.12));
+  const softMinFontSize = normalized.length <= 30
+    ? Math.max(softMinFloor, Math.floor(cell * 0.1))
+    : baseSoftMin;
+  const innerHeight = cell - padding * 2;
+  let currentSize = Math.max(fontSize, softMinFontSize);
+  let lineHeight = resolveLineHeight(currentSize, innerHeight);
+  let maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * CLUE_CHAR_WIDTH_FACTOR)));
+  let maxLinesByHeight = Math.max(1, Math.floor((innerHeight + 0.0001) / lineHeight));
+  let maxLines = Math.min(CLUE_MAX_LINES, maxLinesByHeight);
   const words = normalized ? normalized.split(" ") : [];
   const longestWord = words.reduce((max, word) => Math.max(max, word.length), 0);
   let breakWords = false;
   let lines = wrapText(normalized, maxChars, breakWords);
 
-  while ((lines.length > maxLines || (!breakWords && longestWord > maxChars)) && currentSize > minFontSize) {
-    currentSize -= 1;
-    lineHeight = Math.round(currentSize * 1.0 * 10) / 10;
-    maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * 0.6)));
-    maxLines = Math.max(1, Math.floor((cell - padding * 2) / lineHeight));
+  const recalcLayout = () => {
+    lineHeight = resolveLineHeight(currentSize, innerHeight);
+    maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * CLUE_CHAR_WIDTH_FACTOR)));
+    maxLinesByHeight = Math.max(1, Math.floor((innerHeight + 0.0001) / lineHeight));
+    maxLines = Math.min(CLUE_MAX_LINES, maxLinesByHeight);
     lines = wrapText(normalized, maxChars, breakWords);
-  }
+  };
+
+  const shrinkUntil = (targetSize: number) => {
+    while (
+      (lines.length > maxLines ||
+        maxChars < CLUE_TARGET_CHARS_PER_LINE ||
+        (!breakWords && longestWord > maxChars)) &&
+      currentSize > targetSize
+    ) {
+      currentSize -= 1;
+      recalcLayout();
+    }
+  };
+
+  shrinkUntil(softMinFontSize);
 
   if (!breakWords && longestWord > maxChars) {
     breakWords = true;
-    lines = wrapText(normalized, maxChars, breakWords);
-    while (lines.length > maxLines && currentSize > minFontSize) {
-      currentSize -= 1;
-      lineHeight = Math.round(currentSize * 1.0 * 10) / 10;
-      maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * 0.6)));
-      maxLines = Math.max(1, Math.floor((cell - padding * 2) / lineHeight));
-      lines = wrapText(normalized, maxChars, breakWords);
-    }
+    recalcLayout();
+    shrinkUntil(softMinFontSize);
+  }
+
+  if (lines.length > maxLines) {
+    shrinkUntil(softMinFontSize);
+  }
+
+  if (!breakWords && longestWord > maxChars && currentSize > softMinFontSize) {
+    breakWords = true;
+    recalcLayout();
+    shrinkUntil(softMinFontSize);
+  }
+
+  if (lines.length > maxLines && breakWords) {
+    shrinkUntil(softMinFontSize);
   }
 
   if (lines.length > maxLines) {
@@ -189,7 +246,6 @@ export function renderClueText(
   }
 
   const textBlockHeight = lineHeight * Math.max(1, lines.length);
-  const innerHeight = cell - padding * 2;
   const offsetY = Math.max(0, (innerHeight - textBlockHeight) / 2);
   const textX = x + cell / 2;
   const textY = y + padding + offsetY;
@@ -205,7 +261,8 @@ export function renderClueText(
     const textLines = lines
       .map((line, idx) => {
         const lineY = Math.round((baseY + idx * lineHeight) * 10) / 10;
-        return `<text x="${textX}" y="${lineY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="alphabetic" fill="${fill}">${escapeXml(line)}</text>`;
+        const condenseAttrs = buildCondensedTextAttrs(line, currentSize, cell - padding * 2);
+        return `<text x="${textX}" y="${lineY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="alphabetic"${condenseAttrs} fill="${fill}">${escapeXml(line)}</text>`;
       })
       .join("");
     const textSvg = useClip
@@ -217,7 +274,8 @@ export function renderClueText(
   const tspan = lines
     .map((line, idx) => {
       const dy = idx === 0 ? 0 : lineHeight;
-      return `<tspan x="${textX}" dy="${dy}">${escapeXml(line)}</tspan>`;
+      const condenseAttrs = buildCondensedTextAttrs(line, currentSize, cell - padding * 2);
+      return `<tspan x="${textX}" dy="${dy}"${condenseAttrs}>${escapeXml(line)}</tspan>`;
     })
     .join("");
   const textSvg = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="hanging"${useClip ? ` clip-path="url(#${clipId})"` : ""} fill="${fill}">${tspan}</text>`;

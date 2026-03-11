@@ -23,7 +23,7 @@ const FILL_BATCH_ARGS = [
   "--filter-template-id",
   "1",
   "--edition-id",
-  "18",
+  "5",
   "--usage-rebalance",
   "--usage-rebalance-mode",
   "cost",

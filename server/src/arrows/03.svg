@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<!-- Creator: CorelDRAW X5 -->
-<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" width="100%" height="100%" style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"
-viewBox="0 0 570 413"
- xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Creator: CorelDRAW -->
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" width="11.1806mm" height="6.9885mm" version="1.1" style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"
+viewBox="0 0 116.25 72.66"
+ xmlns:xlink="http://www.w3.org/1999/xlink"
+ xmlns:xodm="http://www.corel.com/coreldraw/odm/2003">
  <defs>
   <style type="text/css">
    <![CDATA[
-    .str0 {stroke:#2B2A29;stroke-width:49.98}
-    .fil0 {fill:none}
+    .fil0 {fill:#2B2A29}
    ]]>
   </style>
  </defs>
  <g id="Слой_x0020_1">
   <metadata id="CorelCorpID_0Corel-Layer"/>
-  <polyline class="fil0 str0" points="400,25 400,325 320,195 400,255 480,195 400,325 "/>
-  <line class="fil0 str0" x1="0" y1="25" x2="400" y2= "25" />
+  <polygon class="fil0" points="92.17,0 -0,0 -0,7.32 92.17,7.32 "/>
+  <polygon class="fil0" points="95.85,31.96 95.85,0.03 88.54,0.03 88.54,31.96 "/>
+  <polygon class="fil0" points="116.25,28.95 92.19,72.66 68.14,28.95 116.25,28.95 92.19,72.66 "/>
  </g>
 </svg>

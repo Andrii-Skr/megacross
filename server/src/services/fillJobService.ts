@@ -52,14 +52,17 @@ import { buildCrw } from "../utils/writeCrw";
 import { DIRS, type Cell, type Grid, type Slot } from "../types";
 import { loadDefinitions, loadDictionaryByTemplate, type DictionaryFilterTemplate } from "./dictionary";
 import { arrowSvg } from "../../scripts/arrow-utils";
-import { buildClueTextMap, renderClueText } from "../../scripts/clue-svg";
+import { buildClueTextMap, renderClueText, resolveMinClueFontSize } from "../../scripts/clue-svg";
 import {
   BLOCK_CELL_FILL,
   CELL_STROKE_COLOR,
   CELL_STROKE_WIDTH,
   CLUE_TEXT_FILL,
   COREL_CELL_SIZE_UNITS,
+  COREL_MIN_SVG_HEIGHT_UNITS,
+  COREL_MIN_SVG_WIDTH_UNITS,
   COREL_STROKE_WIDTH_UNITS,
+  formatCorelSizeMm,
   WORD_TEXT_FILL,
 } from "../../scripts/svg-theme";
 
@@ -1713,8 +1716,8 @@ function buildSvg(
   const WORD_FONT_WEIGHT_ATTR = useCorelStyle ? ' font-weight="bold"' : "";
   const WORD_BASELINE_ATTR = useCorelStyle ? ' dominant-baseline="alphabetic"' : "";
   const WORD_TEXT_Y = useCorelStyle ? CELL * 0.7 : CELL / 2;
-  const SVG_WIDTH = useCorelStyle ? 2480 : 0;
-  const SVG_HEIGHT = useCorelStyle ? 3508 : 0;
+  const SVG_WIDTH = useCorelStyle ? COREL_MIN_SVG_WIDTH_UNITS : 0;
+  const SVG_HEIGHT = useCorelStyle ? COREL_MIN_SVG_HEIGHT_UNITS : 0;
   const SVG_XML_SPACE = useCorelStyle ? ' xml:space="preserve"' : "";
   const SVG_STYLE_ATTR = useCorelStyle
     ? ' style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"'
@@ -1732,24 +1735,26 @@ function buildSvg(
   const { rows: ROWS, cols: COLS } = grid;
   const gridWidth = COLS * CELL;
   const gridHeight = ROWS * CELL;
-  const svgWidth = useCorelStyle ? SVG_WIDTH : gridWidth + SVG_PAD * 2;
-  const svgHeight = useCorelStyle ? SVG_HEIGHT : gridHeight + SVG_PAD * 2;
+  const contentWidth = gridWidth + SVG_PAD * 2;
+  const contentHeight = gridHeight + SVG_PAD * 2;
+  const svgWidth = useCorelStyle ? Math.max(SVG_WIDTH, contentWidth) : contentWidth;
+  const svgHeight = useCorelStyle ? Math.max(SVG_HEIGHT, contentHeight) : contentHeight;
+  const svgWidthAttr = useCorelStyle ? formatCorelSizeMm(svgWidth) : String(svgWidth);
+  const svgHeightAttr = useCorelStyle ? formatCorelSizeMm(svgHeight) : String(svgHeight);
   const svgViewBox = useCorelStyle
-    ? ` viewBox="${GRID_OFFSET_X - SVG_PAD} ${GRID_OFFSET_Y - SVG_PAD} ${Math.max(
-        SVG_WIDTH,
-        gridWidth + SVG_PAD * 2
-      )} ${Math.max(SVG_HEIGHT, gridHeight + SVG_PAD * 2)}"`
+    ? ` viewBox="${GRID_OFFSET_X - SVG_PAD} ${GRID_OFFSET_Y - SVG_PAD} ${svgWidth} ${svgHeight}"`
     : "";
 
   const svgParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
   ];
   const svgRawParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidth}" height="${svgHeight}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
   ];
 
   const clueDefs: string[] = [];
-  const clueFont = Math.max(5, Math.floor(CELL * 0.22));
+  const clueMode = useCorelStyle ? "corel" : "default";
+  const clueFont = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
@@ -1767,9 +1772,7 @@ function buildSvg(
         svgRawParts.push(rect);
         if (clueText) {
           const clipId = `clue-${r}-${c}`;
-          const clueSvg = renderClueText(x, y, CELL, clueFont, clueText, clipId, CLUE_TEXT_FILL, {
-            mode: useCorelStyle ? "corel" : "default",
-          });
+          const clueSvg = renderClueText(x, y, CELL, clueFont, clueText, clipId, CLUE_TEXT_FILL, { mode: clueMode });
           if (clueSvg.defs) clueDefs.push(clueSvg.defs);
           svgParts.push(clueSvg.text);
           svgRawParts.push(clueSvg.text);

@@ -11,7 +11,7 @@ export type ClueEntry = {
   text: string;
 };
 
-const CLUE_MAP: Record<number, Array<{ cluePos: number; dirKey: number }>> = {
+export const CLUE_MAP: Record<number, Array<{ cluePos: number; dirKey: number }>> = {
   0x01: [{ cluePos: 2, dirKey: 8 }],
   0x02: [{ cluePos: 1, dirKey: 8 }],
   0x03: [{ cluePos: 4, dirKey: 8 }],
