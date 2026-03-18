@@ -106,6 +106,15 @@ function parseBigIntStrict(value: unknown): bigint | null {
   }
 }
 
+function parsePositiveInt(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const normalized = String(value).trim();
+  if (!/^\d+$/u.test(normalized)) return undefined;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.trunc(parsed);
+}
+
 // Allow CORS for the client application
 app.use((req, res, next) => {
   const allowList = (process.env.CROSS_ALLOWED_ORIGINS || "http://localhost:3000,http://localhost:5173")
@@ -127,15 +136,27 @@ app.use((req, res, next) => {
 
 app.get("/api/words", async (req, res) => {
   const { wordText, definitionText, tags } = req.query;
-  const tagNames = typeof tags === "string" ? tags.split(",") : undefined;
+  const tagNames =
+    typeof tags === "string"
+      ? tags.split(",").map((tag) => tag.trim()).filter(Boolean)
+      : Array.isArray(tags)
+        ? tags.map((tag) => String(tag).trim()).filter(Boolean)
+        : undefined;
+  const page = parsePositiveInt(req.query.page);
+  const pageSize = parsePositiveInt(req.query.pageSize ?? req.query.limit);
 
   try {
-    const words = await getWordsAndDefinitions(
+    const result = await getWordsAndDefinitions(
       wordText as string,
       definitionText as string,
-      tagNames
+      tagNames,
+      { page, pageSize }
     );
-    res.json(words);
+    res.setHeader("X-Page", String(result.page));
+    res.setHeader("X-Page-Size", String(result.pageSize));
+    res.setHeader("X-Total-Count", String(result.total));
+    res.setHeader("X-Total-Pages", String(result.totalPages));
+    res.json(result.items);
   } catch (error) {
     console.error("Error fetching words and definitions:", error);
     res.status(500).json({ error: "Internal server error" });

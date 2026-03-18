@@ -16,14 +16,31 @@ type WordWithTagNames = Omit<WordPayload, "opred_v"> & {
   >;
 };
 
+type WordQueryPagination = {
+  page?: number;
+  pageSize?: number;
+};
+
+export type WordQueryResult = {
+  items: WordWithTagNames[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
+
+const DEFAULT_WORDS_PAGE_SIZE = 100;
+const MAX_WORDS_PAGE_SIZE = 500;
+
 const containsInsensitive = (value?: string) =>
   value ? { contains: value, mode: "insensitive" as const } : undefined;
 
 export async function getWordsAndDefinitions(
   wordTextFilter?: string,
   definitionTextFilter?: string,
-  tagNames?: string[]
-): Promise<WordWithTagNames[]> {
+  tagNames?: string[],
+  pagination: WordQueryPagination = {}
+): Promise<WordQueryResult> {
   const wordWhere: Prisma.word_vWhereInput = {
     is_deleted: false,
   };
@@ -57,8 +74,25 @@ export async function getWordsAndDefinitions(
     };
   }
 
+  const pageRaw = Number.isFinite(pagination.page) ? Number(pagination.page) : 1;
+  const pageSizeRaw = Number.isFinite(pagination.pageSize)
+    ? Number(pagination.pageSize)
+    : DEFAULT_WORDS_PAGE_SIZE;
+  const page = Math.max(1, Math.trunc(pageRaw));
+  const pageSize = Math.max(1, Math.min(MAX_WORDS_PAGE_SIZE, Math.trunc(pageSizeRaw)));
+  const skip = (page - 1) * pageSize;
+
+  const total = await prisma.word_v.count({
+    where: wordWhere,
+  });
+
   const words = await prisma.word_v.findMany({
     where: wordWhere,
+    skip,
+    take: pageSize,
+    orderBy: {
+      id: "asc",
+    },
     include: {
       opred_v: {
         where: opredWhere,
@@ -73,7 +107,7 @@ export async function getWordsAndDefinitions(
     },
   });
 
-  return words.map((word) => ({
+  const items = words.map((word) => ({
     ...word,
     opred_v: (word.opred_v ?? []).map((opred) => ({
       ...opred,
@@ -82,6 +116,15 @@ export async function getWordsAndDefinitions(
       ),
     })),
   }));
+
+  const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+  return {
+    items,
+    page,
+    pageSize,
+    total,
+    totalPages,
+  };
 }
 
 export async function getAllTags() {
