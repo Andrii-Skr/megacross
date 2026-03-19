@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env tsx
 import { DIRS, type Slot } from "../src/types";
 import { solve } from "../src/utils/solver";
 import { isNativeCspAvailable } from "../src/utils/nativeDlx";

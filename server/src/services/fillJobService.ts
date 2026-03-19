@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { createWriteStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, prisma } from "../db/prisma";
 import { buildClueEntries } from "../utils/clues";
 import type { SolveFailInfo, SolveProgress } from "../utils/solver";
 import {
@@ -122,8 +122,6 @@ import {
   formatCorelSizeMm,
   WORD_TEXT_FILL,
 } from "../../scripts/svg-theme";
-
-const prisma = new PrismaClient();
 
 type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
 

@@ -1,8 +1,4 @@
-import { Prisma, PrismaClient } from "@prisma/client";
-
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-const prisma = globalForPrisma.prisma ?? new PrismaClient();
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+import { Prisma, prisma } from "../db/prisma";
 
 type WordPayload = Prisma.word_vGetPayload<{
   include: {

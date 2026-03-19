@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, basename, dirname, extname }               from "node:path";
 import { parseArgs }                             from "node:util";
-import { PrismaClient }                          from "@prisma/client";
+import { createPrismaClient } from "../src/db/prisma";
 
 import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
@@ -288,7 +288,7 @@ function isEditionWordStatEditionFkError(error: unknown): boolean {
 }
 
 async function assertEditionExists(editionId: number): Promise<void> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const edition = await prisma.editions.findUnique({
       where: { id: editionId },
@@ -305,7 +305,7 @@ async function assertEditionExists(editionId: number): Promise<void> {
 }
 
 async function loadFilterTemplateById(templateId: number): Promise<{ name: string; template: DictionaryFilterTemplate }> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const templateRows = await prisma.$queryRaw<any[]>`
       SELECT
@@ -353,7 +353,7 @@ async function loadFilterTemplateById(templateId: number): Promise<{ name: strin
 }
 
 async function loadIssueTemplateContext(issueId: bigint): Promise<IssueTemplateContext> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const issueRows = await prisma.$queryRaw<
       Array<{
@@ -434,7 +434,7 @@ async function loadIssueTemplateContext(issueId: bigint): Promise<IssueTemplateC
 }
 
 async function loadIssueContext(issueId: bigint): Promise<IssueContext> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const issueRows = await prisma.$queryRaw<
       Array<{
@@ -513,7 +513,7 @@ async function persistEditionWordStats(
   issueId: bigint | null
 ): Promise<{ updatedWords: number; skippedWords: number }> {
   if (!wordUsage.size) return { updatedWords: 0, skippedWords: 0 };
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const words = [...wordUsage.keys()];
     const rows = await prisma.word_v.findMany({

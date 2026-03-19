@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env tsx
 import assert from "node:assert/strict";
 import { DIRS, type Slot } from "../src/types";
 import { polishSolvedRowsByCost } from "../src/utils/solutionPolish";

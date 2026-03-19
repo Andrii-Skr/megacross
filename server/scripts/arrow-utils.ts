@@ -1,9 +1,11 @@
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Cell } from "../src/types";
 import { CLUE_MAP } from "../src/utils/clues";
 import { CELL_STROKE_COLOR } from "./svg-theme";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const base = join(__dirname, "../src/arrows");
 
 type ArrowAsset = {

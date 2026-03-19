@@ -1,9 +1,12 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env tsx
 import assert from "node:assert/strict";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseFsh } from "../src/utils/parseFsh";
 import { scanSlots, scanSlotsDetailed } from "../src/utils/grid";
 import type { Grid } from "../src/types";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CLASSIC_ROWS = [
   "#********#*#********#",

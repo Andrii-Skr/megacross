@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env tsx
 //------------------------------------------------------------------
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, basename, join }  from "node:path";

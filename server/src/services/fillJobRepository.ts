@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { Prisma } from "@prisma/client";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma } from "../db/prisma";
+import type { PrismaClient } from "../db/prisma";
 
 export type FillJobRow = {
   id: bigint;

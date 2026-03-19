@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env tsx
 import assert from "node:assert/strict";
 import {
   applyHardHotBanLengthSafe,

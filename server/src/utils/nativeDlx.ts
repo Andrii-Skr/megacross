@@ -1,6 +1,11 @@
+import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Slot } from "../types.js";
 import type { Dict, SolveOptions } from "./solver.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 type NativeSolveOptions = {
   shuffle?: boolean;
@@ -82,7 +87,6 @@ function loadNative(): NativeModule | null {
 
   for (const p of candidates) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
       nativeModule = require(p) as NativeModule;
       nativeModulePath = p;
       return nativeModule;

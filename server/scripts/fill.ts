@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env tsx
 //------------------------------------------------------------------
 import { parseArgs }           from "node:util";
 import { parseFsh }            from "../src/utils/parseFsh";

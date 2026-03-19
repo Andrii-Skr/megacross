@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env tsx
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,7 +23,7 @@ const FILL_BATCH_ARGS = [
   "--filter-template-id",
   "1",
   "--edition-id",
-  "5",
+  "18",
   "--usage-rebalance",
   "--usage-rebalance-mode",
   "cost",

@@ -1,5 +1,5 @@
-import type { Prisma } from "@prisma/client";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, createPrismaClient } from "../db/prisma";
+import type { PrismaClient } from "../db/prisma";
 
 type Dict = Map<number, string[]>;
 type LenCounts = Map<number, number>;
@@ -302,7 +302,7 @@ export async function loadEditionWordUsageByWord(
   editionId: number,
   db?: PrismaLike
 ): Promise<Map<string, number>> {
-  const prisma: PrismaLike = db ?? new PrismaClient();
+  const prisma: PrismaLike = db ?? createPrismaClient();
   const ownedClient = db ? null : (prisma as PrismaClient);
   try {
     const rows = await prisma.$queryRaw<EditionWordUsageRow[]>`
@@ -331,7 +331,7 @@ export async function loadEditionHotBannedWords(
   editionId: number,
   db?: PrismaLike
 ): Promise<Set<string>> {
-  const prisma: PrismaLike = db ?? new PrismaClient();
+  const prisma: PrismaLike = db ?? createPrismaClient();
   const ownedClient = db ? null : (prisma as PrismaClient);
   try {
     const rows = await prisma.$queryRaw<Array<{ word: string | null }>>`
@@ -359,7 +359,7 @@ export async function recomputeEditionHotBanState(
   editionId: number,
   db?: PrismaLike
 ): Promise<RecomputeEditionHotBanStateResult> {
-  const prisma: PrismaLike = db ?? new PrismaClient();
+  const prisma: PrismaLike = db ?? createPrismaClient();
   const ownedClient = db ? null : (prisma as PrismaClient);
   try {
     const rows = await prisma.$queryRaw<EditionWordHotStateRow[]>`

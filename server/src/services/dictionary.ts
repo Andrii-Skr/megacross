@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, createPrismaClient } from "../db/prisma";
 
 export type DictionaryOptions = {
   lengths?: number[];
@@ -37,7 +37,7 @@ function definitionSelectionBucket(text: string, usedDefinitions: Set<string>): 
 export async function loadDictionary(
   options: DictionaryOptions = {}
 ): Promise<Map<number, string[]>> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const lengthList = options.lengths
       ? [...new Set(options.lengths)]
@@ -89,7 +89,7 @@ export async function loadDefinitions(
   words: string[],
   options: DefinitionOptions = {}
 ): Promise<Map<string, string>> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const unique = [...new Set(words.map((w) => w.toUpperCase()))];
     if (!unique.length) return new Map();
@@ -207,7 +207,7 @@ export async function loadDictionaryByTemplate(
   template: DictionaryFilterTemplate,
   options: DictionaryTemplateOptions = {}
 ): Promise<Map<number, string[]>> {
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   try {
     const langCode = (template.language || "ru").toLowerCase();
     const query = template.query?.trim() || "";

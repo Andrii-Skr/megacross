@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "../db/prisma";
 import { loadEditionWordUsageByWord } from "./editionHotBan";
 import { buildLenMeanUsagePriority, type UsageRebalanceMode } from "./usageRebalance";
 
