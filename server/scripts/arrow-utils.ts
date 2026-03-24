@@ -456,10 +456,10 @@ export function arrowSvg(
       const dx = ax + (size - w * scale) * xAlign;
       const dyBase = ay + (size - h * scale) * yAlign;
       const dy = dyBase + (batchTuning ? cell * batchTuning.yShiftFactor : 0);
-      const tx = Math.round(dx * 1000) / 1000;
-      const ty = Math.round(dy * 1000) / 1000;
-      const sc = Math.round(scale * 1000) / 1000;
-      return `<g transform="translate(${tx} ${ty}) scale(${sc})">${asset.body}</g>`;
+      const tx = Math.round(dx * 1_000_000) / 1_000_000;
+      const ty = Math.round(dy * 1_000_000) / 1_000_000;
+      const sc = Math.round(scale * 1_000_000) / 1_000_000;
+      return `<g transform="matrix(${sc} 0 0 ${sc} ${tx} ${ty})">${asset.body}</g>`;
     })
     .join("");
 }
