@@ -5,7 +5,7 @@ import { createWriteStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Prisma, prisma } from "../db/prisma";
-import { buildClueEntries } from "../utils/clues";
+import { buildClueLayouts } from "../utils/clues";
 import type { SolveFailInfo, SolveProgress } from "../utils/solver";
 import {
   resolveStrictLimitedBudget,
@@ -109,7 +109,9 @@ import {
   type FillJobPatch,
 } from "./fillJobRepository";
 import { arrowSvg } from "../../scripts/arrow-utils";
+import { buildAnswersOnlySvg } from "../../scripts/answer-only-svg";
 import { buildClueTextMap, renderClueText, resolveMinClueFontSize } from "../../scripts/clue-svg";
+import { resolveCenteredTextStartX } from "../../scripts/text-position";
 import {
   BLOCK_CELL_FILL,
   CELL_STROKE_COLOR,
@@ -902,6 +904,7 @@ function buildSvg(
     : CELL * 0.6;
   const WORD_FONT_WEIGHT_ATTR = useCorelStyle ? ' font-weight="bold"' : "";
   const WORD_BASELINE_ATTR = useCorelStyle ? ' dominant-baseline="alphabetic"' : "";
+  const WORD_TEXT_ANCHOR_ATTR = useCorelStyle ? ' text-anchor="start"' : "";
   const WORD_TEXT_Y = useCorelStyle ? CELL * 0.7 : CELL / 2;
   const SVG_WIDTH = useCorelStyle ? COREL_MIN_SVG_WIDTH_UNITS : 0;
   const SVG_HEIGHT = useCorelStyle ? COREL_MIN_SVG_HEIGHT_UNITS : 0;
@@ -913,11 +916,23 @@ function buildSvg(
     ? '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
     : "";
   const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
+  const DEBUG_CLUSTER_FILL = true;
+  const DEBUG_CLUSTER_COLOR = "#FFB3B3";
 
   const usedWordsList = slots.map((s) => s.cells.map(([r, c]) => solved[r][c]).join(""));
   const usedWords = usedWordsList.join("\n");
-  const clues = buildClueEntries(grid, slots, solved, definitions);
-  const clueTextMap = buildClueTextMap([...clues.down, ...clues.right]);
+  const clueLayouts = buildClueLayouts(grid, slots, solved, definitions);
+  const clueTextMap = buildClueTextMap(clueLayouts);
+  const debugClusterCells = new Set<string>();
+  if (DEBUG_CLUSTER_FILL) {
+    for (const layout of clueLayouts) {
+      const cells = layout.clusterCells?.length ? layout.clusterCells : layout.areaCells;
+      if (cells.length <= 1) continue;
+      for (const [row, col] of cells) {
+        debugClusterCells.add(`${row},${col}`);
+      }
+    }
+  }
 
   const { rows: ROWS, cols: COLS } = grid;
   const gridWidth = COLS * CELL;
@@ -940,6 +955,10 @@ function buildSvg(
   ];
 
   const clueDefs: string[] = [];
+  const clueLayer: string[] = [];
+  const clueRawLayer: string[] = [];
+  const borderLayer: string[] = [];
+  const borderRawLayer: string[] = [];
   const clueMode = useCorelStyle ? "corel" : "default";
   const clueFont = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
 
@@ -951,22 +970,30 @@ function buildSvg(
       const orig = grid.data[r][c] as Cell;
       const code = grid.codes[r][c];
       const clueKey = `${r},${c}`;
-      const clueText = clueTextMap.get(clueKey);
+      const clueLayout = clueTextMap.get(clueKey);
 
       if (ch === "#") {
-        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${BLOCK_CELL_FILL}"/>`;
+        const blockFill = debugClusterCells.has(clueKey) ? DEBUG_CLUSTER_COLOR : BLOCK_CELL_FILL;
+        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${blockFill}"/>`;
         svgParts.push(rect);
         svgRawParts.push(rect);
-        if (clueText) {
+        if (clueLayout?.text) {
           const clipId = `clue-${r}-${c}`;
-          const clueSvg = renderClueText(x, y, CELL, clueFont, clueText, clipId, CLUE_TEXT_FILL, { mode: clueMode });
+          const clueSvg = renderClueText(x, y, CELL, clueFont, clueLayout.text, clipId, CLUE_TEXT_FILL, {
+            mode: clueMode,
+            areaCells: clueLayout.areaCells,
+            anchorCell: [r, c],
+            textAlign: clueLayout.areaCells.length > 1 ? "bottom-left" : "center",
+            background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
+            backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
+          });
           if (clueSvg.defs) clueDefs.push(clueSvg.defs);
-          svgParts.push(clueSvg.text);
-          svgRawParts.push(clueSvg.text);
+          clueLayer.push(clueSvg.text);
+          clueRawLayer.push(clueSvg.text);
         }
         const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_STROKE_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
-        svgParts.push(border);
-        svgRawParts.push(border);
+        borderLayer.push(border);
+        borderRawLayer.push(border);
       } else {
         const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${EMPTY_CELL_FILL}"/>`;
         svgParts.push(rect);
@@ -976,16 +1003,21 @@ function buildSvg(
           svgParts.push(arrow);
           svgRawParts.push(arrow);
         }
+        const wordTextX = useCorelStyle
+          ? resolveCenteredTextStartX(x, CELL, ch, WORD_FONT_SIZE)
+          : x + CELL / 2;
         svgParts.push(
-          `<text x="${x + CELL / 2}" y="${y + WORD_TEXT_Y}" font-size="${WORD_FONT_SIZE}" fill="${WORD_TEXT_FILL}"${WORD_FONT_WEIGHT_ATTR}${WORD_BASELINE_ATTR}>${ch}</text>`
+          `<text x="${wordTextX}" y="${y + WORD_TEXT_Y}" font-size="${WORD_FONT_SIZE}" fill="${WORD_TEXT_FILL}"${WORD_TEXT_ANCHOR_ATTR}${WORD_FONT_WEIGHT_ATTR}${WORD_BASELINE_ATTR}>${ch}</text>`
         );
         const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_STROKE_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
-        svgParts.push(border);
-        svgRawParts.push(border);
+        borderLayer.push(border);
+        borderRawLayer.push(border);
       }
     }
   }
 
+  svgParts.push(...borderLayer, ...clueLayer);
+  svgRawParts.push(...borderRawLayer, ...clueRawLayer);
   if (clueDefs.length) {
     svgParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
     svgRawParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
@@ -2303,11 +2335,13 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const { svg, svgRaw, usedWords } = buildSvg(template.grid, slots, solvedRows, definitions, {
       style: review.options.style,
     });
+    const svgAnswers = buildAnswersOnlySvg(template.grid, solvedRows);
 
     const templateDir = path.join(issueDir, sanitizeName(template.name));
     mkdirSync(templateDir, { recursive: true });
     writeFileSync(path.join(templateDir, "crossword.svg"), svg);
     writeFileSync(path.join(templateDir, "crossword-no-text.svg"), svgRaw);
+    writeFileSync(path.join(templateDir, "crossword-answers.svg"), svgAnswers);
     writeFileSync(path.join(templateDir, "used-words.txt"), usedWords);
 
     if (options.writeCrw && template.path) {

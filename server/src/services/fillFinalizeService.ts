@@ -19,6 +19,7 @@ type ReviewClueGroup = {
   row: number;
   col: number;
   slotIds: number[];
+  areaCellCount?: number;
 };
 
 type ReviewTemplate = {
@@ -164,6 +165,20 @@ export function buildFinalSlotState(
 
 function buildDefinitionClueGroups(template: ReviewTemplate): ReviewClueGroup[] {
   const byKey = new Map<string, ReviewClueGroup>();
+
+  for (const group of template.clueGroups ?? []) {
+    const normalizedAreaCellCount = Number.isFinite(group.areaCellCount)
+      ? Math.max(1, Math.trunc(group.areaCellCount ?? 1))
+      : 1;
+    byKey.set(group.key, {
+      key: group.key,
+      row: group.row,
+      col: group.col,
+      slotIds: [...group.slotIds],
+      areaCellCount: normalizedAreaCellCount,
+    });
+  }
+
   for (const slot of template.slots) {
     const clue = slot.clueCell;
     if (!clue) continue;
@@ -172,7 +187,11 @@ function buildDefinitionClueGroups(template: ReviewTemplate): ReviewClueGroup[] 
       row: clue.row,
       col: clue.col,
       slotIds: [],
+      areaCellCount: 1,
     };
+    if (!group.areaCellCount || group.areaCellCount < 1) {
+      group.areaCellCount = 1;
+    }
     if (!group.slotIds.includes(slot.slotId)) {
       group.slotIds.push(slot.slotId);
     }
@@ -220,9 +239,13 @@ export function validateTemplateDefinitions(
         errors.push(`Template ${template.name}: definitions total exceeds 30 symbols for clue cell ${group.key}`);
       }
     } else {
+      const areaCellCount = Math.max(1, Math.trunc(group.areaCellCount ?? 1));
+      const maxLen = 30 * areaCellCount;
       for (const item of definitions) {
-        if (item.length > 30) {
-          errors.push(`Template ${template.name}: definition for slot ${item.slotId} exceeds 30 symbols`);
+        if (item.length > maxLen) {
+          errors.push(
+            `Template ${template.name}: definition for slot ${item.slotId} exceeds ${maxLen} symbols`
+          );
         }
       }
     }

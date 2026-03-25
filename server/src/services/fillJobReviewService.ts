@@ -1,4 +1,4 @@
-import { buildClueEntries } from "../utils/clues";
+import { buildClueLayouts } from "../utils/clues";
 import type { SlotStart } from "../utils/grid";
 import { DIRS, type Grid, type Slot } from "../types";
 
@@ -40,6 +40,7 @@ export type ReviewClueGroup = {
   row: number;
   col: number;
   slotIds: number[];
+  areaCellCount: number;
 };
 
 export type ReviewTemplate = {
@@ -198,29 +199,49 @@ function buildSlotIntersections(
   return bySlot;
 }
 
-function buildClueMaps(grid: Grid, slots: Slot[], solved: string[]) {
-  const slotByArrow = new Map<string, number>();
-  for (const slot of slots) {
-    slotByArrow.set(`${slot.r},${slot.c}:${slotDirName(slot)}`, slot.id);
+function buildClueLayoutDefinitions(
+  wordsBySlot: Map<number, string>,
+  selections: Map<string, ReviewWordSelection>,
+  fallbackDefinitions: Map<string, string>
+): Map<string, string> {
+  const definitionsByWord = new Map<string, string>();
+  for (const word of wordsBySlot.values()) {
+    const selectedDefinition = normalizeDefinitionText(selections.get(word)?.definition);
+    const fallbackDefinition = normalizeDefinitionText(fallbackDefinitions.get(word));
+    const definition = selectedDefinition || fallbackDefinition;
+    if (!definition) continue;
+    definitionsByWord.set(word, definition);
   }
+  return definitionsByWord;
+}
 
-  const clues = buildClueEntries(grid, slots, solved, new Map());
+function buildClueMaps(
+  grid: Grid,
+  slots: Slot[],
+  solved: string[],
+  definitionsByWord: Map<string, string>
+) {
+  const clues = buildClueLayouts(grid, slots, solved, definitionsByWord);
   const bySlot = new Map<number, { key: string; row: number; col: number }>();
   const groupByKey = new Map<string, ReviewClueGroup>();
 
-  for (const clue of [...clues.down, ...clues.right]) {
-    const slotId = slotByArrow.get(`${clue.arrowR},${clue.arrowC}:${clue.dir}`);
-    if (slotId === undefined) continue;
-    const key = `${clue.clueR},${clue.clueC}`;
-    bySlot.set(slotId, { key, row: clue.clueR, col: clue.clueC });
-    const group = groupByKey.get(key) ?? {
-      key,
-      row: clue.clueR,
-      col: clue.clueC,
+  for (const clue of clues) {
+    for (const slotId of clue.slotIds) {
+      bySlot.set(slotId, { key: clue.key, row: clue.row, col: clue.col });
+    }
+
+    const group = groupByKey.get(clue.key) ?? {
+      key: clue.key,
+      row: clue.row,
+      col: clue.col,
       slotIds: [],
+      areaCellCount: 1,
     };
-    if (!group.slotIds.includes(slotId)) group.slotIds.push(slotId);
-    groupByKey.set(key, group);
+    group.areaCellCount = Math.max(1, clue.areaCells.length);
+    for (const slotId of clue.slotIds) {
+      if (!group.slotIds.includes(slotId)) group.slotIds.push(slotId);
+    }
+    groupByKey.set(clue.key, group);
   }
 
   const clueGroups = [...groupByKey.values()].map((group) => ({
@@ -300,7 +321,13 @@ export function buildReviewTemplate(
   });
 
   const intersectionsBySlot = buildSlotIntersections(entry.slots, wordsBySlot);
-  const { clueBySlot, clueGroups } = buildClueMaps(entry.grid, entry.slots, solved);
+  const clueLayoutDefinitions = buildClueLayoutDefinitions(wordsBySlot, selections, fallbackDefinitions);
+  const { clueBySlot, clueGroups } = buildClueMaps(
+    entry.grid,
+    entry.slots,
+    solved,
+    clueLayoutDefinitions
+  );
 
   const slots: ReviewSlot[] = entry.slots.map((slot) => {
     const word = wordsBySlot.get(slot.id) ?? "";

@@ -99,7 +99,7 @@ function testArrowModeWithDiagonal(): void {
 }
 
 function testArrowSampleSmoke(): void {
-  const grid = parseFsh(path.join(__dirname, "..", "sample", "49.fsh"));
+  const grid = parseFsh(path.join(__dirname, "..", "sample", "01", "49.fsh"));
   const detailed = scanSlotsDetailed(grid);
   assert.equal(detailed.mode, "arrow");
   assert.equal(scanSlots(grid).length, 61);

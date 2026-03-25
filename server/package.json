@@ -24,6 +24,7 @@
     "test:solver-csp-smoke": "tsx scripts/solver-csp-smoke.ts",
     "test:solver-csp-parity-smoke": "tsx scripts/solver-csp-parity-smoke.ts",
     "test:solver-csp-perf-smoke": "tsx scripts/solver-csp-perf-smoke.ts",
+    "test:clue-layout-smoke": "tsx scripts/clue-layout-smoke.ts",
     "dev": "pnpm run fill-batch -- --native-dlx -s -u --style corel --lcv --restarts 4 --max-nodes 2000000 --parallel 2 -p --no-defs --explain-fail",
     "lint": "biome check . --max-diagnostics none",
     "lint:fix": "biome check --write --unsafe . --max-diagnostics none",

@@ -1,11 +1,13 @@
 import Hypher from "hypher";
 import ru from "hyphenation.ru";
-import { ClueEntry } from "../src/utils/clues";
+import type { ClueLayout } from "../src/utils/clues";
 import { COREL_UNITS_PER_MM } from "./svg-theme";
 
-type ClueCell = {
-  dir: "down" | "right";
-  text: string;
+type ClueRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 export const MIN_CLUE_FONT_SIZE = 7;
@@ -146,24 +148,48 @@ function wrapText(text: string, maxChars: number, breakWords: boolean): string[]
 }
 
 export function buildClueTextMap(
-  entries: ClueEntry[]
-): Map<string, string> {
-  const map = new Map<string, ClueCell[]>();
-  for (const entry of entries) {
-    const text = entry.text.trim();
+  layouts: ClueLayout[]
+): Map<string, ClueLayout> {
+  const out = new Map<string, ClueLayout>();
+  for (const layout of layouts) {
+    const text = layout.text.trim();
     if (!text) continue;
-    const key = `${entry.clueR},${entry.clueC}`;
-    const list = map.get(key) ?? [];
-    list.push({ dir: entry.dir, text });
-    map.set(key, list);
-  }
-
-  const out = new Map<string, string>();
-  for (const [key, list] of map) {
-    list.sort((a, b) => (a.dir === "right" ? 0 : 1) - (b.dir === "right" ? 0 : 1));
-    out.set(key, list.map((item) => item.text).join(" / "));
+    out.set(layout.key, {
+      ...layout,
+      text,
+      areaCells: [...layout.areaCells],
+      slotIds: [...layout.slotIds],
+    });
   }
   return out;
+}
+
+function resolveAreaRects(
+  x: number,
+  y: number,
+  cell: number,
+  areaCells: Array<[number, number]> | undefined,
+  anchorCell: [number, number] | undefined
+): ClueRect[] {
+  if (!areaCells?.length || !anchorCell) {
+    return [{ x, y, width: cell, height: cell }];
+  }
+
+  const [anchorRow, anchorCol] = anchorCell;
+  const byKey = new Map<string, ClueRect>();
+  for (const [row, col] of areaCells) {
+    const rectX = x + (col - anchorCol) * cell;
+    const rectY = y + (row - anchorRow) * cell;
+    const key = `${rectX},${rectY}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, { x: rectX, y: rectY, width: cell, height: cell });
+  }
+
+  const rects = [...byKey.values()];
+  if (!rects.length) {
+    return [{ x, y, width: cell, height: cell }];
+  }
+  return rects;
 }
 
 export function renderClueText(
@@ -174,22 +200,47 @@ export function renderClueText(
   text: string,
   clipId: string,
   fill = "#000",
-  options: { mode?: "default" | "corel" } = {}
+  options: {
+    mode?: "default" | "corel";
+    areaCells?: Array<[number, number]>;
+    anchorCell?: [number, number];
+    textAlign?: "center" | "bottom-left";
+    background?: "none" | "text-block";
+    backgroundInset?: number;
+  } = {}
 ): { defs: string; text: string } {
   const mode = options.mode ?? "default";
+  const textAlign = options.textAlign ?? "center";
+  const background = options.background ?? "none";
+  const alignBottomLeft = textAlign === "bottom-left";
+  const areaRects = resolveAreaRects(x, y, cell, options.areaCells, options.anchorCell);
+  const isMultiCellArea = areaRects.length > 1;
+  const minX = Math.min(...areaRects.map((rect) => rect.x));
+  const minY = Math.min(...areaRects.map((rect) => rect.y));
+  const maxX = Math.max(...areaRects.map((rect) => rect.x + rect.width));
+  const maxY = Math.max(...areaRects.map((rect) => rect.y + rect.height));
+  const layoutWidth = Math.max(1, maxX - minX);
+  const layoutHeight = Math.max(1, maxY - minY);
+  const sizeRef = Math.max(1, Math.min(layoutWidth, layoutHeight));
   const padding = 1;
   const normalized = text.replace(/\s+/g, " ").trim();
   const softMinFloor = resolveMinClueFontSize(mode);
-  const baseSoftMin = Math.max(softMinFloor, Math.floor(cell * 0.12));
-  const softMinFontSize = normalized.length <= 30
-    ? Math.max(softMinFloor, Math.floor(cell * 0.1))
+  const baseSoftMin = Math.max(softMinFloor, Math.floor(sizeRef * 0.12));
+  const rawSoftMinFontSize = normalized.length <= 30
+    ? Math.max(softMinFloor, Math.floor(sizeRef * 0.1))
     : baseSoftMin;
-  const innerHeight = cell - padding * 2;
+  const softMinFontSize = isMultiCellArea
+    ? Math.min(rawSoftMinFontSize, fontSize)
+    : rawSoftMinFontSize;
+  const innerHeight = layoutHeight - padding * 2;
   let currentSize = Math.max(fontSize, softMinFontSize);
   let lineHeight = resolveLineHeight(currentSize, innerHeight);
-  let maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * CLUE_CHAR_WIDTH_FACTOR)));
+  let maxChars = Math.max(
+    1,
+    Math.floor((layoutWidth - padding * 2) / (currentSize * CLUE_CHAR_WIDTH_FACTOR))
+  );
   let maxLinesByHeight = Math.max(1, Math.floor((innerHeight + 0.0001) / lineHeight));
-  let maxLines = Math.min(CLUE_MAX_LINES, maxLinesByHeight);
+  let maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
   const words = normalized ? normalized.split(" ") : [];
   const longestWord = words.reduce((max, word) => Math.max(max, word.length), 0);
   let breakWords = false;
@@ -197,9 +248,12 @@ export function renderClueText(
 
   const recalcLayout = () => {
     lineHeight = resolveLineHeight(currentSize, innerHeight);
-    maxChars = Math.max(1, Math.floor((cell - padding * 2) / (currentSize * CLUE_CHAR_WIDTH_FACTOR)));
+    maxChars = Math.max(
+      1,
+      Math.floor((layoutWidth - padding * 2) / (currentSize * CLUE_CHAR_WIDTH_FACTOR))
+    );
     maxLinesByHeight = Math.max(1, Math.floor((innerHeight + 0.0001) / lineHeight));
-    maxLines = Math.min(CLUE_MAX_LINES, maxLinesByHeight);
+    maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
     lines = wrapText(normalized, maxChars, breakWords);
   };
 
@@ -247,12 +301,62 @@ export function renderClueText(
 
   const textBlockHeight = lineHeight * Math.max(1, lines.length);
   const offsetY = Math.max(0, (innerHeight - textBlockHeight) / 2);
-  const textX = x + cell / 2;
-  const textY = y + padding + offsetY;
+  const textX = alignBottomLeft ? minX + padding + 1 : minX + layoutWidth / 2;
+  const textY = alignBottomLeft
+    ? Math.max(minY + padding, maxY - padding - textBlockHeight)
+    : minY + padding + offsetY;
+  const textAnchor = alignBottomLeft ? "start" : "middle";
+
+  const availableWidth = Math.max(1, layoutWidth - padding * 2);
+  const lineWidths = lines.map((line) =>
+    Math.min(availableWidth, Math.max(1, line.length * currentSize * CLUE_CHAR_WIDTH_FACTOR))
+  );
+  const textBlockWidth = Math.max(1, ...lineWidths);
+  const backgroundPadX = Math.max(1, Math.round(currentSize * 0.14));
+  const backgroundPadY = Math.max(1, Math.round(currentSize * 0.08));
+  let backgroundX = alignBottomLeft
+    ? textX - backgroundPadX
+    : textX - textBlockWidth / 2 - backgroundPadX;
+  let backgroundY = textY - backgroundPadY;
+  let backgroundWidth = textBlockWidth + backgroundPadX * 2;
+  let backgroundHeight = textBlockHeight + backgroundPadY * 2;
+
+  if (background === "text-block" && isMultiCellArea) {
+    const boundaryInset = Math.max(0, options.backgroundInset ?? 0);
+    if (boundaryInset > 0) {
+      const safeMinX = minX + boundaryInset;
+      const safeMaxX = maxX - boundaryInset;
+      const safeMinY = minY + boundaryInset;
+      const safeMaxY = maxY - boundaryInset;
+      const safeWidth = Math.max(0, safeMaxX - safeMinX);
+      const safeHeight = Math.max(0, safeMaxY - safeMinY);
+
+      if (backgroundWidth > safeWidth) {
+        backgroundWidth = safeWidth;
+        backgroundX = safeMinX;
+      } else {
+        backgroundX = Math.max(safeMinX, Math.min(backgroundX, safeMaxX - backgroundWidth));
+      }
+
+      if (backgroundHeight > safeHeight) {
+        backgroundHeight = safeHeight;
+        backgroundY = safeMinY;
+      } else {
+        backgroundY = Math.max(safeMinY, Math.min(backgroundY, safeMaxY - backgroundHeight));
+      }
+    }
+  }
+
+  const backgroundRect =
+    background === "text-block"
+      ? `<rect x="${backgroundX}" y="${backgroundY}" width="${backgroundWidth}" height="${backgroundHeight}" fill="#fff"/>`
+      : "";
 
   const useClip = mode !== "corel";
   const defs = useClip
-    ? `<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse"><rect x="${x}" y="${y}" width="${cell}" height="${cell}"/></clipPath>`
+    ? `<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${areaRects
+        .map((rect) => `<rect x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}"/>`)
+        .join("")}</clipPath>`
     : "";
 
   if (mode === "corel") {
@@ -261,24 +365,27 @@ export function renderClueText(
     const textLines = lines
       .map((line, idx) => {
         const lineY = Math.round((baseY + idx * lineHeight) * 10) / 10;
-        const condenseAttrs = buildCondensedTextAttrs(line, currentSize, cell - padding * 2);
-        return `<text x="${textX}" y="${lineY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="alphabetic"${condenseAttrs} fill="${fill}">${escapeXml(line)}</text>`;
+        const condenseAttrs = buildCondensedTextAttrs(line, currentSize, layoutWidth - padding * 2);
+        return `<text x="${textX}" y="${lineY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="alphabetic"${condenseAttrs} fill="${fill}">${escapeXml(line)}</text>`;
       })
       .join("");
     const textSvg = useClip
-      ? `<g clip-path="url(#${clipId})">${textLines}</g>`
-      : `<g>${textLines}</g>`;
+      ? `<g clip-path="url(#${clipId})">${backgroundRect}${textLines}</g>`
+      : `<g>${backgroundRect}${textLines}</g>`;
     return { defs, text: textSvg };
   }
 
   const tspan = lines
     .map((line, idx) => {
       const dy = idx === 0 ? 0 : lineHeight;
-      const condenseAttrs = buildCondensedTextAttrs(line, currentSize, cell - padding * 2);
+      const condenseAttrs = buildCondensedTextAttrs(line, currentSize, layoutWidth - padding * 2);
       return `<tspan x="${textX}" dy="${dy}"${condenseAttrs}>${escapeXml(line)}</tspan>`;
     })
     .join("");
-  const textSvg = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="middle" dominant-baseline="hanging"${useClip ? ` clip-path="url(#${clipId})"` : ""} fill="${fill}">${tspan}</text>`;
+  const textNode = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="hanging" fill="${fill}">${tspan}</text>`;
+  const textSvg = useClip
+    ? `<g clip-path="url(#${clipId})">${backgroundRect}${textNode}</g>`
+    : `<g>${backgroundRect}${textNode}</g>`;
 
   return { defs, text: textSvg };
 }
