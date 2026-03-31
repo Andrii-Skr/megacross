@@ -18,7 +18,7 @@ FROM base AS runner
 ENV NODE_ENV=production PORT=3001
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN pnpm prisma generate \
+RUN DATABASE_URL=postgresql://prisma:prisma@localhost:5432/prisma?schema=public pnpm prisma generate \
   && chmod +x /app/entrypoint.sh \
   && mkdir -p /app/var/crosswords/sample /app/var/crosswords/out \
   && chown -R node:node /app
