@@ -134,6 +134,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/api/healthz", (_req, res) => {
+  res.json({ ok: true });
+});
+
 app.get("/api/words", async (req, res) => {
   const { wordText, definitionText, tags } = req.query;
   const tagNames =
