@@ -199,6 +199,7 @@ type JobRuntime = {
 };
 
 const jobRuntimes = new Map<string, JobRuntime>();
+const jobRunners = new Set<string>();
 
 const DEFAULT_OPTIONS: FillJobOptions = {
   engine: "dlx",
@@ -802,6 +803,14 @@ function mapJobRow(row: FillJobRow): FillJobUpdate {
   };
 }
 
+function resumeActiveJobIfNeeded(row: FillJobRow): void {
+  const status = String(row.status ?? "");
+  if (status !== "queued" && status !== "running") return;
+  ensureRuntime(String(row.id));
+  const options = parseFillJobOptions(row.options);
+  void runFillJob(row.id, row.issueId, options);
+}
+
 async function loadIssueContext(issueId: bigint): Promise<IssueContext | null> {
   const rows = await prisma.$queryRaw<any[]>`
     SELECT
@@ -1247,9 +1256,14 @@ function parseFillJobOptions(value: unknown): FillJobOptions {
 
 async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOptions) {
   const jobIdStr = String(jobId);
+  if (jobRunners.has(jobIdStr)) return;
+  jobRunners.add(jobIdStr);
   ensureRuntime(jobIdStr);
   const runtime = jobRuntimes.get(jobIdStr);
-  if (!runtime) return;
+  if (!runtime) {
+    jobRunners.delete(jobIdStr);
+    return;
+  }
 
   const updateLocal = (update: Partial<FillJobUpdate>) => {
     const last = runtime.lastUpdate;
@@ -2094,6 +2108,8 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const msg = err instanceof Error ? err.message : String(err);
     await updateJob(jobId, { status: "error", error: msg });
     updateLocal({ status: "error", error: msg });
+  } finally {
+    jobRunners.delete(jobIdStr);
   }
 }
 
@@ -2114,7 +2130,7 @@ export async function startFillJob(
     const existing = await loadLatestActiveJobByIssue(prisma, issueId);
     if (existing) {
       const update = mapJobRow(existing);
-      ensureRuntime(update.id);
+      resumeActiveJobIfNeeded(existing);
       return update;
     }
     row = await createQueuedFillJob(prisma, issueId, JSON.stringify(options));
@@ -2125,19 +2141,21 @@ export async function startFillJob(
 
   const update = mapJobRow(row);
   ensureRuntime(update.id);
-  runFillJob(BigInt(row.id), issueId, options);
+  void runFillJob(row.id, issueId, options);
   return update;
 }
 
 export async function getFillJob(jobId: bigint): Promise<FillJobUpdate | null> {
   const row = await loadFillJobById(prisma, jobId);
   if (!row) return null;
+  resumeActiveJobIfNeeded(row);
   return mapJobRow(row);
 }
 
 export async function getLatestFillJob(issueId: bigint): Promise<FillJobUpdate | null> {
   const row = await loadLatestFillJobByIssue(prisma, issueId);
   if (!row) return null;
+  resumeActiveJobIfNeeded(row);
   return mapJobRow(row);
 }
 
