@@ -103,7 +103,6 @@ import {
   loadFillJobReviewData,
   loadLatestActiveJobByIssue,
   loadLatestFillJobByIssue,
-  loadLatestReviewJobByIssue,
   patchFillJob,
   type FillJobRow,
   type FillJobPatch,
@@ -2137,12 +2136,6 @@ export async function startFillJob(
   overrides: Partial<FillJobOptions> = {}
 ): Promise<FillJobUpdate> {
   await cleanupOldFillJobArchives(prisma, ARCHIVE_TTL_MS);
-  const reviewRow = await loadLatestReviewJobByIssue(prisma, issueId);
-  if (reviewRow) {
-    const reviewJob = mapJobRow(reviewRow);
-    ensureRuntime(reviewJob.id);
-    return reviewJob;
-  }
   const options = { ...START_FILL_JOB_DEFAULT_OPTIONS, ...overrides };
   let row = await createQueuedFillJob(prisma, issueId, JSON.stringify(options));
   if (!row) {
