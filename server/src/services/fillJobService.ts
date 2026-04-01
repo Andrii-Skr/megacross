@@ -205,7 +205,7 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   shuffle: true,
   unique: true,
   lcv: true,
-  restarts: 1,
+  restarts: 2,
   parallelRestarts: 1,
   maxNodes: 200_000,
   maxMs: undefined,
@@ -275,10 +275,7 @@ function detectCpuParallelism(): number {
 function resolveParallelRestarts(restarts: number, configured: number): number {
   const safeRestarts = Number.isFinite(restarts) && restarts > 0 ? Math.floor(restarts) : 1;
   const safeConfigured = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 1;
-  const cpuParallel = detectCpuParallelism();
-  const auto = Math.max(1, Math.min(safeRestarts, cpuParallel));
-  const requested = Math.max(1, Math.min(safeRestarts, safeConfigured));
-  return Math.max(requested, auto);
+  return Math.max(1, Math.min(safeRestarts, safeConfigured));
 }
 
 function normalizeWordKey(word: string): string {
@@ -1246,33 +1243,68 @@ async function emitCurrentJob(jobId: bigint) {
   emitJobUpdate(update.id, update);
 }
 
-function parseFillJobOptions(value: unknown): FillJobOptions {
-  const defaults = { ...DEFAULT_OPTIONS };
+function parseFillJobOptions(value: unknown, fallbackDefaults: FillJobOptions = DEFAULT_OPTIONS): FillJobOptions {
+  const defaults = { ...fallbackDefaults };
   if (!value) return defaults;
   if (typeof value === "string") {
     try {
-      return parseFillJobOptions(JSON.parse(value));
+      return parseFillJobOptions(JSON.parse(value), defaults);
     } catch {
       return defaults;
     }
   }
   if (typeof value !== "object") return defaults;
-  const raw = value as Partial<FillJobOptions>;
+  const raw = value as Record<string, unknown>;
+
+  const toPositiveInt = (input: unknown, fallback: number): number => {
+    const n = Number(input);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.floor(n);
+  };
+  const toOptionalPositiveInt = (input: unknown, fallback: number | undefined): number | undefined => {
+    if (input === undefined || input === null) return fallback;
+    const n = Number(input);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.floor(n);
+  };
+  const toOptionalTemplateId = (input: unknown, fallback: number | null): number | null => {
+    if (input === undefined || input === null) return fallback;
+    const n = Number(input);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.floor(n);
+  };
+  const toBoolean = (input: unknown, fallback: boolean): boolean =>
+    typeof input === "boolean" ? input : fallback;
+
+  const restarts = toPositiveInt(raw.restarts, defaults.restarts);
+  // Backward compatibility for older payloads that used `parallel`.
+  const parallelSource = raw.parallelRestarts ?? raw.parallel;
+  const parallelRestarts = toPositiveInt(parallelSource, defaults.parallelRestarts);
   const modeRaw =
     typeof raw.usageRebalanceMode === "string" ? raw.usageRebalanceMode.toLowerCase() : undefined;
   const usageRebalanceMode: UsageRebalanceMode =
     modeRaw === "safe" || modeRaw === "aggressive" || modeRaw === "cost"
       ? modeRaw
       : defaults.usageRebalanceMode;
-  const engine = raw.engine === "csp" || raw.engine === "dlx" ? raw.engine : defaults.engine;
-  const editionHotBan =
-    typeof raw.editionHotBan === "boolean" ? raw.editionHotBan : defaults.editionHotBan;
+
   return {
-    ...defaults,
-    ...raw,
-    engine,
+    engine: raw.engine === "csp" || raw.engine === "dlx" ? raw.engine : defaults.engine,
+    shuffle: toBoolean(raw.shuffle, defaults.shuffle),
+    unique: toBoolean(raw.unique, defaults.unique),
+    lcv: toBoolean(raw.lcv, defaults.lcv),
+    restarts,
+    parallelRestarts,
+    maxNodes: toOptionalPositiveInt(raw.maxNodes, defaults.maxNodes),
+    maxMs: toOptionalPositiveInt(raw.maxMs, defaults.maxMs),
+    style: raw.style === "default" || raw.style === "corel" ? raw.style : defaults.style,
+    explainFail: toBoolean(raw.explainFail, defaults.explainFail),
+    noDefs: toBoolean(raw.noDefs, defaults.noDefs),
+    writeCrw: toBoolean(raw.writeCrw, defaults.writeCrw),
+    usageStats: toBoolean(raw.usageStats, defaults.usageStats),
+    usageRebalance: toBoolean(raw.usageRebalance, defaults.usageRebalance),
     usageRebalanceMode,
-    editionHotBan,
+    editionHotBan: toBoolean(raw.editionHotBan, defaults.editionHotBan),
+    filterTemplateId: toOptionalTemplateId(raw.filterTemplateId, defaults.filterTemplateId ?? null),
   };
 }
 
@@ -2140,25 +2172,7 @@ export async function startFillJob(
   overrides: Partial<FillJobOptions> = {}
 ): Promise<FillJobUpdate> {
   await cleanupOldFillJobArchives(prisma, ARCHIVE_TTL_MS);
-  const options: FillJobOptions = {
-    engine: overrides.engine ?? START_FILL_JOB_DEFAULT_OPTIONS.engine,
-    shuffle: overrides.shuffle ?? START_FILL_JOB_DEFAULT_OPTIONS.shuffle,
-    unique: overrides.unique ?? START_FILL_JOB_DEFAULT_OPTIONS.unique,
-    lcv: overrides.lcv ?? START_FILL_JOB_DEFAULT_OPTIONS.lcv,
-    restarts: overrides.restarts ?? START_FILL_JOB_DEFAULT_OPTIONS.restarts,
-    parallelRestarts: overrides.parallelRestarts ?? START_FILL_JOB_DEFAULT_OPTIONS.parallelRestarts,
-    maxNodes: overrides.maxNodes ?? START_FILL_JOB_DEFAULT_OPTIONS.maxNodes,
-    maxMs: overrides.maxMs ?? START_FILL_JOB_DEFAULT_OPTIONS.maxMs,
-    style: overrides.style ?? START_FILL_JOB_DEFAULT_OPTIONS.style,
-    explainFail: overrides.explainFail ?? START_FILL_JOB_DEFAULT_OPTIONS.explainFail,
-    noDefs: overrides.noDefs ?? START_FILL_JOB_DEFAULT_OPTIONS.noDefs,
-    writeCrw: overrides.writeCrw ?? START_FILL_JOB_DEFAULT_OPTIONS.writeCrw,
-    usageStats: overrides.usageStats ?? START_FILL_JOB_DEFAULT_OPTIONS.usageStats,
-    usageRebalance: overrides.usageRebalance ?? START_FILL_JOB_DEFAULT_OPTIONS.usageRebalance,
-    usageRebalanceMode: overrides.usageRebalanceMode ?? START_FILL_JOB_DEFAULT_OPTIONS.usageRebalanceMode,
-    editionHotBan: overrides.editionHotBan ?? START_FILL_JOB_DEFAULT_OPTIONS.editionHotBan,
-    filterTemplateId: overrides.filterTemplateId ?? START_FILL_JOB_DEFAULT_OPTIONS.filterTemplateId,
-  };
+  const options = parseFillJobOptions(overrides, START_FILL_JOB_DEFAULT_OPTIONS);
   let row = await createQueuedFillJob(prisma, issueId, JSON.stringify(options));
   if (!row) {
     const existing = await loadLatestActiveJobByIssue(prisma, issueId);
