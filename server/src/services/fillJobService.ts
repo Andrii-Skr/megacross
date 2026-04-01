@@ -224,19 +224,23 @@ const DEFAULT_OPTIONS: FillJobOptions = {
 // CLI-only flags from fill-batch (e.g. --report-duplicates, --template-parallel)
 // are intentionally not part of FillJobOptions.
 const START_FILL_JOB_DEFAULT_OPTIONS: FillJobOptions = {
-  ...DEFAULT_OPTIONS,
   engine: "dlx",
   shuffle: true,
   unique: true,
   lcv: true,
+  restarts: 2,
+  parallelRestarts: 1,
+  maxNodes: 200_000,
+  maxMs: undefined,
   style: "corel",
-  noDefs: true,
   explainFail: true,
+  noDefs: true,
+  writeCrw: false,
+  usageStats: true,
   usageRebalance: true,
   usageRebalanceMode: "cost",
-  restarts: 2,
-  maxNodes: 200_000,
-  parallelRestarts: 1,
+  editionHotBan: false,
+  filterTemplateId: null,
 };
 
 const ARCHIVE_TTL_MS = 1000 * 60 * 60 * 24 * 30 * 6;
@@ -2136,7 +2140,25 @@ export async function startFillJob(
   overrides: Partial<FillJobOptions> = {}
 ): Promise<FillJobUpdate> {
   await cleanupOldFillJobArchives(prisma, ARCHIVE_TTL_MS);
-  const options = { ...START_FILL_JOB_DEFAULT_OPTIONS, ...overrides };
+  const options: FillJobOptions = {
+    engine: overrides.engine ?? START_FILL_JOB_DEFAULT_OPTIONS.engine,
+    shuffle: overrides.shuffle ?? START_FILL_JOB_DEFAULT_OPTIONS.shuffle,
+    unique: overrides.unique ?? START_FILL_JOB_DEFAULT_OPTIONS.unique,
+    lcv: overrides.lcv ?? START_FILL_JOB_DEFAULT_OPTIONS.lcv,
+    restarts: overrides.restarts ?? START_FILL_JOB_DEFAULT_OPTIONS.restarts,
+    parallelRestarts: overrides.parallelRestarts ?? START_FILL_JOB_DEFAULT_OPTIONS.parallelRestarts,
+    maxNodes: overrides.maxNodes ?? START_FILL_JOB_DEFAULT_OPTIONS.maxNodes,
+    maxMs: overrides.maxMs ?? START_FILL_JOB_DEFAULT_OPTIONS.maxMs,
+    style: overrides.style ?? START_FILL_JOB_DEFAULT_OPTIONS.style,
+    explainFail: overrides.explainFail ?? START_FILL_JOB_DEFAULT_OPTIONS.explainFail,
+    noDefs: overrides.noDefs ?? START_FILL_JOB_DEFAULT_OPTIONS.noDefs,
+    writeCrw: overrides.writeCrw ?? START_FILL_JOB_DEFAULT_OPTIONS.writeCrw,
+    usageStats: overrides.usageStats ?? START_FILL_JOB_DEFAULT_OPTIONS.usageStats,
+    usageRebalance: overrides.usageRebalance ?? START_FILL_JOB_DEFAULT_OPTIONS.usageRebalance,
+    usageRebalanceMode: overrides.usageRebalanceMode ?? START_FILL_JOB_DEFAULT_OPTIONS.usageRebalanceMode,
+    editionHotBan: overrides.editionHotBan ?? START_FILL_JOB_DEFAULT_OPTIONS.editionHotBan,
+    filterTemplateId: overrides.filterTemplateId ?? START_FILL_JOB_DEFAULT_OPTIONS.filterTemplateId,
+  };
   let row = await createQueuedFillJob(prisma, issueId, JSON.stringify(options));
   if (!row) {
     const existing = await loadLatestActiveJobByIssue(prisma, issueId);

@@ -85,13 +85,6 @@ function parseFillOverrides(input: unknown) {
   if (Number.isFinite(filterTemplateId) && filterTemplateId > 0) {
     overrides.filterTemplateId = Math.floor(filterTemplateId);
   }
-  if (
-    overrides.restarts !== undefined &&
-    overrides.parallelRestarts !== undefined &&
-    overrides.restarts < overrides.parallelRestarts
-  ) {
-    overrides.restarts = overrides.parallelRestarts;
-  }
   return overrides;
 }
 
