@@ -221,6 +221,25 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   filterTemplateId: null,
 };
 
+// Baseline defaults used specifically for API startFillJob.
+// CLI-only flags from fill-batch (e.g. --report-duplicates, --template-parallel)
+// are intentionally not part of FillJobOptions.
+const START_FILL_JOB_DEFAULT_OPTIONS: FillJobOptions = {
+  ...DEFAULT_OPTIONS,
+  engine: "dlx",
+  shuffle: true,
+  unique: true,
+  lcv: true,
+  style: "corel",
+  noDefs: true,
+  explainFail: true,
+  usageRebalance: true,
+  usageRebalanceMode: "cost",
+  restarts: 2,
+  maxNodes: 200_000,
+  parallelRestarts: 1,
+};
+
 const ARCHIVE_TTL_MS = 1000 * 60 * 60 * 24 * 30 * 6;
 
 type WordDefinitionCandidate = {
@@ -2124,7 +2143,7 @@ export async function startFillJob(
     ensureRuntime(reviewJob.id);
     return reviewJob;
   }
-  const options = { ...DEFAULT_OPTIONS, ...overrides };
+  const options = { ...START_FILL_JOB_DEFAULT_OPTIONS, ...overrides };
   let row = await createQueuedFillJob(prisma, issueId, JSON.stringify(options));
   if (!row) {
     const existing = await loadLatestActiveJobByIssue(prisma, issueId);
