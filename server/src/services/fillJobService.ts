@@ -736,6 +736,14 @@ async function persistUsageStatsForIssue(
     }
   };
 
+  const toPositiveMs = (raw: string | undefined, fallback: number): number => {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.floor(parsed);
+  };
+  const usageStatsTxMaxWaitMs = toPositiveMs(process.env.CROSS_USAGE_STATS_TX_MAX_WAIT_MS, 5_000);
+  const usageStatsTxTimeoutMs = toPositiveMs(process.env.CROSS_USAGE_STATS_TX_TIMEOUT_MS, 60_000);
+
   await prisma.$transaction(async (tx) => {
     const [previousWordUsage, previousOpredUsage] = await Promise.all([
       loadIssueWordUsageMap(tx, issueId),
@@ -772,6 +780,9 @@ async function persistUsageStatsForIssue(
     }
     await applyEditionWordStatDelta(tx, wordDelta);
     await applyEditionOpredStatDelta(tx, opredDelta);
+  }, {
+    maxWait: usageStatsTxMaxWaitMs,
+    timeout: usageStatsTxTimeoutMs,
   });
 }
 
