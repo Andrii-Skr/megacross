@@ -1,4 +1,5 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, unlinkSync } from "node:fs";
+import path from "node:path";
 import { Prisma } from "../db/prisma";
 import type { PrismaClient } from "../db/prisma";
 
@@ -33,6 +34,26 @@ export type FillJobPatch = {
   outputSize?: number | null;
 };
 
+function collectArchiveFilePaths(jobId: bigint, outputPath: string): string[] {
+  const paths = new Set<string>([outputPath]);
+  const directory = path.dirname(outputPath);
+  const jobPrefix = `scanwords_${jobId.toString()}`;
+  try {
+    const files = readdirSync(directory);
+    for (const fileName of files) {
+      if (
+        fileName === `${jobPrefix}.zip` ||
+        (fileName.startsWith(`${jobPrefix}__`) && fileName.endsWith(".zip"))
+      ) {
+        paths.add(path.join(directory, fileName));
+      }
+    }
+  } catch {
+    // ignore directory read errors
+  }
+  return [...paths];
+}
+
 export async function cleanupOldFillJobArchives(prisma: PrismaClient, ttlMs: number): Promise<void> {
   const cutoff = new Date(Date.now() - ttlMs);
   const rows = await prisma.$queryRaw<Array<{ id: bigint; outputPath: string | null }>>(Prisma.sql`
@@ -40,11 +61,14 @@ export async function cleanupOldFillJobArchives(prisma: PrismaClient, ttlMs: num
     WHERE "outputPath" IS NOT NULL AND "updatedAt" < ${cutoff}
   `);
   for (const row of rows) {
-    if (row.outputPath && existsSync(row.outputPath)) {
-      try {
-        unlinkSync(row.outputPath);
-      } catch {
-        // ignore file delete errors
+    if (row.outputPath) {
+      for (const archivePath of collectArchiveFilePaths(row.id, row.outputPath)) {
+        if (!existsSync(archivePath)) continue;
+        try {
+          unlinkSync(archivePath);
+        } catch {
+          // ignore file delete errors
+        }
       }
     }
     await prisma.$executeRaw(Prisma.sql`

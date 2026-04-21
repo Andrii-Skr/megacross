@@ -1,5 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from "express";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { getWordsAndDefinitions, getAllTags } from "./services/wordDefinitionService";
 import type { UsageRebalanceMode } from "./utils/usageRebalance";
 import {
@@ -327,17 +327,44 @@ app.get("/api/fill/:jobId/stream", async (req, res) => {
 
 app.get("/api/fill/:jobId/archive", async (req, res) => {
   const jobId = parseBigIntStrict(req.params.jobId);
+  const fileName = typeof req.query.file === "string" ? req.query.file : null;
   if (jobId === null) {
     res.status(400).json({ error: "Invalid jobId" });
     return;
   }
   try {
-    const archivePath = await getJobArchivePath(jobId);
-    if (!archivePath || !existsSync(archivePath)) {
+    const archivePath = await getJobArchivePath(jobId, fileName);
+    if (!archivePath) {
       res.status(404).json({ error: "Archive not found" });
       return;
     }
-    res.download(archivePath, `scanwords_${jobId}.zip`);
+    let isFile = false;
+    try {
+      isFile = statSync(archivePath).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) {
+      res.status(404).json({ error: "Archive not found" });
+      return;
+    }
+    res.download(
+      archivePath,
+      `scanwords_${jobId}.zip`,
+      { dotfiles: "allow" },
+      (error?: Error & { code?: string }) => {
+        if (!error) return;
+        if (res.headersSent) {
+          res.end();
+          return;
+        }
+        if (error.code === "ENOENT") {
+          res.status(404).json({ error: "Archive not found" });
+          return;
+        }
+        res.status(500).json({ error: "Failed to download archive" });
+      }
+    );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to download archive";
     res.status(500).json({ error: msg });

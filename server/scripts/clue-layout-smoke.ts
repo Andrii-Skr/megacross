@@ -7,6 +7,8 @@ import { DIRS } from "../src/types";
 import { buildClueLayouts } from "../src/utils/clues";
 import { renderClueText } from "./clue-svg";
 
+const AREA_EXPANSION_ENV_KEY = "CROSS_ENABLE_02_AREA_EXPANSION";
+
 function createCodes(rows: number, cols: number, value = 0x01): number[][] {
   return Array.from({ length: rows }, () => Array(cols).fill(value));
 }
@@ -166,7 +168,7 @@ function testNoExpandWhenGroupIsNot02(): void {
   assert.equal(clue.areaCells.length, 1);
 }
 
-function testRectAreaCanExpandWithAttachedTailSlot(): void {
+function testRectAreaWithAttachedTailDefinitionCanExpand(): void {
   const data = [
     "#####*",
     "#####*",
@@ -292,6 +294,133 @@ function testTwoCellSideTailDoesNotExpand(): void {
   assert.equal(tail.areaCells.length, 1);
 }
 
+function testClusterAppliesOnlyToClusterDefinitionSlot(): void {
+  const data = [
+    "####**",
+    "####**",
+    "####**",
+    "####**",
+    "*↓#***",
+    "**↓***",
+    "******",
+  ];
+  const codes = createCodes(7, 6, 0x01);
+  for (let row = 0; row < 4; row += 1) {
+    for (let col = 0; col < 4; col += 1) {
+      codes[row][col] = 0x02;
+    }
+  }
+  codes[4][2] = 0x02;
+  const grid = buildGrid(data, codes);
+
+  const slots: Slot[] = [
+    {
+      id: 1,
+      r: 4,
+      c: 1,
+      dir: DIRS.down,
+      len: 2,
+      cells: [
+        [4, 1],
+        [5, 1],
+      ],
+    },
+    {
+      id: 2,
+      r: 5,
+      c: 2,
+      dir: DIRS.down,
+      len: 2,
+      cells: [
+        [5, 2],
+        [6, 2],
+      ],
+    },
+  ];
+  const solved = [
+    "####AA",
+    "####AA",
+    "####AA",
+    "####AA",
+    "*A#AAA",
+    "*BCAAA",
+    "**DAAA",
+  ];
+  const definitions = new Map<string, string>([
+    ["AB", "Кластер"],
+    ["CD", "Хвост"],
+  ]);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const clusterDef = layoutByKey(layouts, "3,1");
+  const tailDef = layoutByKey(layouts, "4,2");
+  assert.equal(clusterDef.areaCells.length, 16);
+  assert.equal(tailDef.areaCells.length, 1);
+  assert.equal(tailDef.clusterCells, undefined);
+}
+
+function testNoExpansionForOverlappingCandidatesFromDifferentDefinitions(): void {
+  const data = [
+    "####",
+    "####",
+    "####",
+    "####",
+    "↓↓**",
+    "****",
+  ];
+  const codes = createCodes(6, 4, 0x01);
+  for (let row = 0; row < 4; row += 1) {
+    for (let col = 0; col < 4; col += 1) {
+      codes[row][col] = 0x02;
+    }
+  }
+  const grid = buildGrid(data, codes);
+
+  const slots: Slot[] = [
+    {
+      id: 1,
+      r: 4,
+      c: 0,
+      dir: DIRS.down,
+      len: 2,
+      cells: [
+        [4, 0],
+        [5, 0],
+      ],
+    },
+    {
+      id: 2,
+      r: 4,
+      c: 1,
+      dir: DIRS.down,
+      len: 2,
+      cells: [
+        [4, 1],
+        [5, 1],
+      ],
+    },
+  ];
+  const solved = [
+    "####",
+    "####",
+    "####",
+    "####",
+    "AC**",
+    "BD**",
+  ];
+  const definitions = new Map<string, string>([
+    ["AB", "Первое"],
+    ["CD", "Второе"],
+  ]);
+
+  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const first = layoutByKey(layouts, "3,0");
+  const second = layoutByKey(layouts, "3,1");
+  assert.equal(first.areaCells.length, 1);
+  assert.equal(second.areaCells.length, 1);
+  assert.equal(first.clusterCells, undefined);
+  assert.equal(second.clusterCells, undefined);
+}
+
 function testAnchorCanExpandToLocalRectangleWhenAnotherRectangleIsBigger(): void {
   const data = [
     "#####****",
@@ -355,7 +484,7 @@ function testAnchorCanExpandToLocalRectangleWhenAnotherRectangleIsBigger(): void
   assert.equal(top.areaCells.length, 20);
 }
 
-function testBottomMultiDefinitionClusterIsHighlightedWithoutExpansion(): void {
+function testNoClusterForMultiDefinitionComponent(): void {
   const data = [
     "#####*",
     "#####*",
@@ -412,7 +541,7 @@ function testBottomMultiDefinitionClusterIsHighlightedWithoutExpansion(): void {
   const layouts = buildClueLayouts(grid, slots, solved, definitions);
   const top = layoutByKey(layouts, "3,1");
   assert.equal(top.areaCells.length, 1);
-  assert.equal(top.clusterCells?.length, 20);
+  assert.equal(top.clusterCells, undefined);
 }
 
 function makeState(slotId: number, definitionLength: number): FinalSlotState {
@@ -673,7 +802,7 @@ function testTailAnchorCanExpandToDetachedTwoBySevenRectangle(): void {
   );
 }
 
-function testClusterHighlightWorksWithoutDefinitionTexts(): void {
+function testClusterHighlightWithoutDefinitionTexts(): void {
   const data = ["##*", "##*", "↓↓*", "***"];
   const codes = createCodes(4, 3, 0x01);
   codes[0][0] = 0x02;
@@ -719,7 +848,7 @@ function testClusterHighlightWorksWithoutDefinitionTexts(): void {
   assert.equal(second.clusterCells?.length, 4);
 }
 
-function testClusterHighlightForTwoDefinitionsInRectangle(): void {
+function testNoClusterHighlightForTwoDefinitionsInRectangle(): void {
   const data = ["##*", "##*", "↓↓*", "***"];
   const codes = createCodes(4, 3, 0x01);
   codes[0][0] = 0x02;
@@ -761,8 +890,8 @@ function testClusterHighlightForTwoDefinitionsInRectangle(): void {
   const second = layoutByKey(layouts, "1,1");
   assert.equal(first.areaCells.length, 1);
   assert.equal(second.areaCells.length, 1);
-  assert.equal(first.clusterCells?.length, 4);
-  assert.equal(second.clusterCells?.length, 4);
+  assert.equal(first.clusterCells, undefined);
+  assert.equal(second.clusterCells, undefined);
 }
 
 function testReviewPayloadKeepsExpandedAreaCellCount(): void {
@@ -814,24 +943,77 @@ function testReviewPayloadKeepsExpandedAreaCellCount(): void {
   assert.equal(group.areaCellCount, 4);
 }
 
+function testDisable02AreaExpansionByEnv(): void {
+  const previousValue = process.env[AREA_EXPANSION_ENV_KEY];
+  delete process.env[AREA_EXPANSION_ENV_KEY];
+  try {
+    const data = ["*##*", "*##*", "*↓**", "****"];
+    const codes = createCodes(4, 4, 0x01);
+    codes[1][1] = 0x02;
+    codes[0][1] = 0x02;
+    codes[0][2] = 0x02;
+    codes[1][2] = 0x02;
+    const grid = buildGrid(data, codes);
+
+    const slots: Slot[] = [
+      {
+        id: 1,
+        r: 2,
+        c: 1,
+        dir: DIRS.down,
+        len: 2,
+        cells: [
+          [2, 1],
+          [3, 1],
+        ],
+      },
+    ];
+    const solved = ["*##*", "*##*", "*A**", "*B**"];
+    const definitions = new Map<string, string>([["AB", "Определение"]]);
+    const layouts = buildClueLayouts(grid, slots, solved, definitions);
+    const clue = layoutByKey(layouts, "1,1");
+    assert.equal(clue.areaCells.length, 1);
+    assert.equal(clue.clusterCells, undefined);
+  } finally {
+    if (previousValue === undefined) {
+      delete process.env[AREA_EXPANSION_ENV_KEY];
+    } else {
+      process.env[AREA_EXPANSION_ENV_KEY] = previousValue;
+    }
+  }
+}
+
 function main(): void {
-  testExpandFor02GroupSizeAtLeast4SingleSlot();
-  testNoExpandFor02GroupSizeLessThan4();
-  testNoExpandWhenTwoSlotsPointToSame02Group();
-  testNoExpandWhenGroupIsNot02();
-  testRectAreaCanExpandWithAttachedTailSlot();
-  testTwoCellSideTailDoesNotExpand();
-  testAnchorCanExpandToLocalRectangleWhenAnotherRectangleIsBigger();
-  testBottomMultiDefinitionClusterIsHighlightedWithoutExpansion();
-  testDefinitionLimitsForExpandedAndSharedGroups();
-  testRenderBottomLeftTextBlockForMultiCellArea();
-  testRenderMultiCellAreaCanUseMoreThanFourLines();
-  testExpandUsesVisibleDefinitionCountNotRawSlotCount();
-  testNoExpandForOneByFourStripe();
-  testTailAnchorCanExpandToDetachedTwoBySevenRectangle();
-  testClusterHighlightForTwoDefinitionsInRectangle();
-  testClusterHighlightWorksWithoutDefinitionTexts();
-  testReviewPayloadKeepsExpandedAreaCellCount();
+  const previousValue = process.env[AREA_EXPANSION_ENV_KEY];
+  process.env[AREA_EXPANSION_ENV_KEY] = "1";
+  try {
+    testExpandFor02GroupSizeAtLeast4SingleSlot();
+    testNoExpandFor02GroupSizeLessThan4();
+    testNoExpandWhenTwoSlotsPointToSame02Group();
+    testNoExpandWhenGroupIsNot02();
+    testRectAreaWithAttachedTailDefinitionCanExpand();
+    testTwoCellSideTailDoesNotExpand();
+    testClusterAppliesOnlyToClusterDefinitionSlot();
+    testNoExpansionForOverlappingCandidatesFromDifferentDefinitions();
+    testAnchorCanExpandToLocalRectangleWhenAnotherRectangleIsBigger();
+    testNoClusterForMultiDefinitionComponent();
+    testDefinitionLimitsForExpandedAndSharedGroups();
+    testRenderBottomLeftTextBlockForMultiCellArea();
+    testRenderMultiCellAreaCanUseMoreThanFourLines();
+    testExpandUsesVisibleDefinitionCountNotRawSlotCount();
+    testNoExpandForOneByFourStripe();
+    testTailAnchorCanExpandToDetachedTwoBySevenRectangle();
+    testNoClusterHighlightForTwoDefinitionsInRectangle();
+    testClusterHighlightWithoutDefinitionTexts();
+    testReviewPayloadKeepsExpandedAreaCellCount();
+    testDisable02AreaExpansionByEnv();
+  } finally {
+    if (previousValue === undefined) {
+      delete process.env[AREA_EXPANSION_ENV_KEY];
+    } else {
+      process.env[AREA_EXPANSION_ENV_KEY] = previousValue;
+    }
+  }
   console.log("clue layout smoke checks passed");
 }
 

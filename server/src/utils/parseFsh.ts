@@ -14,7 +14,7 @@
 // const diag  = new Set([0x07,0x11,0x0d,0x19,0x1a,0x1c,0x1d,0x29,0x39,0x2a,0x2b]);
 
 import { readFileSync } from "node:fs";
-import { Cell, Grid }   from "../types";
+import { Cell, Grid, type TemplateType, type TemplateTypeCode } from "../types";
 
 // ── константы ───────────────────────────────────────────────
 const HEADER = Buffer.from("SHABLON  ", "ascii");
@@ -26,6 +26,15 @@ const down = new Set([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
 
 const right = new Set([0x08,0x10,0x18,0x20,0x28,0x30,0x38]);
 const diag = new Set([0x07, 0x11, 0x13, 0x15, 0x0a, 0x0b, 0x0d, 0x19, 0x1a, 0x1c, 0x1d, 0x29, 0x21, 0x23, 0x39, 0x2a, 0x2b, 0x2c, 0x3d, 0x2f]);
+
+const TEMPLATE_TYPES: Record<string, { type: TemplateType; supported: boolean }> = {
+  "2": { type: "scanword", supported: true },
+  "0": { type: "crossword", supported: true },
+  "<": { type: "crossword_variant", supported: true },
+  "3": { type: "chainword", supported: false },
+  "9": { type: "honeycomb", supported: false },
+  "F": { type: "circular", supported: false },
+};
 
 // ── helpers ────────────────────────────────────────────────
 function readCell(buf: Buffer, i: number): [Cell, number, number] {
@@ -43,16 +52,52 @@ function readCell(buf: Buffer, i: number): [Cell, number, number] {
   throw new Error(`unexpected byte 0x${b.toString(16)} at ${i}`);
 }
 
+function resolveTemplateType(typeCode: string): {
+  templateTypeCode: TemplateTypeCode;
+  templateType: TemplateType;
+  supported: boolean;
+} {
+  const resolved = TEMPLATE_TYPES[typeCode];
+  if (!resolved) {
+    return {
+      templateTypeCode: typeCode,
+      templateType: "unknown",
+      supported: true,
+    };
+  }
+
+  return {
+    templateTypeCode: typeCode,
+    templateType: resolved.type,
+    supported: resolved.supported,
+  };
+}
+
 function dimsFromMarker(marker: Buffer) {
-  // marker = [0x32, X, Y]  → cols = X-0x30, rows = Y-0x30
+  if (marker.length < 3) {
+    throw new Error(`truncated marker: expected 3 bytes, got ${marker.length}`);
+  }
+
+  // marker = [Type, X, Y]  → cols = X-0x30, rows = Y-0x30
+  const templateTypeCode = String.fromCharCode(marker[0]);
+  const { templateType, supported } = resolveTemplateType(templateTypeCode);
   const cols = marker[1] - 0x30;
   const rows = marker[2] - 0x30;
+
   if (cols <= 0 || rows <= 0) {
     throw new Error(
       `bad dimensions from marker ${marker.toString("hex")}: ${cols}×${rows}`
     );
   }
-  return { cols, rows, marker: marker.toString("ascii") };
+
+  return {
+    cols,
+    rows,
+    marker: marker.toString("ascii"),
+    templateTypeCode,
+    templateType,
+    supported,
+  };
 }
 
 // ── main ───────────────────────────────────────────────────
@@ -66,7 +111,18 @@ export function parseFsh(path: string): Grid {
 
   // 2. размеры из 3-байтного маркера
   const markerBuf = buf.subarray(HEADER.length, HEADER.length + 3);
-  const { cols: COLS, rows: ROWS, marker } = dimsFromMarker(markerBuf);
+  const {
+    cols: COLS,
+    rows: ROWS,
+    marker,
+    templateTypeCode,
+    templateType,
+    supported,
+  } = dimsFromMarker(markerBuf);
+
+  if (!supported) {
+    throw new Error(`unsupported template type '${templateTypeCode}' in marker '${marker}'`);
+  }
 
   // 3. читаем клетки по столбцам
   let idx = HEADER.length + 3;
@@ -86,6 +142,8 @@ export function parseFsh(path: string): Grid {
     rows: ROWS,
     cols: COLS,
     marker,
+    templateTypeCode,
+    templateType,
     data: grid.map(r => r.join("")),
     codes,
   };

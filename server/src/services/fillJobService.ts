@@ -113,13 +113,13 @@ import { buildClueTextMap, renderClueText, resolveMinClueFontSize } from "../../
 import { resolveCenteredTextStartX } from "../../scripts/text-position";
 import {
   BLOCK_CELL_FILL,
-  CELL_STROKE_COLOR,
   CELL_STROKE_WIDTH,
   CLUE_TEXT_FILL,
   COREL_CELL_SIZE_UNITS,
   COREL_MIN_SVG_HEIGHT_UNITS,
   COREL_MIN_SVG_WIDTH_UNITS,
   COREL_STROKE_WIDTH_UNITS,
+  COREL_UNITS_PER_MM,
   formatCorelSizeMm,
   WORD_TEXT_FILL,
 } from "../../scripts/svg-theme";
@@ -825,6 +825,16 @@ function mapJobRow(row: FillJobRow): FillJobUpdate {
 function resumeActiveJobIfNeeded(row: FillJobRow): void {
   const status = String(row.status ?? "");
   if (status !== "queued" && status !== "running") return;
+  if (status === "running") {
+    const hasReviewData =
+      row.reviewData !== null &&
+      row.reviewData !== undefined &&
+      (!(typeof row.reviewData === "string") || row.reviewData.trim().length > 0);
+    const hasArchive = typeof row.outputPath === "string" && row.outputPath.trim().length > 0;
+    // During review finalization we temporarily use "running", but that must never
+    // restart the full fill pipeline via lazy "resume" calls.
+    if (hasReviewData || hasArchive) return;
+  }
   ensureRuntime(String(row.id));
   const options = parseFillJobOptions(row.options);
   void runFillJob(row.id, row.issueId, options);
@@ -918,11 +928,50 @@ function buildSvg(
   definitions: Map<string, string>,
   options: { style: "default" | "corel" }
 ): { svg: string; svgRaw: string; usedWords: string } {
+  const buildStartNumberByCell = (sourceSlots: Slot[]): Map<string, number> => {
+    const uniqueStarts = new Map<string, { r: number; c: number }>();
+    for (const slot of sourceSlots) {
+      const key = `${slot.r},${slot.c}`;
+      if (!uniqueStarts.has(key)) {
+        uniqueStarts.set(key, { r: slot.r, c: slot.c });
+      }
+    }
+
+    const ordered = [...uniqueStarts.values()].sort((a, b) => a.r - b.r || a.c - b.c);
+    const numbered = new Map<string, number>();
+    ordered.forEach((item, idx) => {
+      numbered.set(`${item.r},${item.c}`, idx + 1);
+    });
+    return numbered;
+  };
+
+  const isTruthyEnv = (value: string | undefined): boolean => {
+    if (value === undefined) return false;
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return false;
+    return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
+  };
   const useCorelStyle = options.style === "corel";
+  const MM_PER_PT = 25.4 / 72;
+  const TYPE0_CELL_MM = 8.5;
+  const TYPE0_NUMBER_FONT_PT = 10;
+  const TYPE0_OUTER_STROKE_MM = 2;
+  const TYPE0_OUTER_STROKE_COLOR = "#B2B3B3";
+  const TYPE0_BLOCK_FILL = "#B2B3B3";
+  const TYPE0_NUMBER_TEXT_FILL = "#2B2A29";
+  const CELL_BORDER_COLOR = "#2B2A29";
+  const isType0Template = grid.templateTypeCode === "0";
   const DEFAULT_CELL = 30;
-  const CELL = useCorelStyle ? COREL_CELL_SIZE_UNITS : DEFAULT_CELL;
+  const BASE_CELL = useCorelStyle ? COREL_CELL_SIZE_UNITS : DEFAULT_CELL;
+  const TYPE0_CELL = useCorelStyle
+    ? Math.round(TYPE0_CELL_MM * COREL_UNITS_PER_MM * 1000) / 1000
+    : BASE_CELL;
+  const CELL = isType0Template ? TYPE0_CELL : BASE_CELL;
   const EMPTY_CELL_FILL = useCorelStyle ? "#FEFEFE" : "#fff";
   const STROKE_WIDTH = useCorelStyle ? COREL_STROKE_WIDTH_UNITS : CELL_STROKE_WIDTH;
+  const OUTER_STROKE_WIDTH = isType0Template && useCorelStyle
+    ? Math.round(TYPE0_OUTER_STROKE_MM * COREL_UNITS_PER_MM * 1000) / 1000
+    : 0;
   const SVG_PAD = STROKE_WIDTH / 2;
   const GRID_PAD = useCorelStyle ? 0 : SVG_PAD;
   const GRID_OFFSET_X = (useCorelStyle ? -CELL / 2 : 0) + GRID_PAD;
@@ -934,6 +983,17 @@ function buildSvg(
   const WORD_BASELINE_ATTR = useCorelStyle ? ' dominant-baseline="alphabetic"' : "";
   const WORD_TEXT_ANCHOR_ATTR = useCorelStyle ? ' text-anchor="start"' : "";
   const WORD_TEXT_Y = useCorelStyle ? CELL * 0.7 : CELL / 2;
+  const SHOW_START_NUMBERS = isType0Template;
+  const START_NUMBER_FONT_SIZE = SHOW_START_NUMBERS && useCorelStyle
+    ? Math.round(TYPE0_NUMBER_FONT_PT * MM_PER_PT * COREL_UNITS_PER_MM * 1000) / 1000
+    : useCorelStyle
+      ? Math.round(CELL * 0.2 * 1000) / 1000
+    : Math.max(8, Math.floor(CELL * 0.2));
+  const START_NUMBER_OFFSET_X = useCorelStyle ? CELL * 0.11 : CELL * 0.1;
+  const START_NUMBER_OFFSET_Y = useCorelStyle ? CELL * 0.1 : CELL * 0.08;
+  const START_NUMBER_ASCENT_RATIO = 0.8;
+  const START_NUMBER_BASELINE_ATTR = ' dominant-baseline="alphabetic"';
+  const startNumberByCell = SHOW_START_NUMBERS ? buildStartNumberByCell(slots) : new Map<string, number>();
   const SVG_WIDTH = useCorelStyle ? COREL_MIN_SVG_WIDTH_UNITS : 0;
   const SVG_HEIGHT = useCorelStyle ? COREL_MIN_SVG_HEIGHT_UNITS : 0;
   const SVG_XML_SPACE = useCorelStyle ? ' xml:space="preserve"' : "";
@@ -944,7 +1004,7 @@ function buildSvg(
     ? '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
     : "";
   const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
-  const DEBUG_CLUSTER_FILL = true;
+  const DEBUG_CLUSTER_FILL = isTruthyEnv(process.env.CROSS_ENABLE_02_AREA_EXPANSION);
   const DEBUG_CLUSTER_COLOR = "#FFB3B3";
 
   const usedWordsList = slots.map((s) => s.cells.map(([r, c]) => solved[r][c]).join(""));
@@ -963,6 +1023,41 @@ function buildSvg(
   }
 
   const { rows: ROWS, cols: COLS } = grid;
+  const outer02Mask: boolean[][] = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+  if (isType0Template) {
+    const is02Cell = (row: number, col: number): boolean => (grid.codes[row]?.[col] ?? 0) === 0x02;
+    const queue: Array<[number, number]> = [];
+    const enqueue = (row: number, col: number) => {
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return;
+      if (outer02Mask[row][col]) return;
+      if (!is02Cell(row, col)) return;
+      outer02Mask[row][col] = true;
+      queue.push([row, col]);
+    };
+
+    for (let col = 0; col < COLS; col += 1) {
+      enqueue(0, col);
+      enqueue(ROWS - 1, col);
+    }
+    for (let row = 0; row < ROWS; row += 1) {
+      enqueue(row, 0);
+      enqueue(row, COLS - 1);
+    }
+
+    for (let head = 0; head < queue.length; head += 1) {
+      const [row, col] = queue[head];
+      enqueue(row - 1, col);
+      enqueue(row + 1, col);
+      enqueue(row, col - 1);
+      enqueue(row, col + 1);
+    }
+  }
+
+  const renderCellMask: boolean[][] = Array.from({ length: ROWS }, (_, row) =>
+    Array.from({ length: COLS }, (_, col) => !outer02Mask[row][col])
+  );
+  const isRenderedCell = (row: number, col: number): boolean =>
+    row >= 0 && row < ROWS && col >= 0 && col < COLS && renderCellMask[row][col];
   const gridWidth = COLS * CELL;
   const gridHeight = ROWS * CELL;
   const contentWidth = gridWidth + SVG_PAD * 2;
@@ -987,11 +1082,13 @@ function buildSvg(
   const clueRawLayer: string[] = [];
   const borderLayer: string[] = [];
   const borderRawLayer: string[] = [];
+  const outerContourLayer: string[] = [];
   const clueMode = useCorelStyle ? "corel" : "default";
   const clueFont = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
+      if (!renderCellMask[r][c]) continue;
       const x = GRID_OFFSET_X + c * CELL;
       const y = GRID_OFFSET_Y + r * CELL;
       const ch = solved[r][c] as Cell;
@@ -1001,7 +1098,11 @@ function buildSvg(
       const clueLayout = clueTextMap.get(clueKey);
 
       if (ch === "#") {
-        const blockFill = debugClusterCells.has(clueKey) ? DEBUG_CLUSTER_COLOR : BLOCK_CELL_FILL;
+        const blockFill = debugClusterCells.has(clueKey)
+          ? DEBUG_CLUSTER_COLOR
+          : isType0Template && code === 0x02
+            ? TYPE0_BLOCK_FILL
+            : BLOCK_CELL_FILL;
         const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${blockFill}"/>`;
         svgParts.push(rect);
         svgRawParts.push(rect);
@@ -1019,7 +1120,7 @@ function buildSvg(
           clueLayer.push(clueSvg.text);
           clueRawLayer.push(clueSvg.text);
         }
-        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_STROKE_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
+        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_BORDER_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
         borderLayer.push(border);
         borderRawLayer.push(border);
       } else {
@@ -1031,21 +1132,62 @@ function buildSvg(
           svgParts.push(arrow);
           svgRawParts.push(arrow);
         }
+        const startNumber = startNumberByCell.get(clueKey);
+        if (startNumber !== undefined) {
+          const startNumberBaselineY = y + START_NUMBER_OFFSET_Y + START_NUMBER_FONT_SIZE * START_NUMBER_ASCENT_RATIO;
+          const numberText = `<text x="${x + START_NUMBER_OFFSET_X}" y="${startNumberBaselineY}" font-size="${START_NUMBER_FONT_SIZE}" fill="${TYPE0_NUMBER_TEXT_FILL}" text-anchor="start"${START_NUMBER_BASELINE_ATTR}>${startNumber}</text>`;
+          svgParts.push(numberText);
+          svgRawParts.push(numberText);
+        }
         const wordTextX = useCorelStyle
           ? resolveCenteredTextStartX(x, CELL, ch, WORD_FONT_SIZE)
           : x + CELL / 2;
         svgParts.push(
           `<text x="${wordTextX}" y="${y + WORD_TEXT_Y}" font-size="${WORD_FONT_SIZE}" fill="${WORD_TEXT_FILL}"${WORD_TEXT_ANCHOR_ATTR}${WORD_FONT_WEIGHT_ATTR}${WORD_BASELINE_ATTR}>${ch}</text>`
         );
-        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_STROKE_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
+        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_BORDER_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
         borderLayer.push(border);
         borderRawLayer.push(border);
       }
     }
   }
 
+  if (isType0Template && OUTER_STROKE_WIDTH > 0) {
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        if (!isRenderedCell(row, col)) continue;
+        const x = GRID_OFFSET_X + col * CELL;
+        const y = GRID_OFFSET_Y + row * CELL;
+        if (!isRenderedCell(row - 1, col)) {
+          outerContourLayer.push(
+            `<line x1="${x}" y1="${y}" x2="${x + CELL}" y2="${y}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
+          );
+        }
+        if (!isRenderedCell(row + 1, col)) {
+          outerContourLayer.push(
+            `<line x1="${x}" y1="${y + CELL}" x2="${x + CELL}" y2="${y + CELL}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
+          );
+        }
+        if (!isRenderedCell(row, col - 1)) {
+          outerContourLayer.push(
+            `<line x1="${x}" y1="${y}" x2="${x}" y2="${y + CELL}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
+          );
+        }
+        if (!isRenderedCell(row, col + 1)) {
+          outerContourLayer.push(
+            `<line x1="${x + CELL}" y1="${y}" x2="${x + CELL}" y2="${y + CELL}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
+          );
+        }
+      }
+    }
+  }
+
   svgParts.push(...borderLayer, ...clueLayer);
   svgRawParts.push(...borderRawLayer, ...clueRawLayer);
+  if (outerContourLayer.length) {
+    svgParts.splice(1, 0, ...outerContourLayer);
+    svgRawParts.splice(1, 0, ...outerContourLayer);
+  }
   if (clueDefs.length) {
     svgParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
     svgRawParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
@@ -1117,6 +1259,10 @@ function extractFailedSlotLength(info: SolveFailInfo | null): number | null {
 
 function normalizeMask(input: string): string {
   return input.trim().toUpperCase();
+}
+
+function buildArchiveFileName(jobId: bigint): string {
+  return `scanwords_${jobId.toString()}__${Date.now()}.zip`;
 }
 
 function escapeLikeChar(value: string): string {
@@ -2207,9 +2353,18 @@ export async function getLatestFillJob(issueId: bigint): Promise<FillJobUpdate |
   return mapJobRow(row);
 }
 
-export async function getJobArchivePath(jobId: bigint): Promise<string | null> {
+export async function getJobArchivePath(jobId: bigint, fileName?: string | null): Promise<string | null> {
   await cleanupOldFillJobArchives(prisma, ARCHIVE_TTL_MS);
-  return loadFillJobArchivePath(prisma, jobId);
+  const outputPath = await loadFillJobArchivePath(prisma, jobId);
+  if (!outputPath) return null;
+  const requested = typeof fileName === "string" ? fileName.trim() : "";
+  if (!requested) return outputPath;
+
+  const safeName = path.basename(requested);
+  if (safeName !== requested) return null;
+  const archiveNamePattern = new RegExp(`^scanwords_${jobId.toString()}(?:__\\d{10,})?\\.zip$`);
+  if (!archiveNamePattern.test(safeName)) return null;
+  return path.join(path.dirname(outputPath), safeName);
 }
 
 export async function getFillJobReview(jobId: bigint): Promise<FillReviewPayload | null> {
@@ -2444,7 +2599,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     }
   }
 
-  const archivePath = path.join(issueRoot, `scanwords_${jobId.toString()}.zip`);
+  const archivePath = path.join(issueRoot, buildArchiveFileName(jobId));
   const archiveSize = await zipDirectory(issueDir, archivePath);
   const finalStatus: FillJobStatus = completedTemplates > 0 ? "done" : "error";
   const finalError =

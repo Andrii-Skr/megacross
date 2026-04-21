@@ -30,6 +30,7 @@ export type ReviewSlot = {
   opredId: string | null;
   definition: string;
   definitionOptions: ReviewDefinitionOption[];
+  isPhotoDefinition: boolean;
   intersections: ReviewSlotIntersection[];
   clueCell: { key: string; row: number; col: number } | null;
   startNumber: number | null;
@@ -222,12 +223,29 @@ function buildClueMaps(
   definitionsByWord: Map<string, string>
 ) {
   const clues = buildClueLayouts(grid, slots, solved, definitionsByWord);
+  const photoClues = buildClueLayouts(grid, slots, solved, definitionsByWord, {
+    expand02Area: true,
+  });
   const bySlot = new Map<number, { key: string; row: number; col: number }>();
   const groupByKey = new Map<string, ReviewClueGroup>();
+  const photoCellKeys = new Set<string>();
+  const photoBySlot = new Map<number, boolean>();
+
+  for (const clue of photoClues) {
+    const debugAreaCells = clue.clusterCells?.length ? clue.clusterCells : clue.areaCells;
+    if (debugAreaCells.length <= 1) continue;
+    for (const [row, col] of debugAreaCells) {
+      photoCellKeys.add(`${row},${col}`);
+    }
+  }
 
   for (const clue of clues) {
+    const isPhotoDefinition = photoCellKeys.has(clue.key);
     for (const slotId of clue.slotIds) {
       bySlot.set(slotId, { key: clue.key, row: clue.row, col: clue.col });
+      if (isPhotoDefinition) {
+        photoBySlot.set(slotId, true);
+      }
     }
 
     const group = groupByKey.get(clue.key) ?? {
@@ -253,7 +271,7 @@ function buildClueMaps(
     return a.col - b.col;
   });
 
-  return { clueBySlot: bySlot, clueGroups };
+  return { clueBySlot: bySlot, clueGroups, photoBySlot };
 }
 
 function pickPreferredDefinitionOption(
@@ -322,7 +340,7 @@ export function buildReviewTemplate(
 
   const intersectionsBySlot = buildSlotIntersections(entry.slots, wordsBySlot);
   const clueLayoutDefinitions = buildClueLayoutDefinitions(wordsBySlot, selections, fallbackDefinitions);
-  const { clueBySlot, clueGroups } = buildClueMaps(
+  const { clueBySlot, clueGroups, photoBySlot } = buildClueMaps(
     entry.grid,
     entry.slots,
     solved,
@@ -385,6 +403,7 @@ export function buildReviewTemplate(
       opredId: selectedOpredId,
       definition,
       definitionOptions: options,
+      isPhotoDefinition: photoBySlot.get(slot.id) === true,
       intersections: intersectionsBySlot.get(slot.id) ?? [],
       clueCell: clueBySlot.get(slot.id) ?? null,
       startNumber: entry.startNumberBySlotId.get(slot.id) ?? null,

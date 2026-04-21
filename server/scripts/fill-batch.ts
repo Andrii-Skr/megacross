@@ -1343,7 +1343,13 @@ const SVG_PREAMBLE = useCorelStyle
   ? '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
   : "";
 const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
-const DEBUG_CLUSTER_FILL = true;
+const DEBUG_CLUSTER_FILL = (() => {
+  const raw = process.env.CROSS_ENABLE_02_AREA_EXPANSION;
+  if (raw === undefined) return false;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
+})();
 const DEBUG_CLUSTER_COLOR = "#FFB3B3";
 
 if (!sampleSubdir) {

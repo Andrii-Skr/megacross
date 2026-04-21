@@ -4,11 +4,24 @@
 export type Cell = "*" | "#" | "↓" | "→" | "↘";
 export type GridCell = Cell | ".";
 
+export type KnownTemplateTypeCode = "2" | "0" | "<" | "3" | "9" | "F";
+export type TemplateTypeCode = KnownTemplateTypeCode | (string & {});
+export type TemplateType =
+  | "scanword"
+  | "crossword"
+  | "crossword_variant"
+  | "chainword"
+  | "honeycomb"
+  | "circular"
+  | "unknown";
+
 export interface Grid {
   rows: number;
   cols: number;
   data: string[];
   marker: string;
+  templateTypeCode?: TemplateTypeCode;
+  templateType?: TemplateType;
   codes: number[][];
 }
 

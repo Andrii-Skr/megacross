@@ -68,6 +68,20 @@ const POS_OFFSETS: Record<number, [number, number]> = {
   9: [1, 1],
 };
 
+function isTruthyEnv(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return true;
+}
+
+function is02AreaExpansionEnabled(): boolean {
+  return isTruthyEnv(process.env.CROSS_ENABLE_02_AREA_EXPANSION);
+}
+
 function dirKeyFromSlot(slot: Slot): number {
   return slot.dir === DIRS.right ? 6 : 8;
 }
@@ -386,6 +400,28 @@ function resolveExpanded02RectangleForClue(
   return areaCells;
 }
 
+function collectDefinitionSlotIdsInCellSet(
+  cellSet: Set<string>,
+  clueCells: Array<{ row: number; col: number; definitionSlotIds: Set<number> }>
+): Set<number> {
+  const definitionSlotIds = new Set<number>();
+  for (const clueCell of clueCells) {
+    if (!cellSet.has(`${clueCell.row},${clueCell.col}`)) continue;
+    for (const slotId of clueCell.definitionSlotIds) {
+      definitionSlotIds.add(slotId);
+    }
+  }
+  return definitionSlotIds;
+}
+
+function setsIntersect(left: Set<string>, right: Set<string>): boolean {
+  const [small, big] = left.size <= right.size ? [left, right] : [right, left];
+  for (const value of small) {
+    if (big.has(value)) return true;
+  }
+  return false;
+}
+
 export function buildClueEntries(
   grid: Grid,
   slots: Slot[],
@@ -429,9 +465,14 @@ export function buildClueLayouts(
   grid: Grid,
   slots: Slot[],
   solved: string[],
-  definitions: Map<string, string>
+  definitions: Map<string, string>,
+  options: { expand02Area?: boolean } = {}
 ): ClueLayout[] {
   if (!hasArrowCells(grid)) return [];
+  const expand02Area =
+    typeof options.expand02Area === "boolean"
+      ? options.expand02Area
+      : is02AreaExpansionEnabled();
 
   const slotIdByArrow = new Map<string, number>();
   const slotById = new Map<number, { r: number; c: number }>();
@@ -472,7 +513,9 @@ export function buildClueLayouts(
     groupByKey.set(key, group);
   }
 
-  const { cellsByComponent, componentByCellKey } = build02HashComponents(grid);
+  const { cellsByComponent, componentByCellKey } = expand02Area
+    ? build02HashComponents(grid)
+    : { cellsByComponent: [], componentByCellKey: new Map<string, number>() };
   const clueCellsByComponent = new Map<
     number,
     Array<{ row: number; col: number; definitionSlotIds: Set<number> }>
@@ -480,7 +523,12 @@ export function buildClueLayouts(
   const componentContextById = new Map<number, ComponentRectContext>();
   const componentClusterCellsById = new Map<number, Array<[number, number]> | null>();
   const componentClusterCellSetById = new Map<number, Set<string>>();
-  const componentClusterAnchorCountById = new Map<number, number>();
+  const componentClusterDefinitionSlotIdsById = new Map<number, Set<number>>();
+  const componentExpandedCandidatesById = new Map<
+    number,
+    Map<string, { slotId: number; cellSet: Set<string> }>
+  >();
+  const componentExpandedOverlapConflictById = new Map<number, boolean>();
   for (const [key, group] of groupByKey) {
     const componentId = componentByCellKey.get(key);
     if (componentId === undefined) continue;
@@ -507,7 +555,7 @@ export function buildClueLayouts(
     let areaCells: Array<[number, number]> = [[group.row, group.col]];
     let clusterCells: Array<[number, number]> | undefined;
     const componentId = componentByCellKey.get(key);
-    if (componentId !== undefined) {
+    if (expand02Area && componentId !== undefined) {
       let componentContext = componentContextById.get(componentId);
       if (!componentContext) {
         const built = buildComponentRectContext(cellsByComponent[componentId] ?? []);
@@ -518,11 +566,15 @@ export function buildClueLayouts(
       }
       if (componentContext) {
         const clueCells = clueCellsByComponent.get(componentId) ?? [];
-        let clusterArea = componentClusterCellsById.get(componentId);
-        let clusterCellSet = componentClusterCellSetById.get(componentId);
-        let anchorsInsideCluster = componentClusterAnchorCountById.get(componentId);
+        const anchorDefinitionSlotId = group.definitionSlotIds.size === 1 ? [...group.definitionSlotIds][0] : null;
+        let clusterArea: Array<[number, number]> | null = null;
+        let clusterCellSet: Set<string> | null = null;
+        let clusterDefinitionSlotIds: Set<number> = new Set<number>();
 
-        if (clusterArea === undefined || !clusterCellSet || anchorsInsideCluster === undefined) {
+        let cachedClusterArea = componentClusterCellsById.get(componentId);
+        let cachedClusterCellSet = componentClusterCellSetById.get(componentId);
+        let cachedClusterDefinitionSlotIds = componentClusterDefinitionSlotIdsById.get(componentId);
+        if (cachedClusterArea === undefined || !cachedClusterCellSet || !cachedClusterDefinitionSlotIds) {
           const resolvedCluster = resolveExpanded02RectangleForClue(
             group.row,
             group.col,
@@ -532,55 +584,132 @@ export function buildClueLayouts(
             slotById,
             "cluster"
           );
-          clusterArea = resolvedCluster && resolvedCluster.length >= 4 ? resolvedCluster : null;
-          clusterCellSet = new Set<string>();
-          if (clusterArea) {
-            for (const [row, col] of clusterArea) {
-              clusterCellSet.add(`${row},${col}`);
+          cachedClusterArea = resolvedCluster && resolvedCluster.length >= 4 ? resolvedCluster : null;
+          cachedClusterCellSet = new Set<string>();
+          if (cachedClusterArea) {
+            for (const [row, col] of cachedClusterArea) {
+              cachedClusterCellSet.add(`${row},${col}`);
             }
           }
-          anchorsInsideCluster = 0;
+          cachedClusterDefinitionSlotIds = collectDefinitionSlotIdsInCellSet(cachedClusterCellSet, clueCells);
+          componentClusterCellsById.set(componentId, cachedClusterArea);
+          componentClusterCellSetById.set(componentId, cachedClusterCellSet);
+          componentClusterDefinitionSlotIdsById.set(componentId, cachedClusterDefinitionSlotIds);
+        }
+        clusterArea = cachedClusterArea ?? null;
+        clusterCellSet = cachedClusterCellSet;
+        clusterDefinitionSlotIds = cachedClusterDefinitionSlotIds ?? new Set<number>();
+
+        let expandedCandidatesByAnchor = componentExpandedCandidatesById.get(componentId);
+        if (!expandedCandidatesByAnchor) {
+          expandedCandidatesByAnchor = new Map<string, { slotId: number; cellSet: Set<string> }>();
           for (const clueCell of clueCells) {
-            if (clusterCellSet.has(`${clueCell.row},${clueCell.col}`)) {
-              anchorsInsideCluster += 1;
+            if (clueCell.definitionSlotIds.size !== 1) continue;
+            const slotId = [...clueCell.definitionSlotIds][0] as number;
+            const candidateArea = resolveExpanded02RectangleForClue(
+              clueCell.row,
+              clueCell.col,
+              clueCell.definitionSlotIds,
+              componentContext,
+              clueCells,
+              slotById,
+              "anchor"
+            );
+            if (!candidateArea || candidateArea.length < 4) continue;
+            const candidateCellSet = new Set<string>();
+            for (const [row, col] of candidateArea) {
+              candidateCellSet.add(`${row},${col}`);
+            }
+            const definitionSlotIdsInCandidate = collectDefinitionSlotIdsInCellSet(
+              candidateCellSet,
+              clueCells
+            );
+            if (
+              definitionSlotIdsInCandidate.size === 1 &&
+              definitionSlotIdsInCandidate.has(slotId)
+            ) {
+              expandedCandidatesByAnchor.set(`${clueCell.row},${clueCell.col}`, {
+                slotId,
+                cellSet: candidateCellSet,
+              });
             }
           }
-          componentClusterCellsById.set(componentId, clusterArea);
-          componentClusterCellSetById.set(componentId, clusterCellSet);
-          componentClusterAnchorCountById.set(componentId, anchorsInsideCluster);
+          componentExpandedCandidatesById.set(componentId, expandedCandidatesByAnchor);
+          let hasOverlapConflict = false;
+          const candidates = [...expandedCandidatesByAnchor.values()];
+          for (let index = 0; index < candidates.length; index += 1) {
+            const current = candidates[index];
+            if (!current) continue;
+            for (let nextIndex = index + 1; nextIndex < candidates.length; nextIndex += 1) {
+              const next = candidates[nextIndex];
+              if (!next || current.slotId === next.slotId) continue;
+              if (setsIntersect(current.cellSet, next.cellSet)) {
+                hasOverlapConflict = true;
+                break;
+              }
+            }
+            if (hasOverlapConflict) break;
+          }
+          componentExpandedOverlapConflictById.set(componentId, hasOverlapConflict);
         }
 
-        const expandedArea = resolveExpanded02RectangleForClue(
-          group.row,
-          group.col,
-          group.definitionSlotIds,
-          componentContext,
-          clueCells,
-          slotById,
-          "anchor"
-        );
         let didExpandArea = false;
-        if (expandedArea && expandedArea.length >= 4) {
-          const expandedCellSet = new Set<string>();
-          for (const [row, col] of expandedArea) {
-            expandedCellSet.add(`${row},${col}`);
-          }
-          let anchorsInsideExpandedArea = 0;
-          for (const clueCell of clueCells) {
-            if (expandedCellSet.has(`${clueCell.row},${clueCell.col}`)) {
-              anchorsInsideExpandedArea += 1;
+        if (anchorDefinitionSlotId !== null) {
+          const expandedArea = resolveExpanded02RectangleForClue(
+            group.row,
+            group.col,
+            group.definitionSlotIds,
+            componentContext,
+            clueCells,
+            slotById,
+            "anchor"
+          );
+          if (expandedArea && expandedArea.length >= 4) {
+            const expandedCellSet = new Set<string>();
+            for (const [row, col] of expandedArea) {
+              expandedCellSet.add(`${row},${col}`);
+            }
+            const definitionSlotIdsInExpandedArea = collectDefinitionSlotIdsInCellSet(
+              expandedCellSet,
+              clueCells
+            );
+            if (
+              definitionSlotIdsInExpandedArea.size === 1 &&
+              definitionSlotIdsInExpandedArea.has(anchorDefinitionSlotId)
+            ) {
+              const currentKey = `${group.row},${group.col}`;
+              const currentCandidate = expandedCandidatesByAnchor.get(currentKey);
+              let hasOverlapConflict = false;
+              if (currentCandidate) {
+                for (const [candidateKey, candidate] of expandedCandidatesByAnchor) {
+                  if (candidateKey === currentKey) continue;
+                  if (candidate.slotId === currentCandidate.slotId) continue;
+                  if (setsIntersect(currentCandidate.cellSet, candidate.cellSet)) {
+                    hasOverlapConflict = true;
+                    break;
+                  }
+                }
+              }
+              if (!hasOverlapConflict) {
+                didExpandArea = true;
+              }
             }
           }
-          if (anchorsInsideExpandedArea <= 1) {
-            didExpandArea = true;
+          if (didExpandArea && expandedArea) {
+            areaCells = expandedArea;
           }
         }
-        if (didExpandArea && expandedArea) {
-          areaCells = expandedArea;
-        }
 
-        if (clusterArea && clusterArea.length >= 4 && !didExpandArea) {
-          clusterCells = clusterArea;
+        if (clusterArea && clusterArea.length >= 4 && clusterCellSet && !didExpandArea) {
+          const hasOverlapConflict = componentExpandedOverlapConflictById.get(componentId) === true;
+          if (clusterDefinitionSlotIds.size === 0) {
+            clusterCells = clusterArea;
+          } else if (!hasOverlapConflict && clusterDefinitionSlotIds.size === 1) {
+            const [clusterDefinitionSlotId] = [...clusterDefinitionSlotIds];
+            if (group.definitionSlotIds.has(clusterDefinitionSlotId)) {
+              clusterCells = clusterArea;
+            }
+          }
         }
       }
     }
