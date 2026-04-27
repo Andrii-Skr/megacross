@@ -123,6 +123,7 @@ import {
   BLOCK_CELL_FILL,
   CELL_STROKE_WIDTH,
   CLUE_TEXT_FILL,
+  COREL_CELL_SIZE_MM,
   COREL_CELL_SIZE_UNITS,
   COREL_MIN_SVG_HEIGHT_UNITS,
   COREL_MIN_SVG_WIDTH_UNITS,
@@ -1147,6 +1148,9 @@ function buildSvg(
   const clueMode = useCorelStyle ? "corel" : "default";
   const clueFont = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, clueMode);
   const clueMinFontSize = Math.min(convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, clueMode), clueFont);
+  const clusterDefinitionPadding = useCorelStyle
+    ? Math.round(COREL_UNITS_PER_MM * 1000) / 1000
+    : CELL / COREL_CELL_SIZE_MM;
 
   if (typography?.fontFaceCss) {
     svgDefs.push(`<style type="text/css"><![CDATA[${typography.fontFaceCss}]]></style>`);
@@ -1174,13 +1178,20 @@ function buildSvg(
         svgRawParts.push(rect);
         if (clueLayout?.text) {
           const clipId = `clue-${r}-${c}`;
+          const clusterAreaCells = clueLayout.clusterCells?.length ? clueLayout.clusterCells : null;
+          const definitionAreaCells = clusterAreaCells ?? clueLayout.areaCells;
+          const isExpandedDefinition = definitionAreaCells.length > 1;
+          const isClusterDefinition = isExpandedDefinition;
           const clueSvg = renderClueText(x, y, CELL, clueFont, clueLayout.text, clipId, CLUE_TEXT_FILL, {
             mode: clueMode,
-            areaCells: clueLayout.areaCells,
+            areaCells: definitionAreaCells,
             anchorCell: [r, c],
-            textAlign: clueLayout.areaCells.length > 1 ? "bottom-left" : "center",
-            background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
-            backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
+            textAlign: isExpandedDefinition ? "bottom-left" : "center",
+            background: isExpandedDefinition ? "text-block" : "none",
+            backgroundInset: isExpandedDefinition ? STROKE_WIDTH : 0,
+            clusterFrame: isClusterDefinition ? "top-right" : "none",
+            clusterPadding: isClusterDefinition ? clusterDefinitionPadding : 0,
+            clusterBorderWidth: isClusterDefinition ? STROKE_WIDTH : 0,
             minFontSize: clueMinFontSize,
             glyphWidthScale: CLUE_GLYPH_WIDTH_SCALE,
             lineHeightScale: CLUE_LINE_HEIGHT_SCALE,

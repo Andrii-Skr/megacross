@@ -238,10 +238,9 @@ export function renderClueText(
     : null;
   const minFontSize = Math.min(minFontSizeOverride ?? resolveMinClueFontSize(mode), fontSize);
   const innerHeight = layoutHeight - padding * 2;
-  const textInsetLeft = clusterFrame === "top-right" ? clusterPadding : 0;
-  const textInsetBottom = clusterFrame === "top-right" ? clusterPadding : 0;
-  const availableWidth = Math.max(1, layoutWidth - padding * 2 - textInsetLeft);
-  const availableHeight = Math.max(1, innerHeight - textInsetBottom);
+  const clusterInset = clusterFrame === "top-right" ? clusterPadding * 2 : 0;
+  const availableWidth = Math.max(1, layoutWidth - padding * 2 - clusterInset);
+  const availableHeight = Math.max(1, innerHeight - clusterInset);
   let currentSize = Math.max(fontSize, minFontSize);
   let lineHeight = resolveLineHeight(currentSize);
   let maxChars = Math.max(
@@ -308,11 +307,11 @@ export function renderClueText(
 
   const textBlockHeight = lineHeight * Math.max(1, lines.length);
   const offsetY = Math.max(0, (availableHeight - textBlockHeight) / 2);
-  const textX = alignBottomLeft ? minX + padding + 1 + textInsetLeft : minX + layoutWidth / 2;
-  const textY = alignBottomLeft
-    ? Math.max(minY + padding, maxY - padding - textInsetBottom - textBlockHeight)
+  let textX = alignBottomLeft ? minX + padding + 1 : minX + layoutWidth / 2;
+  let textY = alignBottomLeft
+    ? Math.max(minY + padding, maxY - padding - textBlockHeight)
     : minY + padding + offsetY;
-  const textAnchor = alignBottomLeft ? "start" : "middle";
+  let textAnchor: "start" | "middle" = alignBottomLeft ? "start" : "middle";
 
   const lineWidths = lines.map((line) => Math.min(availableWidth, estimateScaledLineWidth(line, currentSize)));
   const textBlockWidth = Math.max(1, ...lineWidths);
@@ -351,13 +350,30 @@ export function renderClueText(
     }
   }
 
+  if (background === "text-block" && clusterFrame === "top-right") {
+    backgroundX = minX;
+    backgroundWidth = Math.min(layoutWidth, textBlockWidth + clusterPadding * 2);
+    backgroundHeight = Math.min(layoutHeight, textBlockHeight + clusterPadding * 2);
+    backgroundY = maxY - backgroundHeight;
+    textX = backgroundX + backgroundWidth / 2;
+    textY = backgroundY + Math.max(0, (backgroundHeight - textBlockHeight) / 2);
+    textAnchor = "middle";
+  }
+
   const backgroundRect =
     background === "text-block"
       ? `<rect x="${backgroundX}" y="${backgroundY}" width="${backgroundWidth}" height="${backgroundHeight}" fill="#fff"/>`
       : "";
+  const frameRight = backgroundX + backgroundWidth;
+  const frameBottom = backgroundY + backgroundHeight;
+  const frameInset = clusterBorderWidth / 2;
+  const frameTopY = backgroundY + frameInset;
+  const frameLeftX = backgroundX + frameInset;
+  const frameRightX = frameRight - frameInset;
+  const frameBottomY = frameBottom - frameInset;
   const clusterFrameSvg =
     clusterFrame === "top-right" && clusterBorderWidth > 0
-      ? `<line x1="${minX}" y1="${minY}" x2="${maxX}" y2="${minY}" stroke="${fill}" stroke-width="${clusterBorderWidth}" stroke-linecap="square"/><line x1="${maxX}" y1="${minY}" x2="${maxX}" y2="${maxY}" stroke="${fill}" stroke-width="${clusterBorderWidth}" stroke-linecap="square"/>`
+      ? `<line x1="${frameLeftX}" y1="${frameTopY}" x2="${frameRightX}" y2="${frameTopY}" stroke="${fill}" stroke-width="${clusterBorderWidth}" stroke-linecap="square"/><line x1="${frameRightX}" y1="${frameTopY}" x2="${frameRightX}" y2="${frameBottomY}" stroke="${fill}" stroke-width="${clusterBorderWidth}" stroke-linecap="square"/><line x1="${frameLeftX}" y1="${frameBottomY}" x2="${frameRightX}" y2="${frameBottomY}" stroke="${fill}" stroke-width="${clusterBorderWidth}" stroke-linecap="square"/><line x1="${frameLeftX}" y1="${frameTopY}" x2="${frameLeftX}" y2="${frameBottomY}" stroke="${fill}" stroke-width="${clusterBorderWidth}" stroke-linecap="square"/>`
       : "";
 
   const useClip = mode !== "corel";
@@ -378,8 +394,8 @@ export function renderClueText(
       })
       .join("");
     const textSvg = useClip
-      ? `<g clip-path="url(#${clipId})">${clusterFrameSvg}${backgroundRect}<g${scaleTransform}>${textLines}</g></g>`
-      : `<g>${clusterFrameSvg}${backgroundRect}<g${scaleTransform}>${textLines}</g></g>`;
+      ? `<g clip-path="url(#${clipId})">${backgroundRect}${clusterFrameSvg}<g${scaleTransform}>${textLines}</g></g>`
+      : `<g>${backgroundRect}${clusterFrameSvg}<g${scaleTransform}>${textLines}</g></g>`;
     return { defs, text: textSvg };
   }
 
@@ -391,8 +407,8 @@ export function renderClueText(
     .join("");
   const textNode = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="hanging" fill="${fill}"${buildUniformScaleTransform(textX)}>${tspan}</text>`;
   const textSvg = useClip
-    ? `<g clip-path="url(#${clipId})">${clusterFrameSvg}${backgroundRect}${textNode}</g>`
-    : `<g>${clusterFrameSvg}${backgroundRect}${textNode}</g>`;
+    ? `<g clip-path="url(#${clipId})">${backgroundRect}${clusterFrameSvg}${textNode}</g>`
+    : `<g>${backgroundRect}${clusterFrameSvg}${textNode}</g>`;
 
   return { defs, text: textSvg };
 }

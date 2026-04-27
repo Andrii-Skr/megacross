@@ -796,6 +796,29 @@ function testRenderClueTextInvalidScaleStillUsesFixed80(): void {
   assert.match(renderedInvalid.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
 }
 
+function testRenderClusterDefinitionFrameAndPadding(): void {
+  const rendered = renderClueText(0, 0, 30, 12, "кластерное определение", "clip-cluster-frame", "#000", {
+    mode: "default",
+    areaCells: [
+      [0, 0],
+      [0, 1],
+      [1, 0],
+      [1, 1],
+    ],
+    anchorCell: [0, 0],
+    textAlign: "bottom-left",
+    background: "text-block",
+    clusterFrame: "top-right",
+    clusterPadding: 6,
+    clusterBorderWidth: 2,
+    minFontSize: 10,
+  });
+  assert.match(rendered.text, /<rect x="0" y="[^"]+" width="[^"]+" height="[^"]+" fill="#fff"\/>/);
+  assert.equal((rendered.text.match(/<line /g) ?? []).length, 4);
+  assert.match(rendered.text, /stroke-width="2"/);
+  assert.match(rendered.text, /text-anchor="middle"/);
+}
+
 function testRenderMultiCellAreaCanUseMoreThanFourLines(): void {
   const rendered = renderClueText(
     0,
@@ -1150,6 +1173,7 @@ function main(): void {
     testRenderClueTextUsesSingleFontSizeForCorelLines();
     testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt();
     testRenderClueTextInvalidScaleStillUsesFixed80();
+    testRenderClusterDefinitionFrameAndPadding();
     testRenderMultiCellAreaCanUseMoreThanFourLines();
     testExpandUsesVisibleDefinitionCountNotRawSlotCount();
     testNoExpandForOneByFourStripe();
