@@ -92,6 +92,8 @@ const MAX_WORD_USES = 2;
 const AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK = 24;
 const COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK = 1_000_000;
 const COST_REBALANCE_POLISH_PASSES = 2;
+const SVG_CLUE_PT_MIN = 6;
+const SVG_CLUE_PT_MAX = 72;
 function parseUsageRebalanceMode(
   value: string | undefined,
   usageRebalanceEnabled: boolean
@@ -153,6 +155,17 @@ function resolveParallelRestarts(
       ? Math.floor(configuredRaw)
       : 1;
   return Math.max(1, Math.min(safeRestarts, safeConfigured));
+}
+
+function parseSvgCluePtOption(value: string | undefined, optionName: string): number | null {
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < SVG_CLUE_PT_MIN || parsed > SVG_CLUE_PT_MAX) {
+    throw new Error(
+      `Invalid ${optionName}: "${value}". Expected a number in range ${SVG_CLUE_PT_MIN}-${SVG_CLUE_PT_MAX}.`
+    );
+  }
+  return Math.round(parsed * 1000) / 1000;
 }
 
 type IssueTemplateContext = {
@@ -1199,6 +1212,8 @@ const parsedCli = (() => {
         "template-parallel": { type: "string" },
         sampleSubdir: { type: "string" },
         "sample-subdir": { type: "string" },
+        clueFontMinPt: { type: "string" },
+        "clue-font-min-pt": { type: "string" },
       },
     });
   } catch (error) {
@@ -1256,6 +1271,10 @@ const editionIdRaw = values.editionId ?? values["edition-id"];
 const editionId = parseEditionIdOption(editionIdRaw);
 const sampleSubdirRaw = values.sampleSubdir ?? values["sample-subdir"];
 const sampleSubdir = parseSampleSubdirOption(sampleSubdirRaw);
+const clueFontMinPt = parseSvgCluePtOption(
+  values.clueFontMinPt ?? values["clue-font-min-pt"],
+  "--clue-font-min-pt"
+);
 const filterTemplateIdRaw = values.filterTemplateId ?? values["filter-template-id"];
 const filterTemplateId = parseFilterTemplateIdOption(filterTemplateIdRaw);
 const dictPath  = values.dict ?? "";
@@ -2136,6 +2155,9 @@ if (!files.length) {
         fontFamily: FONT_FAMILY,
         debugClusterFill: DEBUG_CLUSTER_FILL,
         debugClusterColor: DEBUG_CLUSTER_COLOR,
+        svgTypography: {
+          clueFontMinPt,
+        },
         type0Features: false,
         cellStrokeColor: CELL_STROKE_COLOR,
       });

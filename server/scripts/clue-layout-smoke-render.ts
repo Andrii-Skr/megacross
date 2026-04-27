@@ -8,6 +8,7 @@ import {
   renderClueText,
   resolveClueRenderLayout,
 } from "./clue-svg";
+import { COREL_CELL_SIZE_UNITS } from "./svg-theme";
 
 function firstNonZeroDy(text: string): number | null {
   const matches = [...text.matchAll(/<tspan[^>]*dy="([0-9.]+)"/g)];
@@ -233,6 +234,38 @@ function testRenderDetachedClusterDoesNotExpandTailDefinition(): void {
   assert.doesNotMatch(rendered.text, /<line /);
 }
 
+function testRenderClueTextKeepsFullTailWhenLinesOverflow(): void {
+  const rendered = renderClueText(0, 0, 30, 8, "легкая склонность к безделью", "clip-ellipsis", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize: 8,
+  });
+  assert.match(rendered.text, />ность к</);
+  assert.match(rendered.text, /безде-/);
+  assert.match(rendered.text, />лью</);
+}
+
+function testRenderClueTextContinuesLastHyphenatedSegmentInCorel(): void {
+  const rendered = renderClueText(
+    0,
+    0,
+    COREL_CELL_SIZE_UNITS,
+    convertCluePtToSvgUnits(9, "corel"),
+    "легкая склонность к безделью",
+    "clip-corel-hyphen-tail",
+    "#000",
+    {
+      mode: "corel",
+      textAlign: "center",
+      minFontSize: convertCluePtToSvgUnits(7.4, "corel"),
+    }
+  );
+  assert.match(rendered.text, />легкая</);
+  assert.match(rendered.text, />склон-</);
+  assert.match(rendered.text, />ность к</);
+  assert.match(rendered.text, />безделью</);
+}
+
 function testResolveClueRenderLayoutIgnoresDetachedClusterCells(): void {
   const resolved = resolveClueRenderLayout({
     areaCells: [[0, 3]],
@@ -284,6 +317,8 @@ export function runClueRenderSmokeSuite(): void {
   testRenderClusterDefinitionFrameAndPadding();
   testRenderMultiCellAreaCanUseMoreThanFourLines();
   testRenderDetachedClusterDoesNotExpandTailDefinition();
+  testRenderClueTextKeepsFullTailWhenLinesOverflow();
+  testRenderClueTextContinuesLastHyphenatedSegmentInCorel();
   testResolveClueRenderLayoutIgnoresDetachedClusterCells();
   testResolveClueRenderLayoutKeepsExpandedAnchorArea();
 }

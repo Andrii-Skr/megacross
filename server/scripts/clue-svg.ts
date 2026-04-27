@@ -126,10 +126,17 @@ function wrapText(text: string, maxChars: number, breakWords: boolean): string[]
   const lines: string[] = [];
   let line = "";
 
+  const appendSplitWord = (word: string): void => {
+    const splitLines = splitWord(word, maxChars, breakWords);
+    if (!splitLines.length) return;
+    lines.push(...splitLines.slice(0, -1));
+    line = splitLines[splitLines.length - 1] ?? "";
+  };
+
   for (const word of words) {
     if (!line) {
       if (word.length > maxChars) {
-        lines.push(...splitWord(word, maxChars, breakWords));
+        appendSplitWord(word);
         continue;
       }
       line = word;
@@ -143,8 +150,7 @@ function wrapText(text: string, maxChars: number, breakWords: boolean): string[]
 
     lines.push(line);
     if (word.length > maxChars) {
-      lines.push(...splitWord(word, maxChars, breakWords));
-      line = "";
+      appendSplitWord(word);
     } else {
       line = word;
     }
@@ -319,14 +325,6 @@ export function renderClueText(
 
   if (lines.length > maxLines && breakWords) {
     shrinkUntil(minFontSize);
-  }
-
-  if (lines.length > maxLines) {
-    lines = lines.slice(0, maxLines);
-    const last = lines[maxLines - 1];
-    if (last.length > 3 && maxChars > 3) {
-      lines[maxLines - 1] = `${last.slice(0, Math.max(1, maxChars - 3))}...`;
-    }
   }
 
   const textBlockHeight = lineHeight * Math.max(1, lines.length);
