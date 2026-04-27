@@ -4,7 +4,6 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, write
 import os from "node:os";
 import path from "node:path";
 import { Prisma, prisma } from "../db/prisma";
-import { buildClueLayouts } from "../utils/clues";
 import type { SolveFailInfo, SolveProgress } from "../utils/solver";
 import {
   resolveStrictLimitedBudget,
@@ -45,8 +44,14 @@ import {
   solveCspNativeAsync,
   solveDlxNativeAsync,
 } from "../utils/nativeDlx";
+import {
+  collectWordCounts,
+  extractFailedSlotLength,
+  normalizeWordKey,
+  sortDictionaryByUsagePriority,
+} from "../utils/fillShared";
 import { buildCrw } from "../utils/writeCrw";
-import { type Cell, type Grid, type Slot } from "../types";
+import { type Grid, type Slot } from "../types";
 import { loadDefinitions, loadDictionaryByTemplate, type DictionaryFilterTemplate } from "./dictionary";
 import {
   areSetsEqual,
@@ -107,31 +112,8 @@ import {
   type FillJobRow,
   type FillJobPatch,
 } from "./fillJobRepository";
-import { arrowSvg } from "../../scripts/arrow-utils";
 import { buildAnswersOnlySvg } from "../../scripts/answer-only-svg";
-import {
-  CLUE_FONT_BASE_PT,
-  CLUE_FONT_MIN_PT,
-  CLUE_GLYPH_WIDTH_SCALE,
-  CLUE_LINE_HEIGHT_SCALE,
-  buildClueTextMap,
-  convertCluePtToSvgUnits,
-  renderClueText,
-} from "../../scripts/clue-svg";
-import { resolveCenteredTextStartX } from "../../scripts/text-position";
-import {
-  BLOCK_CELL_FILL,
-  CELL_STROKE_WIDTH,
-  CLUE_TEXT_FILL,
-  COREL_CELL_SIZE_MM,
-  COREL_CELL_SIZE_UNITS,
-  COREL_MIN_SVG_HEIGHT_UNITS,
-  COREL_MIN_SVG_WIDTH_UNITS,
-  COREL_STROKE_WIDTH_UNITS,
-  COREL_UNITS_PER_MM,
-  formatCorelSizeMm,
-  WORD_TEXT_FILL,
-} from "../../scripts/svg-theme";
+import { buildCrosswordSvg } from "../../scripts/crossword-svg";
 
 type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
 
@@ -322,10 +304,6 @@ function resolveParallelRestarts(restarts: number, configured: number): number {
   return Math.max(1, Math.min(safeRestarts, safeConfigured));
 }
 
-function normalizeWordKey(word: string): string {
-  return word.trim().toUpperCase();
-}
-
 function toNumber(value: number | bigint | null | undefined): number {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   if (typeof value === "bigint") return Number(value);
@@ -335,21 +313,6 @@ function toNumber(value: number | bigint | null | undefined): number {
 function addCount(target: UsageCountMap, id: bigint, value: number) {
   if (!Number.isFinite(value) || value <= 0) return;
   target.set(id, (target.get(id) ?? 0) + value);
-}
-
-function getWordPriority(priorityByWord: Map<string, number>, word: string): number {
-  return priorityByWord.get(normalizeWordKey(word)) ?? 0;
-}
-
-function sortDictionaryByUsagePriority(dict: Map<number, string[]>, priorityByWord: Map<string, number>) {
-  if (!priorityByWord.size) return;
-  for (const words of dict.values()) {
-    words.sort((a, b) => {
-      const scoreDiff = getWordPriority(priorityByWord, a) - getWordPriority(priorityByWord, b);
-      if (scoreDiff !== 0) return scoreDiff;
-      return a.localeCompare(b, "ru");
-    });
-  }
 }
 
 async function resolveLanguageId(langCode: string): Promise<number | null> {
@@ -986,299 +949,32 @@ function buildSvg(
     svgTypography?: ResolvedFinalizeSvgTypography | null;
   }
 ): { svg: string; svgRaw: string; usedWords: string } {
-  const buildStartNumberByCell = (sourceSlots: Slot[]): Map<string, number> => {
-    const uniqueStarts = new Map<string, { r: number; c: number }>();
-    for (const slot of sourceSlots) {
-      const key = `${slot.r},${slot.c}`;
-      if (!uniqueStarts.has(key)) {
-        uniqueStarts.set(key, { r: slot.r, c: slot.c });
-      }
-    }
-
-    const ordered = [...uniqueStarts.values()].sort((a, b) => a.r - b.r || a.c - b.c);
-    const numbered = new Map<string, number>();
-    ordered.forEach((item, idx) => {
-      numbered.set(`${item.r},${item.c}`, idx + 1);
-    });
-    return numbered;
-  };
-
   const isTruthyEnv = (value: string | undefined): boolean => {
     if (value === undefined) return false;
     const normalized = value.trim().toLowerCase();
     if (!normalized) return false;
     return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
   };
-  const useCorelStyle = options.style === "corel";
-  const MM_PER_PT = 25.4 / 72;
-  const TYPE0_CELL_MM = 8.5;
-  const TYPE0_NUMBER_FONT_PT = 10;
-  const TYPE0_OUTER_STROKE_MM = 2;
-  const TYPE0_OUTER_STROKE_COLOR = "#B2B3B3";
-  const TYPE0_BLOCK_FILL = "#B2B3B3";
-  const TYPE0_NUMBER_TEXT_FILL = "#2B2A29";
-  const CELL_BORDER_COLOR = "#2B2A29";
-  const isType0Template = grid.templateTypeCode === "0";
-  const DEFAULT_CELL = 30;
-  const BASE_CELL = useCorelStyle ? COREL_CELL_SIZE_UNITS : DEFAULT_CELL;
-  const TYPE0_CELL = useCorelStyle
-    ? Math.round(TYPE0_CELL_MM * COREL_UNITS_PER_MM * 1000) / 1000
-    : BASE_CELL;
-  const CELL = isType0Template ? TYPE0_CELL : BASE_CELL;
-  const EMPTY_CELL_FILL = useCorelStyle ? "#FEFEFE" : "#fff";
-  const STROKE_WIDTH = useCorelStyle ? COREL_STROKE_WIDTH_UNITS : CELL_STROKE_WIDTH;
-  const OUTER_STROKE_WIDTH = isType0Template && useCorelStyle
-    ? Math.round(TYPE0_OUTER_STROKE_MM * COREL_UNITS_PER_MM * 1000) / 1000
-    : 0;
-  const SVG_PAD = STROKE_WIDTH / 2;
-  const GRID_PAD = useCorelStyle ? 0 : SVG_PAD;
-  const GRID_OFFSET_X = (useCorelStyle ? -CELL / 2 : 0) + GRID_PAD;
-  const GRID_OFFSET_Y = (useCorelStyle ? -Math.round(CELL * 0.034) : 0) + GRID_PAD;
-  const WORD_FONT_SIZE = useCorelStyle
-    ? Math.round(CELL * 0.565 * 1000) / 1000
-    : CELL * 0.6;
-  const WORD_FONT_WEIGHT_ATTR = useCorelStyle ? ' font-weight="bold"' : "";
-  const WORD_BASELINE_ATTR = useCorelStyle ? ' dominant-baseline="alphabetic"' : "";
-  const WORD_TEXT_ANCHOR_ATTR = useCorelStyle ? ' text-anchor="start"' : "";
-  const WORD_TEXT_Y = useCorelStyle ? CELL * 0.7 : CELL / 2;
-  const SHOW_START_NUMBERS = isType0Template;
-  const START_NUMBER_FONT_SIZE = SHOW_START_NUMBERS && useCorelStyle
-    ? Math.round(TYPE0_NUMBER_FONT_PT * MM_PER_PT * COREL_UNITS_PER_MM * 1000) / 1000
-    : useCorelStyle
-      ? Math.round(CELL * 0.2 * 1000) / 1000
-    : Math.max(8, Math.floor(CELL * 0.2));
-  const START_NUMBER_OFFSET_X = useCorelStyle ? CELL * 0.11 : CELL * 0.1;
-  const START_NUMBER_OFFSET_Y = useCorelStyle ? CELL * 0.1 : CELL * 0.08;
-  const START_NUMBER_ASCENT_RATIO = 0.8;
-  const START_NUMBER_BASELINE_ATTR = ' dominant-baseline="alphabetic"';
-  const startNumberByCell = SHOW_START_NUMBERS ? buildStartNumberByCell(slots) : new Map<string, number>();
-  const SVG_WIDTH = useCorelStyle ? COREL_MIN_SVG_WIDTH_UNITS : 0;
-  const SVG_HEIGHT = useCorelStyle ? COREL_MIN_SVG_HEIGHT_UNITS : 0;
-  const SVG_XML_SPACE = useCorelStyle ? ' xml:space="preserve"' : "";
-  const SVG_STYLE_ATTR = useCorelStyle
-    ? ' style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"'
-    : "";
-  const SVG_PREAMBLE = useCorelStyle
-    ? '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
-    : "";
   const typography = options.svgTypography ?? null;
   const configuredFontFamily = sanitizeSvgFontFamily(typography?.fontFamily);
-  const FONT_FAMILY = configuredFontFamily ?? DEFAULT_SYSTEM_SVG_FONT_FAMILY;
-  const FONT_FAMILY_ATTR = escapeXmlAttr(FONT_FAMILY);
-  const DEBUG_CLUSTER_FILL = isTruthyEnv(process.env.CROSS_ENABLE_02_AREA_EXPANSION);
-  const DEBUG_CLUSTER_COLOR = "#FFB3B3";
+  const fontFamily = configuredFontFamily ?? DEFAULT_SYSTEM_SVG_FONT_FAMILY;
+  const debugClusterFill = isTruthyEnv(process.env.CROSS_ENABLE_02_AREA_EXPANSION);
 
-  const usedWordsList = slots.map((s) => s.cells.map(([r, c]) => solved[r][c]).join(""));
-  const usedWords = usedWordsList.join("\n");
-  const clueLayouts = buildClueLayouts(grid, slots, solved, definitions);
-  const clueTextMap = buildClueTextMap(clueLayouts);
-  const debugClusterCells = new Set<string>();
-  if (DEBUG_CLUSTER_FILL) {
-    for (const layout of clueLayouts) {
-      const cells = layout.clusterCells?.length ? layout.clusterCells : layout.areaCells;
-      if (cells.length <= 1) continue;
-      for (const [row, col] of cells) {
-        debugClusterCells.add(`${row},${col}`);
-      }
-    }
-  }
-
-  const { rows: ROWS, cols: COLS } = grid;
-  const outer02Mask: boolean[][] = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
-  if (isType0Template) {
-    const is02Cell = (row: number, col: number): boolean => (grid.codes[row]?.[col] ?? 0) === 0x02;
-    const queue: Array<[number, number]> = [];
-    const enqueue = (row: number, col: number) => {
-      if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return;
-      if (outer02Mask[row][col]) return;
-      if (!is02Cell(row, col)) return;
-      outer02Mask[row][col] = true;
-      queue.push([row, col]);
-    };
-
-    for (let col = 0; col < COLS; col += 1) {
-      enqueue(0, col);
-      enqueue(ROWS - 1, col);
-    }
-    for (let row = 0; row < ROWS; row += 1) {
-      enqueue(row, 0);
-      enqueue(row, COLS - 1);
-    }
-
-    for (let head = 0; head < queue.length; head += 1) {
-      const [row, col] = queue[head];
-      enqueue(row - 1, col);
-      enqueue(row + 1, col);
-      enqueue(row, col - 1);
-      enqueue(row, col + 1);
-    }
-  }
-
-  const renderCellMask: boolean[][] = Array.from({ length: ROWS }, (_, row) =>
-    Array.from({ length: COLS }, (_, col) => !outer02Mask[row][col])
-  );
-  const isRenderedCell = (row: number, col: number): boolean =>
-    row >= 0 && row < ROWS && col >= 0 && col < COLS && renderCellMask[row][col];
-  const gridWidth = COLS * CELL;
-  const gridHeight = ROWS * CELL;
-  const contentWidth = gridWidth + SVG_PAD * 2;
-  const contentHeight = gridHeight + SVG_PAD * 2;
-  const svgWidth = useCorelStyle ? Math.max(SVG_WIDTH, contentWidth) : contentWidth;
-  const svgHeight = useCorelStyle ? Math.max(SVG_HEIGHT, contentHeight) : contentHeight;
-  const svgWidthAttr = useCorelStyle ? formatCorelSizeMm(svgWidth) : String(svgWidth);
-  const svgHeightAttr = useCorelStyle ? formatCorelSizeMm(svgHeight) : String(svgHeight);
-  const svgViewBox = useCorelStyle
-    ? ` viewBox="${GRID_OFFSET_X - SVG_PAD} ${GRID_OFFSET_Y - SVG_PAD} ${svgWidth} ${svgHeight}"`
-    : "";
-
-  const svgParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY_ATTR}" text-anchor="middle" dominant-baseline="central">`,
-  ];
-  const svgRawParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY_ATTR}" text-anchor="middle" dominant-baseline="central">`,
-  ];
-
-  const svgDefs: string[] = [];
-  const clueDefs: string[] = [];
-  const clueLayer: string[] = [];
-  const clueRawLayer: string[] = [];
-  const borderLayer: string[] = [];
-  const borderRawLayer: string[] = [];
-  const outerContourLayer: string[] = [];
-  const clueMode = useCorelStyle ? "corel" : "default";
-  const clueFont = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, clueMode);
-  const clueMinFontSize = Math.min(convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, clueMode), clueFont);
-  const clueGlyphWidthScale = typography ? typography.clueGlyphWidthPct / 100 : CLUE_GLYPH_WIDTH_SCALE;
-  const clueLineHeightScale = typography ? typography.clueLineHeightPct / 100 : CLUE_LINE_HEIGHT_SCALE;
-  const clusterDefinitionPadding = useCorelStyle
-    ? Math.round(COREL_UNITS_PER_MM * 1000) / 1000
-    : CELL / COREL_CELL_SIZE_MM;
-
-  if (typography?.fontFaceCss) {
-    svgDefs.push(`<style type="text/css"><![CDATA[${typography.fontFaceCss}]]></style>`);
-  }
-
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (!renderCellMask[r][c]) continue;
-      const x = GRID_OFFSET_X + c * CELL;
-      const y = GRID_OFFSET_Y + r * CELL;
-      const ch = solved[r][c] as Cell;
-      const orig = grid.data[r][c] as Cell;
-      const code = grid.codes[r][c];
-      const clueKey = `${r},${c}`;
-      const clueLayout = clueTextMap.get(clueKey);
-
-      if (ch === "#") {
-        const blockFill = debugClusterCells.has(clueKey)
-          ? DEBUG_CLUSTER_COLOR
-          : isType0Template && code === 0x02
-            ? TYPE0_BLOCK_FILL
-            : BLOCK_CELL_FILL;
-        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${blockFill}"/>`;
-        svgParts.push(rect);
-        svgRawParts.push(rect);
-        if (clueLayout?.text) {
-          const clipId = `clue-${r}-${c}`;
-          const clusterAreaCells = clueLayout.clusterCells?.length ? clueLayout.clusterCells : null;
-          const definitionAreaCells = clusterAreaCells ?? clueLayout.areaCells;
-          const isExpandedDefinition = definitionAreaCells.length > 1;
-          const isClusterDefinition = isExpandedDefinition;
-          const clueSvg = renderClueText(x, y, CELL, clueFont, clueLayout.text, clipId, CLUE_TEXT_FILL, {
-            mode: clueMode,
-            areaCells: definitionAreaCells,
-            anchorCell: [r, c],
-            textAlign: isExpandedDefinition ? "bottom-left" : "center",
-            background: isExpandedDefinition ? "text-block" : "none",
-            backgroundInset: isExpandedDefinition ? STROKE_WIDTH : 0,
-            clusterFrame: isClusterDefinition ? "top-right" : "none",
-            clusterPadding: isClusterDefinition ? clusterDefinitionPadding : 0,
-            clusterBorderWidth: isClusterDefinition ? STROKE_WIDTH : 0,
-            minFontSize: clueMinFontSize,
-            glyphWidthScale: clueGlyphWidthScale,
-            lineHeightScale: clueLineHeightScale,
-          });
-          if (clueSvg.defs) clueDefs.push(clueSvg.defs);
-          clueLayer.push(clueSvg.text);
-          clueRawLayer.push(clueSvg.text);
-        }
-        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_BORDER_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
-        borderLayer.push(border);
-        borderRawLayer.push(border);
-      } else {
-        const rect = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="${EMPTY_CELL_FILL}"/>`;
-        svgParts.push(rect);
-        svgRawParts.push(rect);
-        const arrow = arrowSvg("batch", code, orig, x, y, CELL, CELL * 0.6);
-        if (arrow) {
-          svgParts.push(arrow);
-          svgRawParts.push(arrow);
-        }
-        const startNumber = startNumberByCell.get(clueKey);
-        if (startNumber !== undefined) {
-          const startNumberBaselineY = y + START_NUMBER_OFFSET_Y + START_NUMBER_FONT_SIZE * START_NUMBER_ASCENT_RATIO;
-          const numberText = `<text x="${x + START_NUMBER_OFFSET_X}" y="${startNumberBaselineY}" font-size="${START_NUMBER_FONT_SIZE}" fill="${TYPE0_NUMBER_TEXT_FILL}" text-anchor="start"${START_NUMBER_BASELINE_ATTR}>${startNumber}</text>`;
-          svgParts.push(numberText);
-          svgRawParts.push(numberText);
-        }
-        const wordTextX = useCorelStyle
-          ? resolveCenteredTextStartX(x, CELL, ch, WORD_FONT_SIZE)
-          : x + CELL / 2;
-        svgParts.push(
-          `<text x="${wordTextX}" y="${y + WORD_TEXT_Y}" font-size="${WORD_FONT_SIZE}" fill="${WORD_TEXT_FILL}"${WORD_TEXT_ANCHOR_ATTR}${WORD_FONT_WEIGHT_ATTR}${WORD_BASELINE_ATTR}>${ch}</text>`
-        );
-        const border = `<rect x="${x}" y="${y}" width="${CELL}" height="${CELL}" fill="none" stroke="${CELL_BORDER_COLOR}" stroke-width="${STROKE_WIDTH}"/>`;
-        borderLayer.push(border);
-        borderRawLayer.push(border);
-      }
-    }
-  }
-
-  if (isType0Template && OUTER_STROKE_WIDTH > 0) {
-    for (let row = 0; row < ROWS; row++) {
-      for (let col = 0; col < COLS; col++) {
-        if (!isRenderedCell(row, col)) continue;
-        const x = GRID_OFFSET_X + col * CELL;
-        const y = GRID_OFFSET_Y + row * CELL;
-        if (!isRenderedCell(row - 1, col)) {
-          outerContourLayer.push(
-            `<line x1="${x}" y1="${y}" x2="${x + CELL}" y2="${y}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
-          );
-        }
-        if (!isRenderedCell(row + 1, col)) {
-          outerContourLayer.push(
-            `<line x1="${x}" y1="${y + CELL}" x2="${x + CELL}" y2="${y + CELL}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
-          );
-        }
-        if (!isRenderedCell(row, col - 1)) {
-          outerContourLayer.push(
-            `<line x1="${x}" y1="${y}" x2="${x}" y2="${y + CELL}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
-          );
-        }
-        if (!isRenderedCell(row, col + 1)) {
-          outerContourLayer.push(
-            `<line x1="${x + CELL}" y1="${y}" x2="${x + CELL}" y2="${y + CELL}" stroke="${TYPE0_OUTER_STROKE_COLOR}" stroke-width="${OUTER_STROKE_WIDTH}" stroke-linecap="square"/>`
-          );
-        }
-      }
-    }
-  }
-
-  svgParts.push(...borderLayer, ...clueLayer);
-  svgRawParts.push(...borderRawLayer, ...clueRawLayer);
-  if (outerContourLayer.length) {
-    svgParts.splice(1, 0, ...outerContourLayer);
-    svgRawParts.splice(1, 0, ...outerContourLayer);
-  }
-  const defsContent = [...svgDefs, ...clueDefs];
-  if (defsContent.length) {
-    svgParts.splice(1, 0, `<defs>${defsContent.join("")}</defs>`);
-    svgRawParts.splice(1, 0, `<defs>${defsContent.join("")}</defs>`);
-  }
-  svgParts.push("</svg>");
-  svgRawParts.push("</svg>");
-
-  return { svg: svgParts.join(""), svgRaw: svgRawParts.join(""), usedWords };
+  return buildCrosswordSvg(grid, slots, solved, definitions, {
+    style: options.style,
+    arrowMode: "batch",
+    arrowScale: 0.6,
+    fontFamily,
+    debugClusterFill,
+    svgTypography: {
+      clueFontBasePt: typography?.clueFontBasePt ?? null,
+      clueFontMinPt: typography?.clueFontMinPt ?? null,
+      clueGlyphWidthScale: typography ? typography.clueGlyphWidthPct / 100 : undefined,
+      clueLineHeightScale: typography ? typography.clueLineHeightPct / 100 : undefined,
+      fontFaceCss: typography?.fontFaceCss ?? null,
+    },
+    type0Features: true,
+  });
 }
 
 async function zipDirectory(srcDir: string, outPath: string): Promise<number> {
@@ -1334,11 +1030,6 @@ function formatFail(info: SolveFailInfo): string {
   return "no-solution";
 }
 
-function extractFailedSlotLength(info: SolveFailInfo | null): number | null {
-  const len = info?.detail?.slot?.len;
-  if (typeof len !== "number" || !Number.isFinite(len) || len <= 0) return null;
-  return Math.trunc(len);
-}
 
 function normalizeMask(input: string): string {
   return input.trim().toUpperCase();
@@ -1414,15 +1105,6 @@ async function findWordsByMask(
     .filter((row) => row.word.length > 0);
 }
 
-function collectWordCounts(words: string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const word of words) {
-    const key = normalizeWordKey(word);
-    if (!key) continue;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return counts;
-}
 
 function buildDuplicateReport(
   templateWordCounts: Map<string, Map<string, number>>,

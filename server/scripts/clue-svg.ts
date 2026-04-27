@@ -171,6 +171,22 @@ export function buildClueTextMap(
   return out;
 }
 
+export function resolveClueRenderLayout(
+  layout: Pick<ClueLayout, "areaCells" | "clusterCells">
+): {
+  definitionAreaCells: Array<[number, number]>;
+  isExpandedDefinition: boolean;
+  isClusterDefinition: boolean;
+} {
+  const definitionAreaCells = [...layout.areaCells];
+  const isExpandedDefinition = definitionAreaCells.length > 1;
+  return {
+    definitionAreaCells,
+    isExpandedDefinition,
+    isClusterDefinition: isExpandedDefinition,
+  };
+}
+
 function resolveAreaRects(
   x: number,
   y: number,

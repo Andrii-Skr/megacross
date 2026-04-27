@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-04-15T12:21:39.705Z",
+  "generatedAt": "2026-04-27T12:57:18.821Z",
   "templateCount": 241,
   "skippedCount": 17,
-  "hash": "d4fa9f3e4fa2bac9",
+  "hash": "e4cd269849551c6d",
   "templates": [
     {
       "file": "sample/01/10.fsh",
@@ -2542,15 +2542,15 @@
   "skipped": [
     {
       "file": "sample/01/107_соты.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '9' in marker '9=E'"
     },
     {
       "file": "sample/01/126_волшебные соты.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '9' in marker '9??'"
     },
     {
       "file": "sample/01/127_круговой.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type 'F' in marker 'F?D'"
     },
     {
       "file": "sample/01/37_английский.fsh",
@@ -2558,11 +2558,11 @@
     },
     {
       "file": "sample/01/93_чайнворд.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '3' in marker '3C='"
     },
     {
       "file": "sample/02/10_соти.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '9' in marker '9;?'"
     },
     {
       "file": "sample/02/14_числ.fsh",
@@ -2574,7 +2574,7 @@
     },
     {
       "file": "sample/02/31_соти.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '9' in marker '9;?'"
     },
     {
       "file": "sample/02/39_фил.fsh",
@@ -2582,7 +2582,7 @@
     },
     {
       "file": "sample/02/52_соти.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '9' in marker '9;?'"
     },
     {
       "file": "sample/02/58_числ.fsh",
@@ -2590,15 +2590,15 @@
     },
     {
       "file": "sample/11/107_соты.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '9' in marker '9=E'"
     },
     {
       "file": "sample/11/126_волшебные соты.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '9' in marker '9??'"
     },
     {
       "file": "sample/11/127_круговой.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type 'F' in marker 'F?D'"
     },
     {
       "file": "sample/11/37_английский.fsh",
@@ -2606,7 +2606,7 @@
     },
     {
       "file": "sample/11/93_чайнворд.fsh",
-      "error": "unexpected byte 0x30 at 12"
+      "error": "unsupported template type '3' in marker '3C='"
     }
   ]
 }

@@ -703,7 +703,12 @@ export function buildClueLayouts(
         if (clusterArea && clusterArea.length >= 4 && clusterCellSet && !didExpandArea) {
           const hasOverlapConflict = componentExpandedOverlapConflictById.get(componentId) === true;
           if (clusterDefinitionSlotIds.size === 0) {
-            clusterCells = clusterArea;
+            const clueCellCount = clueCells.length;
+            const clusterAnchorDensity = clueCellCount / Math.max(1, clusterArea.length);
+            const allowEmptyCluster = clusterAnchorDensity <= 0.6;
+            if (allowEmptyCluster) {
+              clusterCells = clusterArea;
+            }
           } else if (!hasOverlapConflict && clusterDefinitionSlotIds.size === 1) {
             const [clusterDefinitionSlotId] = [...clusterDefinitionSlotIds];
             if (group.definitionSlotIds.has(clusterDefinitionSlotId)) {

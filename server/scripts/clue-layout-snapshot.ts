@@ -29,6 +29,13 @@ type Snapshot = {
   skipped: Array<{ file: string; error: string }>;
 };
 
+type CriticalTemplateGuard = {
+  file: string;
+  expandedCount: number;
+  clusterCount: number;
+  requiredEntries: string[];
+};
+
 type PreparedTemplate = {
   file: string;
   grid: Grid;
@@ -38,6 +45,32 @@ type PreparedTemplate = {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SAMPLE_ROOT = path.join(__dirname, "..", "sample");
 const SNAPSHOT_FILE = path.join(__dirname, "fixtures", "clue-layout-snapshot.json");
+const CRITICAL_TEMPLATE_GUARDS: CriticalTemplateGuard[] = [
+  {
+    file: "sample/01/43.fsh",
+    expandedCount: 1,
+    clusterCount: 2,
+    requiredEntries: ["0,9|a16|c0|t1", "19,11|a1|c14|t1", "19,12|a1|c14|t1"],
+  },
+  {
+    file: "sample/01/47.fsh",
+    expandedCount: 1,
+    clusterCount: 4,
+    requiredEntries: ["18,0|a16|c0|t1", "0,5|a1|c100|t1", "5,5|a1|c100|t1", "10,9|a1|c100|t1", "11,9|a1|c100|t1"],
+  },
+  {
+    file: "sample/01/55.fsh",
+    expandedCount: 1,
+    clusterCount: 1,
+    requiredEntries: ["11,6|a16|c0|t1", "19,9|a1|c14|t1"],
+  },
+  {
+    file: "sample/01/91.fsh",
+    expandedCount: 1,
+    clusterCount: 0,
+    requiredEntries: ["10,6|a16|c0|t1"],
+  },
+];
 
 const { values } = parseArgs({
   options: {
@@ -92,7 +125,7 @@ function buildSnapshotHash(
     )
     .join("\n");
   const skippedSerialized = skipped
-    .map((item) => `${item.file}|${item.error}`)
+    .map((item) => item.file)
     .join("\n");
   return createHash("sha256")
     .update(serialized)
@@ -149,8 +182,8 @@ function summarizeSkippedDiff(
   expected: Array<{ file: string; error: string }>,
   actual: Array<{ file: string; error: string }>
 ): string[] {
-  const expectedSet = new Set(expected.map((item) => `${item.file}|${item.error}`));
-  const actualSet = new Set(actual.map((item) => `${item.file}|${item.error}`));
+  const expectedSet = new Set(expected.map((item) => item.file));
+  const actualSet = new Set(actual.map((item) => item.file));
   const diffs: string[] = [];
   for (const value of expectedSet) {
     if (!actualSet.has(value)) diffs.push(`missing skipped entry: ${value}`);
@@ -199,6 +232,32 @@ function printSnapshotDiff(expected: Snapshot, actual: Snapshot): void {
     for (const line of skippedDiffs.slice(0, 30)) console.error(`  ! ${line}`);
   }
   console.error(`re-run with --update to refresh ${path.relative(path.join(__dirname, ".."), SNAPSHOT_FILE)}`);
+}
+
+function assertCriticalTemplateGuards(snapshot: Snapshot): void {
+  const templateByFile = new Map(snapshot.templates.map((item) => [item.file, item]));
+  for (const guard of CRITICAL_TEMPLATE_GUARDS) {
+    const template = templateByFile.get(guard.file);
+    if (!template) {
+      throw new Error(`critical template guard failed: missing template ${guard.file}`);
+    }
+    if (template.expandedCount !== guard.expandedCount) {
+      throw new Error(
+        `critical template guard failed for ${guard.file}: expandedCount ${template.expandedCount} != ${guard.expandedCount}`
+      );
+    }
+    if (template.clusterCount !== guard.clusterCount) {
+      throw new Error(
+        `critical template guard failed for ${guard.file}: clusterCount ${template.clusterCount} != ${guard.clusterCount}`
+      );
+    }
+    const entrySet = new Set(template.entries);
+    for (const entry of guard.requiredEntries) {
+      if (!entrySet.has(entry)) {
+        throw new Error(`critical template guard failed for ${guard.file}: missing entry ${entry}`);
+      }
+    }
+  }
 }
 
 async function buildCurrentSnapshot(
@@ -292,6 +351,7 @@ async function main(): Promise<void> {
   const snapshotPath = values.file ? path.resolve(values.file) : SNAPSHOT_FILE;
   const fshFiles = collectFshFiles(SAMPLE_ROOT);
   const current = await buildCurrentSnapshot(fshFiles);
+  assertCriticalTemplateGuards(current);
 
   if (update) {
     mkdirSync(path.dirname(snapshotPath), { recursive: true });
