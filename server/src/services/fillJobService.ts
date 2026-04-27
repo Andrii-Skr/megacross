@@ -1,7 +1,6 @@
 import archiver from "archiver";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Prisma, prisma } from "../db/prisma";
@@ -92,6 +91,7 @@ import {
   validateNeighborWordReuse,
   validateTemplateDefinitions,
   validateWordUniqueness,
+  type DefinitionLengthLimits,
   type FinalizeSlotInput,
   type FinalSlotState,
 } from "./fillFinalizeService";
@@ -173,8 +173,37 @@ type FinalizeTemplateInput = {
   slots?: FinalizeSlotInput[] | null;
 };
 
+type FinalizeSvgTypographyInput = {
+  clueFontBasePt?: unknown;
+  clueFontMinPt?: unknown;
+  clueGlyphWidthPct?: unknown;
+  clueLineHeightPct?: unknown;
+  fontId?: unknown;
+  systemFontFamily?: unknown;
+};
+
 type FinalizePayload = {
   templates?: FinalizeTemplateInput[] | null;
+  definitionLimits?: DefinitionLengthLimits | null;
+  svgTypography?: FinalizeSvgTypographyInput | null;
+};
+
+type ParsedFinalizeSvgTypography = {
+  clueFontBasePt: number | null;
+  clueFontMinPt: number | null;
+  clueGlyphWidthPct: number;
+  clueLineHeightPct: number;
+  fontId: bigint | null;
+  systemFontFamily: string | null;
+};
+
+type ResolvedFinalizeSvgTypography = {
+  clueFontBasePt: number | null;
+  clueFontMinPt: number | null;
+  clueGlyphWidthPct: number;
+  clueLineHeightPct: number;
+  fontFamily: string | null;
+  fontFaceCss: string | null;
 };
 
 export type FillMaskCandidate = {
@@ -262,6 +291,12 @@ const MAX_WORD_USES = 2;
 const AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK = 24;
 const COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK = 1_000_000;
 const COST_REBALANCE_POLISH_PASSES = 2;
+const SVG_CLUE_FONT_PT_MIN = 1;
+const SVG_CLUE_FONT_PT_MAX = 72;
+const SVG_TYPOGRAPHY_PERCENT_MIN = 40;
+const SVG_TYPOGRAPHY_PERCENT_MAX = 200;
+const SVG_TYPOGRAPHY_PERCENT_DEFAULT = 80;
+const DEFAULT_SYSTEM_SVG_FONT_FAMILY = "Arial";
 
 function detectCpuParallelism(): number {
   if (typeof os.availableParallelism === "function") {
@@ -937,7 +972,10 @@ function buildSvg(
   slots: Slot[],
   solved: string[],
   definitions: Map<string, string>,
-  options: { style: "default" | "corel" }
+  options: {
+    style: "default" | "corel";
+    svgTypography?: ResolvedFinalizeSvgTypography | null;
+  }
 ): { svg: string; svgRaw: string; usedWords: string } {
   const buildStartNumberByCell = (sourceSlots: Slot[]): Map<string, number> => {
     const uniqueStarts = new Map<string, { r: number; c: number }>();
@@ -1014,7 +1052,10 @@ function buildSvg(
   const SVG_PREAMBLE = useCorelStyle
     ? '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
     : "";
-  const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
+  const typography = options.svgTypography ?? null;
+  const configuredFontFamily = sanitizeSvgFontFamily(typography?.fontFamily);
+  const FONT_FAMILY = configuredFontFamily ?? DEFAULT_SYSTEM_SVG_FONT_FAMILY;
+  const FONT_FAMILY_ATTR = escapeXmlAttr(FONT_FAMILY);
   const DEBUG_CLUSTER_FILL = isTruthyEnv(process.env.CROSS_ENABLE_02_AREA_EXPANSION);
   const DEBUG_CLUSTER_COLOR = "#FFB3B3";
 
@@ -1082,12 +1123,13 @@ function buildSvg(
     : "";
 
   const svgParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY_ATTR}" text-anchor="middle" dominant-baseline="central">`,
   ];
   const svgRawParts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY}" text-anchor="middle" dominant-baseline="central">`,
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${svgWidthAttr}" height="${svgHeightAttr}"${svgViewBox}${SVG_STYLE_ATTR} font-family="${FONT_FAMILY_ATTR}" text-anchor="middle" dominant-baseline="central">`,
   ];
 
+  const svgDefs: string[] = [];
   const clueDefs: string[] = [];
   const clueLayer: string[] = [];
   const clueRawLayer: string[] = [];
@@ -1095,7 +1137,33 @@ function buildSvg(
   const borderRawLayer: string[] = [];
   const outerContourLayer: string[] = [];
   const clueMode = useCorelStyle ? "corel" : "default";
-  const clueFont = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
+  const clueFontDefault = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
+  const clueFontFromPt =
+    typeof typography?.clueFontBasePt === "number"
+      ? convertPtToSvgUnits(typography.clueFontBasePt, clueMode)
+      : null;
+  const clueMinFromPt =
+    typeof typography?.clueFontMinPt === "number"
+      ? convertPtToSvgUnits(typography.clueFontMinPt, clueMode)
+      : null;
+  const clueFont = clueFontFromPt != null && Number.isFinite(clueFontFromPt) ? Math.max(1, clueFontFromPt) : clueFontDefault;
+  const clueMinFontSizeRaw =
+    clueMinFromPt != null && Number.isFinite(clueMinFromPt)
+      ? Math.max(1, clueMinFromPt)
+      : resolveMinClueFontSize(clueMode);
+  const clueMinFontSize = Math.min(clueMinFontSizeRaw, clueFont);
+  const clueGlyphWidthScale = Math.max(
+    0.01,
+    (typography?.clueGlyphWidthPct ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT) / 100
+  );
+  const clueLineHeightScale = Math.max(
+    0.01,
+    (typography?.clueLineHeightPct ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT) / 100
+  );
+
+  if (typography?.fontFaceCss) {
+    svgDefs.push(`<style type="text/css"><![CDATA[${typography.fontFaceCss}]]></style>`);
+  }
 
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
@@ -1126,6 +1194,9 @@ function buildSvg(
             textAlign: clueLayout.areaCells.length > 1 ? "bottom-left" : "center",
             background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
             backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
+            minFontSize: clueMinFontSize,
+            glyphWidthScale: clueGlyphWidthScale,
+            lineHeightScale: clueLineHeightScale,
           });
           if (clueSvg.defs) clueDefs.push(clueSvg.defs);
           clueLayer.push(clueSvg.text);
@@ -1199,9 +1270,10 @@ function buildSvg(
     svgParts.splice(1, 0, ...outerContourLayer);
     svgRawParts.splice(1, 0, ...outerContourLayer);
   }
-  if (clueDefs.length) {
-    svgParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
-    svgRawParts.splice(1, 0, `<defs>${clueDefs.join("")}</defs>`);
+  const defsContent = [...svgDefs, ...clueDefs];
+  if (defsContent.length) {
+    svgParts.splice(1, 0, `<defs>${defsContent.join("")}</defs>`);
+    svgRawParts.splice(1, 0, `<defs>${defsContent.join("")}</defs>`);
   }
   svgParts.push("</svg>");
   svgRawParts.push("</svg>");
@@ -1463,6 +1535,229 @@ function parseFillJobOptions(value: unknown, fallbackDefaults: FillJobOptions = 
     editionHotBan: toBoolean(raw.editionHotBan, defaults.editionHotBan),
     filterTemplateId: toOptionalTemplateId(raw.filterTemplateId, defaults.filterTemplateId ?? null),
   };
+}
+
+function parseDefinitionLengthLimits(value: unknown): DefinitionLengthLimits | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { maxPerCell?: unknown; maxPerHalfCell?: unknown };
+  const maxPerCellRaw = Number(raw.maxPerCell);
+  const maxPerHalfCellRaw = Number(raw.maxPerHalfCell);
+  if (!Number.isFinite(maxPerCellRaw) || !Number.isFinite(maxPerHalfCellRaw)) return null;
+  const maxPerCell = Math.max(1, Math.trunc(maxPerCellRaw));
+  const maxPerHalfCell = Math.max(1, Math.trunc(maxPerHalfCellRaw));
+  return {
+    maxPerCell,
+    maxPerHalfCell: Math.min(maxPerHalfCell, maxPerCell),
+  };
+}
+
+function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function sanitizeSvgFontFamily(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/ {2,}/g, " ")
+    .replace(/[<>`"]/g, "")
+    .trim();
+  if (!normalized) return null;
+  return normalized.slice(0, 120);
+}
+
+function parseOptionalPositiveBigInt(value: unknown): bigint | null {
+  if (typeof value === "bigint") {
+    return value > 0n ? value : null;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!/^\d+$/u.test(normalized)) return null;
+    try {
+      const parsed = BigInt(normalized);
+      return parsed > 0n ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function parseSvgCluePtValue(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  if (normalized < SVG_CLUE_FONT_PT_MIN || normalized > SVG_CLUE_FONT_PT_MAX) return null;
+  return normalized;
+}
+
+function parseSvgTypographyPercentValue(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  if (normalized < SVG_TYPOGRAPHY_PERCENT_MIN || normalized > SVG_TYPOGRAPHY_PERCENT_MAX) {
+    return null;
+  }
+  return normalized;
+}
+
+function parseFinalizeSvgTypography(value: unknown): ParsedFinalizeSvgTypography {
+  if (!value || typeof value !== "object") {
+    return {
+      clueFontBasePt: null,
+      clueFontMinPt: null,
+      clueGlyphWidthPct: SVG_TYPOGRAPHY_PERCENT_DEFAULT,
+      clueLineHeightPct: SVG_TYPOGRAPHY_PERCENT_DEFAULT,
+      fontId: null,
+      systemFontFamily: null,
+    };
+  }
+  const raw = value as FinalizeSvgTypographyInput;
+  const clueFontBasePt = parseSvgCluePtValue(raw.clueFontBasePt);
+  const clueFontMinPtRaw = parseSvgCluePtValue(raw.clueFontMinPt);
+  const clueFontMinPt =
+    clueFontBasePt != null && clueFontMinPtRaw != null
+      ? Math.min(clueFontMinPtRaw, clueFontBasePt)
+      : clueFontMinPtRaw;
+  const clueGlyphWidthPct =
+    parseSvgTypographyPercentValue(raw.clueGlyphWidthPct) ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT;
+  const clueLineHeightPct =
+    parseSvgTypographyPercentValue(raw.clueLineHeightPct) ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT;
+  return {
+    clueFontBasePt,
+    clueFontMinPt,
+    clueGlyphWidthPct,
+    clueLineHeightPct,
+    fontId: parseOptionalPositiveBigInt(raw.fontId),
+    systemFontFamily: sanitizeSvgFontFamily(
+      typeof raw.systemFontFamily === "string" ? raw.systemFontFamily : null
+    ),
+  };
+}
+
+function resolveFontsDir(): string {
+  const explicit = process.env.CROSS_FONTS_DIR?.trim();
+  if (explicit) return explicit;
+  return path.join(path.dirname(getSamplesDir()), "fonts");
+}
+
+function resolveStoredFontFormat(
+  formatRaw: string | null | undefined,
+  storageRelPathRaw: string | null | undefined
+): "ttf" | "otf" | "woff" | "woff2" {
+  const format = (formatRaw ?? "").trim().toLowerCase();
+  if (format === "ttf" || format === "otf" || format === "woff" || format === "woff2") {
+    return format;
+  }
+  const ext = path.extname(storageRelPathRaw ?? "").toLowerCase();
+  if (ext === ".otf") return "otf";
+  if (ext === ".woff") return "woff";
+  if (ext === ".woff2") return "woff2";
+  return "ttf";
+}
+
+function resolveFontMimeType(
+  format: "ttf" | "otf" | "woff" | "woff2",
+  mimeTypeRaw: string | null | undefined
+): string {
+  const normalizedMime = (mimeTypeRaw ?? "").trim().toLowerCase();
+  if (normalizedMime) return normalizedMime;
+  if (format === "woff") return "font/woff";
+  if (format === "woff2") return "font/woff2";
+  if (format === "otf") return "font/otf";
+  return "font/ttf";
+}
+
+function resolveFontCssFormat(format: "ttf" | "otf" | "woff" | "woff2"): string {
+  if (format === "woff2") return "woff2";
+  if (format === "woff") return "woff";
+  if (format === "otf") return "opentype";
+  return "truetype";
+}
+
+function resolveSafeFontPath(fontsRoot: string, storageRelPath: string): string | null {
+  const normalizedRel = storageRelPath.replace(/\\/g, "/").replace(/^\/+/g, "");
+  if (!normalizedRel || normalizedRel.includes("..")) return null;
+  const root = path.resolve(fontsRoot);
+  const absolute = path.resolve(root, normalizedRel);
+  if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) return null;
+  return absolute;
+}
+
+async function loadEmbeddedSvgFont(fontId: bigint): Promise<{ familyName: string; fontFaceCss: string } | null> {
+  try {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        familyName: string | null;
+        format: string | null;
+        mimeType: string | null;
+        storageRelPath: string | null;
+      }>
+    >`SELECT "familyName", "format", "mimeType", "storageRelPath"
+      FROM "public"."scanword_svg_fonts"
+      WHERE "id" = ${fontId}
+      LIMIT 1`;
+    const row = rows[0];
+    if (!row?.storageRelPath) return null;
+
+    const fontsDir = resolveFontsDir();
+    const fontPath = resolveSafeFontPath(fontsDir, row.storageRelPath);
+    if (!fontPath || !existsSync(fontPath)) return null;
+
+    const format = resolveStoredFontFormat(row.format, row.storageRelPath);
+    const mimeType = resolveFontMimeType(format, row.mimeType);
+    const cssFormat = resolveFontCssFormat(format);
+    const familyName = sanitizeSvgFontFamily(row.familyName) ?? `ScanwordFont${fontId.toString()}`;
+    const fontData = readFileSync(fontPath).toString("base64");
+    const escapedFamily = familyName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const fontFaceCss = `@font-face{font-family:'${escapedFamily}';src:url('data:${mimeType};base64,${fontData}') format('${cssFormat}');font-weight:normal;font-style:normal;}`;
+    return { familyName, fontFaceCss };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveFinalizeSvgTypography(
+  parsed: ParsedFinalizeSvgTypography
+): Promise<ResolvedFinalizeSvgTypography> {
+  let fontFamily = parsed.systemFontFamily;
+  let fontFaceCss: string | null = null;
+
+  if (parsed.fontId != null) {
+    const embedded = await loadEmbeddedSvgFont(parsed.fontId);
+    if (embedded) {
+      fontFamily = embedded.familyName;
+      fontFaceCss = embedded.fontFaceCss;
+    }
+  }
+
+  return {
+    clueFontBasePt: parsed.clueFontBasePt,
+    clueFontMinPt:
+      parsed.clueFontBasePt != null && parsed.clueFontMinPt != null
+        ? Math.min(parsed.clueFontMinPt, parsed.clueFontBasePt)
+        : parsed.clueFontMinPt,
+    clueGlyphWidthPct: parsed.clueGlyphWidthPct,
+    clueLineHeightPct: parsed.clueLineHeightPct,
+    fontFamily,
+    fontFaceCss,
+  };
+}
+
+function convertPtToSvgUnits(pt: number, mode: "default" | "corel"): number {
+  if (mode === "corel") {
+    const mmPerPt = 25.4 / 72;
+    return Math.round(pt * mmPerPt * COREL_UNITS_PER_MM * 1000) / 1000;
+  }
+  return Math.round((pt * 96) / 72 * 1000) / 1000;
 }
 
 async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOptions) {
@@ -2427,6 +2722,9 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
   const review = parseReviewPayload(row.reviewData);
   if (!review) throw new Error("Review data not found for this job");
   const payload = (payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {}) as FinalizePayload;
+  const definitionLengthLimits = parseDefinitionLengthLimits(payload.definitionLimits);
+  const parsedSvgTypography = parseFinalizeSvgTypography(payload.svgTypography);
+  const resolvedSvgTypography = await resolveFinalizeSvgTypography(parsedSvgTypography);
   const templateInputMap = new Map<string, FinalizeTemplateInput>();
   for (const item of payload.templates ?? []) {
     if (!item || typeof item !== "object") continue;
@@ -2521,7 +2819,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
         templateNameByKey
       )
     );
-    errors.push(...validateTemplateDefinitions(template, states));
+    errors.push(...validateTemplateDefinitions(template, states, definitionLengthLimits));
     errors.push(...validateDefinitionConsistency(template, states));
     errors.push(...validateDefinitionUniqueness(template, states));
     errors.push(...validateDefinitionReuseAcrossTemplates(template, states, usedDefinitions));
@@ -2566,6 +2864,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const slots = template.slots.map((slot) => convertReviewSlotToSlot(slot));
     const { svg, svgRaw, usedWords } = buildSvg(template.grid, slots, solvedRows, definitions, {
       style: review.options.style,
+      svgTypography: resolvedSvgTypography,
     });
     const svgAnswers = buildAnswersOnlySvg(template.grid, solvedRows);
 

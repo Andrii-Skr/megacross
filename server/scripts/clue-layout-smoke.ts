@@ -650,6 +650,67 @@ function testRenderBottomLeftTextBlockForMultiCellArea(): void {
   assert.match(rendered.text, /fill="#fff"/);
 }
 
+function firstNonZeroDy(text: string): number | null {
+  const matches = [...text.matchAll(/<tspan[^>]*dy="([0-9.]+)"/g)];
+  for (const match of matches) {
+    const value = Number(match[1]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function testRenderClueTextDefaultScaleApplies80Percent(): void {
+  const rendered = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-default", "#000", {
+    mode: "default",
+    textAlign: "center",
+  });
+  const dy = firstNonZeroDy(rendered.text);
+  assert.ok(dy !== null);
+  assert.ok(dy < 8);
+  assert.match(rendered.text, /textLength="/);
+}
+
+function testRenderClueTextCanOverrideScaleTo100Percent(): void {
+  const renderedDefault = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-default-2", "#000", {
+    mode: "default",
+    textAlign: "center",
+  });
+  const renderedOriginal = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-original", "#000", {
+    mode: "default",
+    textAlign: "center",
+    glyphWidthScale: 1,
+    lineHeightScale: 1,
+  });
+
+  const dyDefault = firstNonZeroDy(renderedDefault.text);
+  const dyOriginal = firstNonZeroDy(renderedOriginal.text);
+  assert.ok(dyDefault !== null);
+  assert.ok(dyOriginal !== null);
+  assert.ok(dyDefault < dyOriginal);
+  assert.match(renderedDefault.text, /textLength="/);
+  assert.doesNotMatch(renderedOriginal.text, /textLength="/);
+}
+
+function testRenderClueTextInvalidScaleFallsBackToDefault80(): void {
+  const renderedDefault = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-default-3", "#000", {
+    mode: "default",
+    textAlign: "center",
+  });
+  const renderedInvalid = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-invalid", "#000", {
+    mode: "default",
+    textAlign: "center",
+    glyphWidthScale: Number.NaN,
+    lineHeightScale: 0,
+  });
+
+  const dyDefault = firstNonZeroDy(renderedDefault.text);
+  const dyInvalid = firstNonZeroDy(renderedInvalid.text);
+  assert.ok(dyDefault !== null);
+  assert.ok(dyInvalid !== null);
+  assert.equal(dyInvalid, dyDefault);
+  assert.match(renderedInvalid.text, /textLength="/);
+}
+
 function testRenderMultiCellAreaCanUseMoreThanFourLines(): void {
   const rendered = renderClueText(
     0,
@@ -999,6 +1060,9 @@ function main(): void {
     testNoClusterForMultiDefinitionComponent();
     testDefinitionLimitsForExpandedAndSharedGroups();
     testRenderBottomLeftTextBlockForMultiCellArea();
+    testRenderClueTextDefaultScaleApplies80Percent();
+    testRenderClueTextCanOverrideScaleTo100Percent();
+    testRenderClueTextInvalidScaleFallsBackToDefault80();
     testRenderMultiCellAreaCanUseMoreThanFourLines();
     testExpandUsesVisibleDefinitionCountNotRawSlotCount();
     testNoExpandForOneByFourStripe();

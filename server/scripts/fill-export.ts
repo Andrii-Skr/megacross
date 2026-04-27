@@ -267,6 +267,8 @@ if (!inFile) {
               textAlign: clueLayout.areaCells.length > 1 ? "bottom-left" : "center",
               background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
               backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
+              glyphWidthScale: 0.8,
+              lineHeightScale: 0.8,
             }
           );
           if (clueSvg.defs) {

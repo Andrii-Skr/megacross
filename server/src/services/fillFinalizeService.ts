@@ -30,6 +30,16 @@ type ReviewTemplate = {
   clueGroups: ReviewClueGroup[];
 };
 
+export type DefinitionLengthLimits = {
+  maxPerCell: number;
+  maxPerHalfCell: number;
+};
+
+const DEFAULT_DEFINITION_LIMITS: DefinitionLengthLimits = {
+  maxPerCell: 30,
+  maxPerHalfCell: 15,
+};
+
 export type FinalizeSlotInput = {
   slotId: number;
   word?: string | null;
@@ -71,6 +81,17 @@ function parseOptionalBigInt(value: string | null | undefined): bigint | null {
 
 function resolveDirFromName(name: "down" | "right") {
   return name === "right" ? DIRS.right : DIRS.down;
+}
+
+function normalizeDefinitionLengthLimits(input: DefinitionLengthLimits | null | undefined): DefinitionLengthLimits {
+  const maxPerCell = Number.isFinite(input?.maxPerCell) ? Math.max(1, Math.trunc(input?.maxPerCell as number)) : 30;
+  const maxPerHalfCellRaw = Number.isFinite(input?.maxPerHalfCell)
+    ? Math.max(1, Math.trunc(input?.maxPerHalfCell as number))
+    : 15;
+  return {
+    maxPerCell,
+    maxPerHalfCell: Math.min(maxPerHalfCellRaw, maxPerCell),
+  };
 }
 
 export function convertReviewSlotToSlot(input: ReviewSlot): Slot {
@@ -210,8 +231,10 @@ function buildDefinitionClueGroups(template: ReviewTemplate): ReviewClueGroup[] 
 
 export function validateTemplateDefinitions(
   template: ReviewTemplate,
-  states: Map<number, FinalSlotState>
+  states: Map<number, FinalSlotState>,
+  limitsInput: DefinitionLengthLimits | null | undefined = DEFAULT_DEFINITION_LIMITS
 ): string[] {
+  const limits = normalizeDefinitionLengthLimits(limitsInput);
   const clueGroups = buildDefinitionClueGroups(template);
   const errors: string[] = [];
   for (const group of clueGroups) {
@@ -228,19 +251,21 @@ export function validateTemplateDefinitions(
     if (!definitions.length) continue;
     if (group.slotIds.length > 1) {
       for (const item of definitions) {
-        if (item.length > 15) {
+        if (item.length > limits.maxPerHalfCell) {
           errors.push(
-            `Template ${template.name}: definition for slot ${item.slotId} exceeds 15 symbols for shared clue cell ${group.key}`
+            `Template ${template.name}: definition for slot ${item.slotId} exceeds ${limits.maxPerHalfCell} symbols for shared clue cell ${group.key}`
           );
         }
       }
       const total = definitions.reduce((sum, item) => sum + item.length, 0);
-      if (total > 30) {
-        errors.push(`Template ${template.name}: definitions total exceeds 30 symbols for clue cell ${group.key}`);
+      if (total > limits.maxPerCell) {
+        errors.push(
+          `Template ${template.name}: definitions total exceeds ${limits.maxPerCell} symbols for clue cell ${group.key}`
+        );
       }
     } else {
       const areaCellCount = Math.max(1, Math.trunc(group.areaCellCount ?? 1));
-      const maxLen = 30 * areaCellCount;
+      const maxLen = limits.maxPerCell * areaCellCount;
       for (const item of definitions) {
         if (item.length > maxLen) {
           errors.push(

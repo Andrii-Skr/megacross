@@ -78,6 +78,7 @@ import {
   COREL_MIN_SVG_HEIGHT_UNITS,
   COREL_MIN_SVG_WIDTH_UNITS,
   COREL_STROKE_WIDTH_UNITS,
+  COREL_UNITS_PER_MM,
   formatCorelSizeMm,
   WORD_TEXT_FILL,
 } from "./svg-theme";
@@ -92,6 +93,16 @@ const MAX_WORD_USES = 2;
 const AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK = 24;
 const COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK = 1_000_000;
 const COST_REBALANCE_POLISH_PASSES = 2;
+const BATCH_CLUE_FONT_BASE_PT = 9;
+const BATCH_CLUE_FONT_MIN_PT = 8;
+
+function convertPtToSvgUnits(pt: number, mode: "default" | "corel"): number {
+  if (mode === "corel") {
+    const mmPerPt = 25.4 / 72;
+    return Math.round(pt * mmPerPt * COREL_UNITS_PER_MM * 1000) / 1000;
+  }
+  return Math.round((pt * 96) / 72 * 1000) / 1000;
+}
 
 function parseUsageRebalanceMode(
   value: string | undefined,
@@ -2203,7 +2214,14 @@ if (!files.length) {
       const borderLayer: string[] = [];
       const borderRawLayer: string[] = [];
       const clueMode = useCorelStyle ? "corel" : "default";
-      const clueFont = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
+      const clueFontDefault = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
+      const clueFontFromPt = convertPtToSvgUnits(BATCH_CLUE_FONT_BASE_PT, clueMode);
+      const clueMinFromPt = convertPtToSvgUnits(BATCH_CLUE_FONT_MIN_PT, clueMode);
+      const clueFont =
+        Number.isFinite(clueFontFromPt) && clueFontFromPt > 0 ? clueFontFromPt : clueFontDefault;
+      const clueMinFontSizeRaw =
+        Number.isFinite(clueMinFromPt) && clueMinFromPt > 0 ? clueMinFromPt : resolveMinClueFontSize(clueMode);
+      const clueMinFontSize = Math.min(clueMinFontSizeRaw, clueFont);
       for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
           const x = GRID_OFFSET_X + c * CELL, y = GRID_OFFSET_Y + r * CELL;
@@ -2235,6 +2253,9 @@ if (!files.length) {
                   textAlign: clueLayout.areaCells.length > 1 ? "bottom-left" : "center",
                   background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
                   backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
+                  minFontSize: clueMinFontSize,
+                  glyphWidthScale: 0.8,
+                  lineHeightScale: 0.8,
                 }
               );
               if (clueSvg.defs) {

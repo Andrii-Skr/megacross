@@ -377,6 +377,7 @@ model issues {
   dictionary_filter_templates dictionary_filter_templates? @relation(fields: [filterTemplateId], references: [id])
   issue_numbers               issue_numbers                @relation(fields: [issueNumberId], references: [id])
   scanword_fill_jobs          scanword_fill_jobs[]
+  scanword_issue_svg_settings scanword_issue_svg_settings?
   scanword_upload_snapshots   scanword_upload_snapshots?
 
   @@unique([editionId, issueNumberId])
@@ -420,6 +421,43 @@ model scanword_upload_snapshots {
   issues       issues   @relation(fields: [issueId], references: [id], onDelete: Cascade)
 
   @@index([updatedAt])
+}
+
+model scanword_svg_fonts {
+  id             BigInt   @id @default(autoincrement())
+  displayName    String   @db.VarChar(120)
+  familyName     String   @db.VarChar(120)
+  format         String   @db.VarChar(16)
+  mimeType       String   @db.VarChar(64)
+  fileName       String   @db.VarChar(255)
+  storageRelPath String   @db.VarChar(512)
+  sha256         String   @db.VarChar(64)
+  sizeBytes      BigInt
+  createdBy      Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now())
+
+  issue_settings scanword_issue_svg_settings[]
+
+  @@unique([sha256], map: "scanword_svg_fonts_sha256_key")
+  @@index([displayName], map: "idx_scanword_svg_fonts_display")
+  @@index([createdAt], map: "idx_scanword_svg_fonts_created")
+}
+
+model scanword_issue_svg_settings {
+  id               BigInt   @id @default(autoincrement())
+  issueId          BigInt   @unique
+  clueFontBasePt   Int      @default(7)
+  clueFontMinPt    Int      @default(7)
+  fontId           BigInt?
+  systemFontFamily String   @default("Arial") @db.VarChar(120)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now())
+
+  issues issues             @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  font   scanword_svg_fonts? @relation(fields: [fontId], references: [id], onDelete: SetNull)
+
+  @@index([fontId], map: "idx_scanword_issue_svg_settings_font")
 }
 
 enum PendingStatus {
