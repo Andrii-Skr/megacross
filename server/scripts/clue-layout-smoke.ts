@@ -694,7 +694,7 @@ function testRenderClueTextUsesUniformScaleAndLineHeight(): void {
   assert.doesNotMatch(rendered.text, /lengthAdjust=/);
 }
 
-function testRenderClueTextIgnoresClientScaleOverridesForNow(): void {
+function testRenderClueTextUsesClientScaleOverrides(): void {
   const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "default");
   const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
   const renderedDefault = renderClueText(10, 20, 30, fontSize, "один два три", "clip-scale-default-2", "#000", {
@@ -712,11 +712,13 @@ function testRenderClueTextIgnoresClientScaleOverridesForNow(): void {
 
   const dyDefault = firstNonZeroDy(renderedDefault.text);
   const dyOverridden = firstNonZeroDy(renderedOverridden.text);
+  const overriddenSizes = extractFontSizes(renderedOverridden.text);
   assert.ok(dyDefault !== null);
   assert.ok(dyOverridden !== null);
-  assert.equal(dyOverridden, dyDefault);
+  assert.notEqual(dyOverridden, dyDefault);
+  assert.equal(Math.round(dyOverridden * 1000) / 1000, Math.round(overriddenSizes[0] * 1000) / 1000);
   assert.match(renderedDefault.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
-  assert.match(renderedOverridden.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
+  assert.match(renderedOverridden.text, /scale\(1 1\)/);
 }
 
 function testRenderClueTextUsesSingleFontSizeForCorelLines(): void {
@@ -772,7 +774,7 @@ function testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt(): void {
   assert.ok(longSizes[0] >= minFontSize);
 }
 
-function testRenderClueTextInvalidScaleStillUsesFixed80(): void {
+function testRenderClueTextInvalidScaleFallsBackToFixed80(): void {
   const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "default");
   const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
   const renderedDefault = renderClueText(10, 20, 30, fontSize, "один два три", "clip-scale-default-3", "#000", {
@@ -1169,10 +1171,10 @@ function main(): void {
     testDefinitionLimitsForExpandedAndSharedGroups();
     testRenderBottomLeftTextBlockForMultiCellArea();
     testRenderClueTextUsesUniformScaleAndLineHeight();
-    testRenderClueTextIgnoresClientScaleOverridesForNow();
+    testRenderClueTextUsesClientScaleOverrides();
     testRenderClueTextUsesSingleFontSizeForCorelLines();
     testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt();
-    testRenderClueTextInvalidScaleStillUsesFixed80();
+    testRenderClueTextInvalidScaleFallsBackToFixed80();
     testRenderClusterDefinitionFrameAndPadding();
     testRenderMultiCellAreaCanUseMoreThanFourLines();
     testExpandUsesVisibleDefinitionCountNotRawSlotCount();

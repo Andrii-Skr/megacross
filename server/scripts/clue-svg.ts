@@ -30,17 +30,23 @@ export function resolveMinClueFontSize(mode: "default" | "corel"): number {
   return mode === "corel" ? MIN_COREL_CLUE_FONT_SIZE : MIN_CLUE_FONT_SIZE;
 }
 
-function estimateScaledLineWidth(line: string, fontSize: number): number {
-  return Math.round(Math.max(1, line.length * fontSize * CLUE_CHAR_WIDTH_FACTOR * CLUE_GLYPH_WIDTH_SCALE) * 1000) / 1000;
+function normalizeScale(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Number(value) : fallback;
 }
 
-function resolveLineHeight(fontSize: number): number {
-  return fontSize * CLUE_LINE_HEIGHT_SCALE;
+function estimateScaledLineWidth(line: string, fontSize: number, glyphWidthScale: number): number {
+  return (
+    Math.round(Math.max(1, line.length * fontSize * CLUE_CHAR_WIDTH_FACTOR * glyphWidthScale) * 1000) / 1000
+  );
 }
 
-function buildUniformScaleTransform(anchorX: number): string {
+function resolveLineHeight(fontSize: number, lineHeightScale: number): number {
+  return fontSize * lineHeightScale;
+}
+
+function buildUniformScaleTransform(anchorX: number, glyphWidthScale: number): string {
   const inverseAnchorX = Math.round(-anchorX * 1000) / 1000;
-  return ` transform="translate(${anchorX} 0) scale(${CLUE_GLYPH_WIDTH_SCALE} 1) translate(${inverseAnchorX} 0)"`;
+  return ` transform="translate(${anchorX} 0) scale(${glyphWidthScale} 1) translate(${inverseAnchorX} 0)"`;
 }
 
 function escapeXml(text: string): string {
@@ -222,6 +228,8 @@ export function renderClueText(
   const clusterFrame = options.clusterFrame ?? "none";
   const clusterPadding = Math.max(0, options.clusterPadding ?? 0);
   const clusterBorderWidth = Math.max(0, options.clusterBorderWidth ?? 0);
+  const glyphWidthScale = normalizeScale(options.glyphWidthScale, CLUE_GLYPH_WIDTH_SCALE);
+  const lineHeightScale = normalizeScale(options.lineHeightScale, CLUE_LINE_HEIGHT_SCALE);
   const alignBottomLeft = textAlign === "bottom-left";
   const areaRects = resolveAreaRects(x, y, cell, options.areaCells, options.anchorCell);
   const isMultiCellArea = areaRects.length > 1;
@@ -242,10 +250,10 @@ export function renderClueText(
   const availableWidth = Math.max(1, layoutWidth - padding * 2 - clusterInset);
   const availableHeight = Math.max(1, innerHeight - clusterInset);
   let currentSize = Math.max(fontSize, minFontSize);
-  let lineHeight = resolveLineHeight(currentSize);
+  let lineHeight = resolveLineHeight(currentSize, lineHeightScale);
   let maxChars = Math.max(
     1,
-    Math.floor(availableWidth / (currentSize * CLUE_CHAR_WIDTH_FACTOR * CLUE_GLYPH_WIDTH_SCALE))
+    Math.floor(availableWidth / (currentSize * CLUE_CHAR_WIDTH_FACTOR * glyphWidthScale))
   );
   let maxLinesByHeight = Math.max(1, Math.floor((availableHeight + 0.0001) / lineHeight));
   let maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
@@ -255,10 +263,10 @@ export function renderClueText(
   let lines = wrapText(normalized, maxChars, breakWords);
 
   const recalcLayout = () => {
-    lineHeight = resolveLineHeight(currentSize);
+    lineHeight = resolveLineHeight(currentSize, lineHeightScale);
     maxChars = Math.max(
       1,
-      Math.floor(availableWidth / (currentSize * CLUE_CHAR_WIDTH_FACTOR * CLUE_GLYPH_WIDTH_SCALE))
+      Math.floor(availableWidth / (currentSize * CLUE_CHAR_WIDTH_FACTOR * glyphWidthScale))
     );
     maxLinesByHeight = Math.max(1, Math.floor((availableHeight + 0.0001) / lineHeight));
     maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
@@ -313,7 +321,9 @@ export function renderClueText(
     : minY + padding + offsetY;
   let textAnchor: "start" | "middle" = alignBottomLeft ? "start" : "middle";
 
-  const lineWidths = lines.map((line) => Math.min(availableWidth, estimateScaledLineWidth(line, currentSize)));
+  const lineWidths = lines.map((line) =>
+    Math.min(availableWidth, estimateScaledLineWidth(line, currentSize, glyphWidthScale))
+  );
   const textBlockWidth = Math.max(1, ...lineWidths);
   const backgroundPadX = Math.max(1, Math.round(currentSize * 0.14));
   const backgroundPadY = Math.max(1, Math.round(currentSize * 0.08));
@@ -386,7 +396,7 @@ export function renderClueText(
   if (mode === "corel") {
     const ascent = Math.round(currentSize * 0.8 * 10) / 10;
     const baseY = Math.round((textY + ascent) * 10) / 10;
-    const scaleTransform = buildUniformScaleTransform(textX);
+    const scaleTransform = buildUniformScaleTransform(textX, glyphWidthScale);
     const textLines = lines
       .map((line, idx) => {
         const lineY = Math.round((baseY + idx * lineHeight) * 10) / 10;
@@ -405,7 +415,7 @@ export function renderClueText(
       return `<tspan x="${textX}" dy="${dy}">${escapeXml(line)}</tspan>`;
     })
     .join("");
-  const textNode = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="hanging" fill="${fill}"${buildUniformScaleTransform(textX)}>${tspan}</text>`;
+  const textNode = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="hanging" fill="${fill}"${buildUniformScaleTransform(textX, glyphWidthScale)}>${tspan}</text>`;
   const textSvg = useClip
     ? `<g clip-path="url(#${clipId})">${backgroundRect}${clusterFrameSvg}${textNode}</g>`
     : `<g>${backgroundRect}${clusterFrameSvg}${textNode}</g>`;

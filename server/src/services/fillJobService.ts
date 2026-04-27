@@ -1148,6 +1148,8 @@ function buildSvg(
   const clueMode = useCorelStyle ? "corel" : "default";
   const clueFont = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, clueMode);
   const clueMinFontSize = Math.min(convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, clueMode), clueFont);
+  const clueGlyphWidthScale = typography ? typography.clueGlyphWidthPct / 100 : CLUE_GLYPH_WIDTH_SCALE;
+  const clueLineHeightScale = typography ? typography.clueLineHeightPct / 100 : CLUE_LINE_HEIGHT_SCALE;
   const clusterDefinitionPadding = useCorelStyle
     ? Math.round(COREL_UNITS_PER_MM * 1000) / 1000
     : CELL / COREL_CELL_SIZE_MM;
@@ -1193,8 +1195,8 @@ function buildSvg(
             clusterPadding: isClusterDefinition ? clusterDefinitionPadding : 0,
             clusterBorderWidth: isClusterDefinition ? STROKE_WIDTH : 0,
             minFontSize: clueMinFontSize,
-            glyphWidthScale: CLUE_GLYPH_WIDTH_SCALE,
-            lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
+            glyphWidthScale: clueGlyphWidthScale,
+            lineHeightScale: clueLineHeightScale,
           });
           if (clueSvg.defs) clueDefs.push(clueSvg.defs);
           clueLayer.push(clueSvg.text);
@@ -1592,9 +1594,8 @@ function parseOptionalPositiveBigInt(value: unknown): bigint | null {
 function parseSvgCluePtValue(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
-  const normalized = Math.trunc(parsed);
-  if (normalized < SVG_CLUE_FONT_PT_MIN || normalized > SVG_CLUE_FONT_PT_MAX) return null;
-  return normalized;
+  if (parsed < SVG_CLUE_FONT_PT_MIN || parsed > SVG_CLUE_FONT_PT_MAX) return null;
+  return Math.round(parsed * 1000) / 1000;
 }
 
 function parseSvgTypographyPercentValue(value: unknown): number | null {
