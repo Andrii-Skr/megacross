@@ -39,6 +39,13 @@ if (!["default", "corel"].includes(styleName)) {
   console.warn(`Unknown SVG style "${values.style}", using default.`);
 }
 
+function isTruthyEnv(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
+}
+
 if (!inFile) {
   console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle] [--crw] [--dict <path>] [--template <path>] [--style corel] [--no-defs|--no-clues]");
   process.exit(1);
@@ -73,7 +80,7 @@ if (!inFile) {
     style: useCorelStyle ? "corel" : "default",
     arrowMode: "export",
     arrowScale: 0.8,
-    debugClusterFill: true,
+    debugClusterFill: isTruthyEnv(process.env.CROSS_ENABLE_02_AREA_EXPANSION),
     fontFamily: useCorelStyle ? "Arial" : "monospace",
     type0Features: true,
   });

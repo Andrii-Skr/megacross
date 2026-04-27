@@ -79,7 +79,7 @@ function isTruthyEnv(value: string | undefined): boolean {
 }
 
 function is02AreaExpansionEnabled(): boolean {
-  return isTruthyEnv(process.env.CROSS_ENABLE_02_AREA_EXPANSION);
+  return true;
 }
 
 function dirKeyFromSlot(slot: Slot): number {

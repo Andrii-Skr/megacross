@@ -743,9 +743,9 @@ function testNoClusterHighlightForTwoDefinitionsInRectangle(): void {
   assert.equal(second.clusterCells, undefined);
 }
 
-function testDisable02AreaExpansionByEnv(): void {
+function testAreaExpansionIsEnabledByDefaultEvenWhenEnvDisabled(): void {
   const previousValue = process.env[AREA_EXPANSION_ENV_KEY];
-  delete process.env[AREA_EXPANSION_ENV_KEY];
+  process.env[AREA_EXPANSION_ENV_KEY] = "0";
   try {
     const data = ["*##*", "*##*", "*↓**", "****"];
     const codes = createCodes(4, 4, 0x01);
@@ -772,8 +772,7 @@ function testDisable02AreaExpansionByEnv(): void {
     const definitions = new Map<string, string>([["AB", "Определение"]]);
     const layouts = buildClueLayouts(grid, slots, solved, definitions);
     const clue = layoutByKey(layouts, "1,1");
-    assert.equal(clue.areaCells.length, 1);
-    assert.equal(clue.clusterCells, undefined);
+    assert.equal(clue.areaCells.length, 4);
   } finally {
     if (previousValue === undefined) {
       delete process.env[AREA_EXPANSION_ENV_KEY];
@@ -781,6 +780,36 @@ function testDisable02AreaExpansionByEnv(): void {
       process.env[AREA_EXPANSION_ENV_KEY] = previousValue;
     }
   }
+}
+
+function testAreaExpansionCanBeDisabledExplicitlyByOption(): void {
+  const data = ["*##*", "*##*", "*↓**", "****"];
+  const codes = createCodes(4, 4, 0x01);
+  codes[1][1] = 0x02;
+  codes[0][1] = 0x02;
+  codes[0][2] = 0x02;
+  codes[1][2] = 0x02;
+  const grid = buildGrid(data, codes);
+
+  const slots: Slot[] = [
+    {
+      id: 1,
+      r: 2,
+      c: 1,
+      dir: DIRS.down,
+      len: 2,
+      cells: [
+        [2, 1],
+        [3, 1],
+      ],
+    },
+  ];
+  const solved = ["*##*", "*##*", "*A**", "*B**"];
+  const definitions = new Map<string, string>([["AB", "Определение"]]);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expand02Area: false });
+  const clue = layoutByKey(layouts, "1,1");
+  assert.equal(clue.areaCells.length, 1);
+  assert.equal(clue.clusterCells, undefined);
 }
 
 function main(): void {
@@ -804,7 +833,8 @@ function main(): void {
     testTailAnchorCanExpandToDetachedTwoBySevenRectangle();
     testNoClusterHighlightForTwoDefinitionsInRectangle();
     testClusterHighlightWithoutDefinitionTexts();
-    testDisable02AreaExpansionByEnv();
+    testAreaExpansionIsEnabledByDefaultEvenWhenEnvDisabled();
+    testAreaExpansionCanBeDisabledExplicitlyByOption();
   } finally {
     if (previousValue === undefined) {
       delete process.env[AREA_EXPANSION_ENV_KEY];
