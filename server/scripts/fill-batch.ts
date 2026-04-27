@@ -67,7 +67,15 @@ import { buildClueEntries, buildClueLayouts } from "../src/utils/clues";
 import { Cell, Grid, Slot }    from "../src/types";
 import { arrowSvg }            from "./arrow-utils";
 import { buildAnswersOnlySvg } from "./answer-only-svg";
-import { buildClueTextMap, renderClueText, resolveMinClueFontSize } from "./clue-svg";
+import {
+  CLUE_FONT_BASE_PT,
+  CLUE_FONT_MIN_PT,
+  CLUE_GLYPH_WIDTH_SCALE,
+  CLUE_LINE_HEIGHT_SCALE,
+  buildClueTextMap,
+  convertCluePtToSvgUnits,
+  renderClueText,
+} from "./clue-svg";
 import { resolveCenteredTextStartX } from "./text-position";
 import {
   BLOCK_CELL_FILL,
@@ -93,17 +101,6 @@ const MAX_WORD_USES = 2;
 const AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK = 24;
 const COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK = 1_000_000;
 const COST_REBALANCE_POLISH_PASSES = 2;
-const BATCH_CLUE_FONT_BASE_PT = 9;
-const BATCH_CLUE_FONT_MIN_PT = 8;
-
-function convertPtToSvgUnits(pt: number, mode: "default" | "corel"): number {
-  if (mode === "corel") {
-    const mmPerPt = 25.4 / 72;
-    return Math.round(pt * mmPerPt * COREL_UNITS_PER_MM * 1000) / 1000;
-  }
-  return Math.round((pt * 96) / 72 * 1000) / 1000;
-}
-
 function parseUsageRebalanceMode(
   value: string | undefined,
   usageRebalanceEnabled: boolean
@@ -2214,14 +2211,8 @@ if (!files.length) {
       const borderLayer: string[] = [];
       const borderRawLayer: string[] = [];
       const clueMode = useCorelStyle ? "corel" : "default";
-      const clueFontDefault = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
-      const clueFontFromPt = convertPtToSvgUnits(BATCH_CLUE_FONT_BASE_PT, clueMode);
-      const clueMinFromPt = convertPtToSvgUnits(BATCH_CLUE_FONT_MIN_PT, clueMode);
-      const clueFont =
-        Number.isFinite(clueFontFromPt) && clueFontFromPt > 0 ? clueFontFromPt : clueFontDefault;
-      const clueMinFontSizeRaw =
-        Number.isFinite(clueMinFromPt) && clueMinFromPt > 0 ? clueMinFromPt : resolveMinClueFontSize(clueMode);
-      const clueMinFontSize = Math.min(clueMinFontSizeRaw, clueFont);
+      const clueFont = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, clueMode);
+      const clueMinFontSize = Math.min(convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, clueMode), clueFont);
       for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
           const x = GRID_OFFSET_X + c * CELL, y = GRID_OFFSET_Y + r * CELL;
@@ -2254,8 +2245,8 @@ if (!files.length) {
                   background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
                   backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
                   minFontSize: clueMinFontSize,
-                  glyphWidthScale: 0.8,
-                  lineHeightScale: 0.8,
+                  glyphWidthScale: CLUE_GLYPH_WIDTH_SCALE,
+                  lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
                 }
               );
               if (clueSvg.defs) {

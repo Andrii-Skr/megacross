@@ -5,7 +5,14 @@ import { buildReviewTemplate, type ReviewTemplateEntry } from "../src/services/f
 import type { Grid, Slot } from "../src/types";
 import { DIRS } from "../src/types";
 import { buildClueLayouts } from "../src/utils/clues";
-import { renderClueText } from "./clue-svg";
+import {
+  CLUE_FONT_BASE_PT,
+  CLUE_FONT_MIN_PT,
+  CLUE_GLYPH_WIDTH_SCALE,
+  CLUE_LINE_HEIGHT_SCALE,
+  convertCluePtToSvgUnits,
+  renderClueText,
+} from "./clue-svg";
 
 const AREA_EXPANSION_ENV_KEY = "CROSS_ENABLE_02_AREA_EXPANSION";
 
@@ -659,46 +666,124 @@ function firstNonZeroDy(text: string): number | null {
   return null;
 }
 
-function testRenderClueTextDefaultScaleApplies80Percent(): void {
-  const rendered = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-default", "#000", {
-    mode: "default",
-    textAlign: "center",
-  });
-  const dy = firstNonZeroDy(rendered.text);
-  assert.ok(dy !== null);
-  assert.ok(dy < 8);
-  assert.match(rendered.text, /textLength="/);
+function extractFontSizes(text: string): number[] {
+  return [...text.matchAll(/font-size="([0-9.]+)"/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
 }
 
-function testRenderClueTextCanOverrideScaleTo100Percent(): void {
-  const renderedDefault = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-default-2", "#000", {
+function uniqueRounded(values: number[]): number[] {
+  return [...new Set(values.map((value) => Math.round(value * 1000) / 1000))];
+}
+
+function testRenderClueTextUsesUniformScaleAndLineHeight(): void {
+  const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "default");
+  const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
+  const rendered = renderClueText(10, 20, 30, fontSize, "один два три", "clip-scale-default", "#000", {
     mode: "default",
     textAlign: "center",
+    minFontSize,
   });
-  const renderedOriginal = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-original", "#000", {
+  const dy = firstNonZeroDy(rendered.text);
+  const sizes = extractFontSizes(rendered.text);
+  assert.ok(dy !== null);
+  assert.equal(uniqueRounded(sizes).length, 1);
+  assert.equal(Math.round(dy * 1000) / 1000, Math.round(sizes[0] * CLUE_LINE_HEIGHT_SCALE * 1000) / 1000);
+  assert.match(rendered.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
+  assert.doesNotMatch(rendered.text, /textLength="/);
+  assert.doesNotMatch(rendered.text, /lengthAdjust=/);
+}
+
+function testRenderClueTextIgnoresClientScaleOverridesForNow(): void {
+  const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "default");
+  const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
+  const renderedDefault = renderClueText(10, 20, 30, fontSize, "один два три", "clip-scale-default-2", "#000", {
     mode: "default",
     textAlign: "center",
+    minFontSize,
+  });
+  const renderedOverridden = renderClueText(10, 20, 30, fontSize, "один два три", "clip-scale-original", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize,
     glyphWidthScale: 1,
     lineHeightScale: 1,
   });
 
   const dyDefault = firstNonZeroDy(renderedDefault.text);
-  const dyOriginal = firstNonZeroDy(renderedOriginal.text);
+  const dyOverridden = firstNonZeroDy(renderedOverridden.text);
   assert.ok(dyDefault !== null);
-  assert.ok(dyOriginal !== null);
-  assert.ok(dyDefault < dyOriginal);
-  assert.match(renderedDefault.text, /textLength="/);
-  assert.doesNotMatch(renderedOriginal.text, /textLength="/);
+  assert.ok(dyOverridden !== null);
+  assert.equal(dyOverridden, dyDefault);
+  assert.match(renderedDefault.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
+  assert.match(renderedOverridden.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
 }
 
-function testRenderClueTextInvalidScaleFallsBackToDefault80(): void {
-  const renderedDefault = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-default-3", "#000", {
-    mode: "default",
-    textAlign: "center",
+function testRenderClueTextUsesSingleFontSizeForCorelLines(): void {
+  const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "corel");
+  const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "corel");
+  const rendered = renderClueText(0, 0, 30, fontSize, "один два три четыре", "clip-corel-uniform", "#000", {
+    mode: "corel",
+    areaCells: [
+      [0, 0],
+      [0, 1],
+      [1, 0],
+      [1, 1],
+      [2, 0],
+      [2, 1],
+    ],
+    anchorCell: [0, 0],
+    minFontSize,
   });
-  const renderedInvalid = renderClueText(10, 20, 30, 8, "один два три", "clip-scale-invalid", "#000", {
+  const sizes = extractFontSizes(rendered.text);
+  assert.ok(sizes.length > 1);
+  assert.equal(uniqueRounded(sizes).length, 1);
+  assert.match(rendered.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
+  assert.doesNotMatch(rendered.text, /textLength="/);
+}
+
+function testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt(): void {
+  const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "default");
+  const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
+  const shortRendered = renderClueText(10, 20, 30, fontSize, "кот", "clip-short", "#000", {
     mode: "default",
     textAlign: "center",
+    minFontSize,
+  });
+  const longRendered = renderClueText(
+    10,
+    20,
+    30,
+    fontSize,
+    "один два три четыре пять шесть семь восемь",
+    "clip-long",
+    "#000",
+    {
+      mode: "default",
+      textAlign: "center",
+      minFontSize,
+    }
+  );
+
+  const shortSizes = extractFontSizes(shortRendered.text);
+  const longSizes = extractFontSizes(longRendered.text);
+  assert.equal(uniqueRounded(shortSizes)[0], Math.round(fontSize * 1000) / 1000);
+  assert.ok(longSizes[0] < fontSize);
+  assert.ok(longSizes[0] >= minFontSize);
+}
+
+function testRenderClueTextInvalidScaleStillUsesFixed80(): void {
+  const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "default");
+  const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
+  const renderedDefault = renderClueText(10, 20, 30, fontSize, "один два три", "clip-scale-default-3", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize,
+  });
+  const renderedInvalid = renderClueText(10, 20, 30, fontSize, "один два три", "clip-scale-invalid", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize,
     glyphWidthScale: Number.NaN,
     lineHeightScale: 0,
   });
@@ -708,7 +793,7 @@ function testRenderClueTextInvalidScaleFallsBackToDefault80(): void {
   assert.ok(dyDefault !== null);
   assert.ok(dyInvalid !== null);
   assert.equal(dyInvalid, dyDefault);
-  assert.match(renderedInvalid.text, /textLength="/);
+  assert.match(renderedInvalid.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
 }
 
 function testRenderMultiCellAreaCanUseMoreThanFourLines(): void {
@@ -1060,9 +1145,11 @@ function main(): void {
     testNoClusterForMultiDefinitionComponent();
     testDefinitionLimitsForExpandedAndSharedGroups();
     testRenderBottomLeftTextBlockForMultiCellArea();
-    testRenderClueTextDefaultScaleApplies80Percent();
-    testRenderClueTextCanOverrideScaleTo100Percent();
-    testRenderClueTextInvalidScaleFallsBackToDefault80();
+    testRenderClueTextUsesUniformScaleAndLineHeight();
+    testRenderClueTextIgnoresClientScaleOverridesForNow();
+    testRenderClueTextUsesSingleFontSizeForCorelLines();
+    testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt();
+    testRenderClueTextInvalidScaleStillUsesFixed80();
     testRenderMultiCellAreaCanUseMoreThanFourLines();
     testExpandUsesVisibleDefinitionCountNotRawSlotCount();
     testNoExpandForOneByFourStripe();

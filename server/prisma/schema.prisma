@@ -447,8 +447,8 @@ model scanword_svg_fonts {
 model scanword_issue_svg_settings {
   id               BigInt   @id @default(autoincrement())
   issueId          BigInt   @unique
-  clueFontBasePt   Int      @default(7)
-  clueFontMinPt    Int      @default(7)
+  clueFontBasePt   Int      @default(9)
+  clueFontMinPt    Int      @default(8)
   fontId           BigInt?
   systemFontFamily String   @default("Arial") @db.VarChar(120)
   createdAt        DateTime @default(now())

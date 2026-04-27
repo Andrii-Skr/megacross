@@ -12,7 +12,15 @@ import { buildClueEntries, buildClueLayouts } from "../src/utils/clues";
 import { Cell, Grid }               from "../src/types";
 import { arrowSvg }                 from "./arrow-utils";
 import { buildAnswersOnlySvg }      from "./answer-only-svg";
-import { buildClueTextMap, renderClueText, resolveMinClueFontSize } from "./clue-svg";
+import {
+  CLUE_FONT_BASE_PT,
+  CLUE_FONT_MIN_PT,
+  CLUE_GLYPH_WIDTH_SCALE,
+  CLUE_LINE_HEIGHT_SCALE,
+  buildClueTextMap,
+  convertCluePtToSvgUnits,
+  renderClueText,
+} from "./clue-svg";
 import { resolveCenteredTextStartX } from "./text-position";
 import {
   BLOCK_CELL_FILL,
@@ -230,7 +238,8 @@ if (!inFile) {
   const startNumberBaselineAttr = ' dominant-baseline="alphabetic"';
   const startNumberByCell = showStartNumbers ? buildStartNumberByCell(slots) : new Map<string, number>();
   const clueMode = useCorelStyle ? "corel" : "default";
-  const clueFont = Math.max(resolveMinClueFontSize(clueMode), Math.floor(cellSize * 0.22));
+  const clueFont = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, clueMode);
+  const clueMinFontSize = Math.min(convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, clueMode), clueFont);
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       if (!renderCellMask[r][c]) continue;
@@ -267,8 +276,9 @@ if (!inFile) {
               textAlign: clueLayout.areaCells.length > 1 ? "bottom-left" : "center",
               background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
               backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
-              glyphWidthScale: 0.8,
-              lineHeightScale: 0.8,
+              minFontSize: clueMinFontSize,
+              glyphWidthScale: CLUE_GLYPH_WIDTH_SCALE,
+              lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
             }
           );
           if (clueSvg.defs) {

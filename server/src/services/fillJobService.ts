@@ -109,7 +109,15 @@ import {
 } from "./fillJobRepository";
 import { arrowSvg } from "../../scripts/arrow-utils";
 import { buildAnswersOnlySvg } from "../../scripts/answer-only-svg";
-import { buildClueTextMap, renderClueText, resolveMinClueFontSize } from "../../scripts/clue-svg";
+import {
+  CLUE_FONT_BASE_PT,
+  CLUE_FONT_MIN_PT,
+  CLUE_GLYPH_WIDTH_SCALE,
+  CLUE_LINE_HEIGHT_SCALE,
+  buildClueTextMap,
+  convertCluePtToSvgUnits,
+  renderClueText,
+} from "../../scripts/clue-svg";
 import { resolveCenteredTextStartX } from "../../scripts/text-position";
 import {
   BLOCK_CELL_FILL,
@@ -1137,29 +1145,8 @@ function buildSvg(
   const borderRawLayer: string[] = [];
   const outerContourLayer: string[] = [];
   const clueMode = useCorelStyle ? "corel" : "default";
-  const clueFontDefault = Math.max(resolveMinClueFontSize(clueMode), Math.floor(CELL * 0.22));
-  const clueFontFromPt =
-    typeof typography?.clueFontBasePt === "number"
-      ? convertPtToSvgUnits(typography.clueFontBasePt, clueMode)
-      : null;
-  const clueMinFromPt =
-    typeof typography?.clueFontMinPt === "number"
-      ? convertPtToSvgUnits(typography.clueFontMinPt, clueMode)
-      : null;
-  const clueFont = clueFontFromPt != null && Number.isFinite(clueFontFromPt) ? Math.max(1, clueFontFromPt) : clueFontDefault;
-  const clueMinFontSizeRaw =
-    clueMinFromPt != null && Number.isFinite(clueMinFromPt)
-      ? Math.max(1, clueMinFromPt)
-      : resolveMinClueFontSize(clueMode);
-  const clueMinFontSize = Math.min(clueMinFontSizeRaw, clueFont);
-  const clueGlyphWidthScale = Math.max(
-    0.01,
-    (typography?.clueGlyphWidthPct ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT) / 100
-  );
-  const clueLineHeightScale = Math.max(
-    0.01,
-    (typography?.clueLineHeightPct ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT) / 100
-  );
+  const clueFont = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, clueMode);
+  const clueMinFontSize = Math.min(convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, clueMode), clueFont);
 
   if (typography?.fontFaceCss) {
     svgDefs.push(`<style type="text/css"><![CDATA[${typography.fontFaceCss}]]></style>`);
@@ -1195,8 +1182,8 @@ function buildSvg(
             background: clueLayout.areaCells.length > 1 ? "text-block" : "none",
             backgroundInset: clueLayout.areaCells.length > 1 ? STROKE_WIDTH : 0,
             minFontSize: clueMinFontSize,
-            glyphWidthScale: clueGlyphWidthScale,
-            lineHeightScale: clueLineHeightScale,
+            glyphWidthScale: CLUE_GLYPH_WIDTH_SCALE,
+            lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
           });
           if (clueSvg.defs) clueDefs.push(clueSvg.defs);
           clueLayer.push(clueSvg.text);
@@ -1750,14 +1737,6 @@ async function resolveFinalizeSvgTypography(
     fontFamily,
     fontFaceCss,
   };
-}
-
-function convertPtToSvgUnits(pt: number, mode: "default" | "corel"): number {
-  if (mode === "corel") {
-    const mmPerPt = 25.4 / 72;
-    return Math.round(pt * mmPerPt * COREL_UNITS_PER_MM * 1000) / 1000;
-  }
-  return Math.round((pt * 96) / 72 * 1000) / 1000;
 }
 
 async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOptions) {
