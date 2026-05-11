@@ -1,8 +1,16 @@
 "use client";
 
 import { useFormatter, useTranslations } from "next-intl";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -32,6 +40,83 @@ type FillSettingsDialogProps = {
   onUploadSvgFont: (file: File) => Promise<void>;
   onSave: () => void;
 };
+
+type NumericSettingsInputProps = {
+  id: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled: boolean;
+  labelClassName?: string;
+  inputClassName?: string;
+  suffix?: string;
+  onValueChange: (value: number) => void;
+};
+
+function formatNumericInputValue(value: number): string {
+  return Number.isFinite(value) ? String(value) : "";
+}
+
+function NumericSettingsInput({
+  id,
+  label,
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  labelClassName,
+  inputClassName,
+  suffix,
+  onValueChange,
+}: NumericSettingsInputProps) {
+  const [text, setText] = useState(() => formatNumericInputValue(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (focused) return;
+    setText(formatNumericInputValue(value));
+  }, [focused, value]);
+
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={id} className={labelClassName}>
+        {label}
+      </Label>
+      <div className={suffix ? "flex items-center" : undefined}>
+        <Input
+          id={id}
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={text}
+          onChange={(event) => {
+            const nextText = event.currentTarget.value;
+            setText(nextText);
+            if (nextText.trim() === "") return;
+            const nextValue = Number(nextText);
+            if (Number.isFinite(nextValue)) onValueChange(nextValue);
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            setFocused(false);
+            setText(formatNumericInputValue(value));
+          }}
+          disabled={disabled}
+          className={suffix ? `rounded-r-none ${inputClassName ?? ""}` : inputClassName}
+        />
+        {suffix ? (
+          <span className="flex h-9 items-center rounded-r-md border border-l-0 px-3 text-sm text-muted-foreground">
+            {suffix}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 export function FillSettingsDialog({
   open,
@@ -68,9 +153,9 @@ export function FillSettingsDialog({
       <DialogContent className="!flex max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>{t("scanwordsFillSettingsTitle")}</DialogTitle>
-          <p className="text-xs text-muted-foreground">
+          <DialogDescription className="text-xs text-muted-foreground">
             {t("scanwordsFillSettingsScope", { edition: scopeEdition, issue: scopeIssue })}
-          </p>
+          </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="grid gap-6">
@@ -100,104 +185,76 @@ export function FillSettingsDialog({
                 </RadioGroup>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="scanwords-fill-max-per-cell">{t("scanwordsFillDefinitionMaxPerCellLabel")}</Label>
-                  <Input
-                    id="scanwords-fill-max-per-cell"
-                    type="number"
-                    min={1}
-                    max={1024}
-                    step={1}
-                    value={settingsDraft.definitionMaxPerCell}
-                    onChange={(event) => onDefinitionMaxPerCellChange(Number(event.currentTarget.value))}
-                    disabled={settingsSaving}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="scanwords-fill-max-per-half-cell">
-                    {t("scanwordsFillDefinitionMaxPerHalfCellLabel")}
-                  </Label>
-                  <Input
-                    id="scanwords-fill-max-per-half-cell"
-                    type="number"
-                    min={1}
-                    max={1024}
-                    step={1}
-                    value={settingsDraft.definitionMaxPerHalfCell}
-                    onChange={(event) => onDefinitionMaxPerHalfCellChange(Number(event.currentTarget.value))}
-                    disabled={settingsSaving}
-                  />
-                </div>
+                <NumericSettingsInput
+                  id="scanwords-fill-max-per-cell"
+                  label={t("scanwordsFillDefinitionMaxPerCellLabel")}
+                  min={1}
+                  max={1024}
+                  step={1}
+                  value={settingsDraft.definitionMaxPerCell}
+                  onValueChange={onDefinitionMaxPerCellChange}
+                  disabled={settingsSaving}
+                />
+                <NumericSettingsInput
+                  id="scanwords-fill-max-per-half-cell"
+                  label={t("scanwordsFillDefinitionMaxPerHalfCellLabel")}
+                  min={1}
+                  max={1024}
+                  step={1}
+                  value={settingsDraft.definitionMaxPerHalfCell}
+                  onValueChange={onDefinitionMaxPerHalfCellChange}
+                  disabled={settingsSaving}
+                />
               </div>
             </section>
 
             <section className="grid gap-3 border-t pt-5">
               <h3 className="text-sm font-medium">{t("scanwordsFillSettingsSectionClueText")}</h3>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="scanwords-svg-clue-font-base">{t("scanwordsSvgClueFontBasePtLabel")}</Label>
-                  <Input
-                    id="scanwords-svg-clue-font-base"
-                    type="number"
-                    min={1}
-                    max={72}
-                    step={0.1}
-                    value={settingsDraft.clueFontBasePt}
-                    onChange={(event) => onClueFontBasePtChange(Number(event.currentTarget.value))}
-                    disabled={settingsSaving}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="scanwords-svg-clue-font-min">{t("scanwordsSvgClueFontMinPtLabel")}</Label>
-                  <Input
-                    id="scanwords-svg-clue-font-min"
-                    type="number"
-                    min={1}
-                    max={72}
-                    step={0.1}
-                    value={settingsDraft.clueFontMinPt}
-                    onChange={(event) => onClueFontMinPtChange(Number(event.currentTarget.value))}
-                    disabled={settingsSaving}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="scanwords-svg-clue-glyph-width">{t("scanwordsSvgClueGlyphWidthPctLabel")}</Label>
-                  <div className="flex items-center">
-                    <Input
-                      id="scanwords-svg-clue-glyph-width"
-                      type="number"
-                      min={40}
-                      max={200}
-                      step={1}
-                      value={settingsDraft.clueGlyphWidthPct}
-                      onChange={(event) => onClueGlyphWidthPctChange(Number(event.currentTarget.value))}
-                      disabled={settingsSaving}
-                      className="rounded-r-none"
-                    />
-                    <span className="flex h-9 items-center rounded-r-md border border-l-0 px-3 text-sm text-muted-foreground">
-                      %
-                    </span>
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="scanwords-svg-clue-line-height">{t("scanwordsSvgClueLineHeightPctLabel")}</Label>
-                  <div className="flex items-center">
-                    <Input
-                      id="scanwords-svg-clue-line-height"
-                      type="number"
-                      min={40}
-                      max={200}
-                      step={1}
-                      value={settingsDraft.clueLineHeightPct}
-                      onChange={(event) => onClueLineHeightPctChange(Number(event.currentTarget.value))}
-                      disabled={settingsSaving}
-                      className="rounded-r-none"
-                    />
-                    <span className="flex h-9 items-center rounded-r-md border border-l-0 px-3 text-sm text-muted-foreground">
-                      %
-                    </span>
-                  </div>
-                </div>
+                <NumericSettingsInput
+                  id="scanwords-svg-clue-font-base"
+                  label={t("scanwordsSvgClueFontBasePtLabel")}
+                  min={1}
+                  max={72}
+                  step={0.1}
+                  value={settingsDraft.clueFontBasePt}
+                  onValueChange={onClueFontBasePtChange}
+                  disabled={settingsSaving}
+                  labelClassName="flex min-h-10 items-end"
+                />
+                <NumericSettingsInput
+                  id="scanwords-svg-clue-font-min"
+                  label={t("scanwordsSvgClueFontMinPtLabel")}
+                  min={1}
+                  max={72}
+                  step={0.1}
+                  value={settingsDraft.clueFontMinPt}
+                  onValueChange={onClueFontMinPtChange}
+                  disabled={settingsSaving}
+                  labelClassName="flex min-h-10 items-end"
+                />
+                <NumericSettingsInput
+                  id="scanwords-svg-clue-glyph-width"
+                  label={t("scanwordsSvgClueGlyphWidthPctLabel")}
+                  min={40}
+                  max={200}
+                  step={1}
+                  value={settingsDraft.clueGlyphWidthPct}
+                  onValueChange={onClueGlyphWidthPctChange}
+                  disabled={settingsSaving}
+                  suffix="%"
+                />
+                <NumericSettingsInput
+                  id="scanwords-svg-clue-line-height"
+                  label={t("scanwordsSvgClueLineHeightPctLabel")}
+                  min={40}
+                  max={200}
+                  step={1}
+                  value={settingsDraft.clueLineHeightPct}
+                  onValueChange={onClueLineHeightPctChange}
+                  disabled={settingsSaving}
+                  suffix="%"
+                />
               </div>
             </section>
 

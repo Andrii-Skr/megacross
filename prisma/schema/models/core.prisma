@@ -222,8 +222,8 @@ model ScanwordSvgFont {
 model ScanwordIssueSvgSettings {
   id                BigInt   @id @default(autoincrement())
   issueId           BigInt   @unique
-  clueFontBasePt    Float    @default(7)
-  clueFontMinPt     Float    @default(7)
+  clueFontBasePt    Float    @default(9)
+  clueFontMinPt     Float    @default(7.6)
   clueGlyphWidthPct Int      @default(80)
   clueLineHeightPct Int      @default(80)
   fontId            BigInt?

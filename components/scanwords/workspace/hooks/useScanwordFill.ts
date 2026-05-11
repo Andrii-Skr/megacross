@@ -725,7 +725,6 @@ export function useScanwordFill({
       return {
         ...prev,
         definitionMaxPerCell: nextCell,
-        definitionMaxPerHalfCell: Math.min(prev.definitionMaxPerHalfCell, nextCell),
       };
     });
   }, []);

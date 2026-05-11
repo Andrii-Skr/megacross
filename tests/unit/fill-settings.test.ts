@@ -9,6 +9,13 @@ describe("scanword fill settings", () => {
     });
   });
 
+  it("defaults SVG clue font sizes to base 9 and minimum 7.6", () => {
+    expect(normalizeFillSettings(null)).toMatchObject({
+      clueFontBasePt: 9,
+      clueFontMinPt: 7.6,
+    });
+  });
+
   it("clamps SVG clue typography percentages to supported bounds", () => {
     expect(
       normalizeFillSettings({

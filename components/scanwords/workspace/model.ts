@@ -244,7 +244,8 @@ export const SPEED_PRESETS: Record<FillSpeedPreset, { maxNodes: number }> = {
 
 export const DEFAULT_DEFINITION_MAX_PER_CELL = 30;
 export const DEFAULT_DEFINITION_MAX_PER_HALF_CELL = 15;
-export const DEFAULT_SVG_CLUE_FONT_PT = 7;
+export const DEFAULT_SVG_CLUE_FONT_BASE_PT = 9;
+export const DEFAULT_SVG_CLUE_FONT_MIN_PT = 7.6;
 export const DEFAULT_SVG_TYPOGRAPHY_PERCENT = 80;
 export const DEFAULT_SVG_SYSTEM_FONT_FAMILY = "Arial";
 
@@ -252,8 +253,8 @@ export const DEFAULT_FILL_SETTINGS: FillSettings = {
   speedPreset: "fast",
   definitionMaxPerCell: DEFAULT_DEFINITION_MAX_PER_CELL,
   definitionMaxPerHalfCell: DEFAULT_DEFINITION_MAX_PER_HALF_CELL,
-  clueFontBasePt: DEFAULT_SVG_CLUE_FONT_PT,
-  clueFontMinPt: DEFAULT_SVG_CLUE_FONT_PT,
+  clueFontBasePt: DEFAULT_SVG_CLUE_FONT_BASE_PT,
+  clueFontMinPt: DEFAULT_SVG_CLUE_FONT_MIN_PT,
   clueGlyphWidthPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
   clueLineHeightPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
   svgFontId: null,

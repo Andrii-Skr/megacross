@@ -87,7 +87,8 @@ const SVG_FONT_PT_MAX = 72;
 const SVG_TYPOGRAPHY_PERCENT_MIN = 40;
 const SVG_TYPOGRAPHY_PERCENT_MAX = 200;
 const DEFAULT_SVG_TYPOGRAPHY_PERCENT = 80;
-const DEFAULT_SVG_CLUE_FONT_PT = 7;
+const DEFAULT_SVG_CLUE_FONT_BASE_PT = 9;
+const DEFAULT_SVG_CLUE_FONT_MIN_PT = 7.6;
 const DEFAULT_SVG_SYSTEM_FONT_FAMILY = "Arial";
 
 type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
@@ -206,8 +207,8 @@ function normalizeSystemFontFamily(value: string | null | undefined): string {
 
 function defaultIssueSvgSettings() {
   return {
-    clueFontBasePt: DEFAULT_SVG_CLUE_FONT_PT,
-    clueFontMinPt: DEFAULT_SVG_CLUE_FONT_PT,
+    clueFontBasePt: DEFAULT_SVG_CLUE_FONT_BASE_PT,
+    clueFontMinPt: DEFAULT_SVG_CLUE_FONT_MIN_PT,
     clueGlyphWidthPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
     clueLineHeightPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
     fontId: null as string | null,
