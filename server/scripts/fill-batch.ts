@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, basename, dirname, extname }               from "node:path";
 import { parseArgs }                             from "node:util";
-import { createPrismaClient } from "../src/db/prisma";
+import { Prisma, createPrismaClient } from "../src/db/prisma";
 
 import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
@@ -184,6 +184,90 @@ type IssueContext = {
   issueLabel: string;
   filterTemplateId: number | null;
 };
+
+function buildDefinitionWhereFromTemplate(template: DictionaryFilterTemplate): Prisma.opred_vWhereInput {
+  const langCode = (template.language || "ru").toLowerCase();
+  const query = template.query?.trim() || "";
+  const scopeRaw = (template.scope || "word").toLowerCase();
+  const scope = scopeRaw === "def" || scopeRaw === "both" ? scopeRaw : "word";
+  const modeRaw = (template.searchMode || "contains").toLowerCase();
+  const searchMode: "contains" | "startsWith" | "exact" =
+    modeRaw === "startsWith" ? "startsWith" : modeRaw === "exact" ? "exact" : "contains";
+  let lenFilterField =
+    template.lenFilterField === "def" || template.lenFilterField === "word"
+      ? template.lenFilterField
+      : null;
+  const lenMin = Number.isFinite(template.lenMin as number) ? Math.trunc(template.lenMin as number) : undefined;
+  const lenMax = Number.isFinite(template.lenMax as number) ? Math.trunc(template.lenMax as number) : undefined;
+  if (!lenFilterField && (lenMin !== undefined || lenMax !== undefined)) {
+    lenFilterField = "word";
+  }
+  const difficultyMin = Number.isFinite(template.difficultyMin as number)
+    ? Math.trunc(template.difficultyMin as number)
+    : undefined;
+  const difficultyMax = Number.isFinite(template.difficultyMax as number)
+    ? Math.trunc(template.difficultyMax as number)
+    : undefined;
+  const tagNames = (template.tagNames ?? []).map((tag) => tag.trim()).filter(Boolean);
+  const excludeTagNames = (template.excludeTagNames ?? []).map((tag) => tag.trim()).filter(Boolean);
+
+  const textFilter =
+    query.length > 0
+      ? searchMode === "contains"
+        ? { contains: query, mode: "insensitive" as const }
+        : searchMode === "startsWith"
+          ? { startsWith: query, mode: "insensitive" as const }
+          : { equals: query, mode: "insensitive" as const }
+      : null;
+
+  const where: Prisma.opred_vWhereInput = {
+    is_deleted: false,
+    language: { is: { code: langCode } },
+    text_opr: { not: "" },
+    OR: [{ end_date: null }, { end_date: { gte: new Date() } }],
+  };
+
+  if (tagNames.length) {
+    where.opred_tags = {
+      some: {
+        tags: {
+          OR: tagNames.map((name) => ({
+            name: { contains: name, mode: "insensitive" as const },
+          })),
+        },
+      },
+    };
+  }
+  if (excludeTagNames.length) {
+    where.NOT = {
+      opred_tags: {
+        some: {
+          tags: {
+            OR: excludeTagNames.map((name) => ({
+              name: { contains: name, mode: "insensitive" as const },
+            })),
+          },
+        },
+      },
+    };
+  }
+  if (difficultyMin !== undefined || difficultyMax !== undefined) {
+    where.difficulty = {
+      ...(difficultyMin !== undefined ? { gte: difficultyMin } : {}),
+      ...(difficultyMax !== undefined ? { lte: difficultyMax } : {}),
+    };
+  }
+  if (lenFilterField === "def" && (lenMin !== undefined || lenMax !== undefined)) {
+    where.length = {
+      ...(lenMin !== undefined ? { gte: lenMin } : {}),
+      ...(lenMax !== undefined ? { lte: lenMax } : {}),
+    };
+  }
+  if (textFilter && scope === "def") {
+    where.text_opr = textFilter;
+  }
+  return where;
+}
 
 function parseIssueIdOption(value: string | undefined): bigint | null {
   if (!value) return null;
@@ -1450,9 +1534,13 @@ if (!files.length) {
   let usageRebalanceContext: UsageRebalanceContext | null = null;
   let usageRebalanceReason = "off";
   let editionHotBanReason = "off";
+  let definitionWhere: Prisma.opred_vWhereInput | undefined;
+  let definitionLangCode = "ru";
   if (filterTemplateId !== null) {
     const templateData = await loadFilterTemplateById(filterTemplateId);
     masterDict = await loadDictionaryByTemplate(templateData.template, { lengths });
+    definitionWhere = buildDefinitionWhereFromTemplate(templateData.template);
+    definitionLangCode = (templateData.template.language || "ru").toLowerCase();
     const issueSuffix = issueContext
       ? ` issueId=${String(issueContext.issueId)} edition=${issueContext.editionCode} issue="${issueContext.issueLabel}" issueTemplateId=${issueContext.filterTemplateId ?? "none"}`
       : "";
@@ -1462,6 +1550,8 @@ if (!files.length) {
   } else if (issueId !== null) {
     const issueTemplate = await loadIssueTemplateContext(issueId);
     masterDict = await loadDictionaryByTemplate(issueTemplate.template, { lengths });
+    definitionWhere = buildDefinitionWhereFromTemplate(issueTemplate.template);
+    definitionLangCode = (issueTemplate.template.language || "ru").toLowerCase();
     console.log(
       `\n🎯 dictionary source: issue filter template (issueId=${String(issueTemplate.issueId)} edition=${issueTemplate.editionCode} issue="${issueTemplate.issueLabel}" templateId=${issueTemplate.templateId} name="${issueTemplate.templateName}")`
     );
@@ -2146,7 +2236,10 @@ if (!files.length) {
         s.cells.map(([r, c]) => solved[r][c]).join("")
       );
       templateWordCounts.set(key, collectWordCounts(usedWordsList));
-      const definitions = await loadDefinitions(usedWordsList, { langCode: "ru" });
+      const definitions = await loadDefinitions(usedWordsList, {
+        langCode: definitionLangCode,
+        ...(definitionWhere ? { definitionWhere } : {}),
+      });
       const clues = buildClueEntries(grid, slots, solved, definitions);
       const { svg, svgRaw, usedWords } = buildCrosswordSvg(grid, slots, solved, definitions, {
         style: useCorelStyle ? "corel" : "default",

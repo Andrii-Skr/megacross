@@ -14,10 +14,12 @@ export const CLUE_FONT_MIN_PT = 8;
 export const CLUE_GLYPH_WIDTH_SCALE = 0.8;
 export const CLUE_LINE_HEIGHT_SCALE = 0.8;
 const MM_PER_PT = 25.4 / 72;
+const PX_PER_MM = 96 / 25.4;
 export const MIN_CLUE_FONT_SIZE = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
 const MIN_COREL_CLUE_FONT_SIZE = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "corel");
 const CLUE_MAX_LINES = 4;
 const CLUE_CHAR_WIDTH_FACTOR = 0.56;
+const CLUE_EDGE_INSET_MM = 0.1;
 
 export function convertCluePtToSvgUnits(pt: number, mode: "default" | "corel"): number {
   if (mode === "corel") {
@@ -28,6 +30,11 @@ export function convertCluePtToSvgUnits(pt: number, mode: "default" | "corel"): 
 
 export function resolveMinClueFontSize(mode: "default" | "corel"): number {
   return mode === "corel" ? MIN_COREL_CLUE_FONT_SIZE : MIN_CLUE_FONT_SIZE;
+}
+
+function convertMmToSvgUnits(mm: number, mode: "default" | "corel"): number {
+  if (mode === "corel") return Math.round(mm * COREL_UNITS_PER_MM * 1000) / 1000;
+  return Math.round(mm * PX_PER_MM * 1000) / 1000;
 }
 
 function normalizeScale(value: number | undefined, fallback: number): number {
@@ -59,6 +66,19 @@ function escapeXml(text: string): string {
 }
 
 const HYPHENATION_SEPARATOR = "\u00AD";
+const QUOTE_NORMALIZATION_MAP: Record<string, string> = {
+  "«": '"',
+  "»": '"',
+  "“": '"',
+  "”": '"',
+  "„": '"',
+};
+
+function normalizeDisplayPunctuation(text: string): string {
+  return text
+    .replace(/[«»“”„]/g, (ch) => QUOTE_NORMALIZATION_MAP[ch] ?? ch)
+    .replace(/[‐‑‒–—−]/g, "-");
+}
 
 function splitLongWord(word: string, maxChars: number): string[] {
   if (word.length <= maxChars) return [word];
@@ -94,11 +114,19 @@ function splitWordWithHyphenation(word: string, maxChars: number): string[] {
 
   const lines: string[] = [];
   let start = 0;
+  const countLetters = (value: string): number => {
+    let count = 0;
+    for (const ch of value) {
+      if (/\p{L}/u.test(ch)) count += 1;
+    }
+    return count;
+  };
   while (word.length - start > maxChars) {
     const limit = maxChars - 1;
     let breakPos = -1;
     for (const pos of breaks) {
-      if (pos > start && pos - start <= limit) {
+      const tailLetters = countLetters(word.slice(pos));
+      if (pos > start && pos - start <= limit && tailLetters >= 2) {
         breakPos = pos;
       }
     }
@@ -113,14 +141,61 @@ function splitWordWithHyphenation(word: string, maxChars: number): string[] {
   return lines;
 }
 
+function splitWordByExistingHyphen(word: string, maxChars: number): string[] {
+  if (!word.includes("-")) return [word];
+  const parts = word.split("-");
+  if (parts.length <= 1) return [word];
+
+  const lines: string[] = [];
+  let current = parts[0] ?? "";
+
+  for (let idx = 1; idx < parts.length; idx += 1) {
+    const part = parts[idx] ?? "";
+    const combined = current ? `${current}-${part}` : part;
+    if (combined.length <= maxChars) {
+      current = combined;
+      continue;
+    }
+
+    if (current.length > maxChars) {
+      const splitCurrent = splitWordWithHyphenation(current, maxChars);
+      if (splitCurrent.length > 1) {
+        lines.push(...splitCurrent.slice(0, -1));
+        current = splitCurrent[splitCurrent.length - 1] ?? "";
+      } else {
+        current = splitCurrent[0] ?? current;
+      }
+    }
+
+    if (current) {
+      lines.push(`${current}-`);
+    }
+    current = part;
+
+    if (current.length > maxChars) {
+      const split = splitWordWithHyphenation(current, maxChars);
+      if (split.length > 1) {
+        lines.push(...split.slice(0, -1));
+        current = split[split.length - 1] ?? "";
+      } else {
+        current = split[0] ?? current;
+      }
+    }
+  }
+
+  if (current) lines.push(current);
+  return lines;
+}
+
 function splitWord(word: string, maxChars: number, breakWords: boolean): string[] {
   if (word.length <= maxChars) return [word];
   if (!breakWords) return [word];
+  if (word.includes("-")) return splitWordByExistingHyphen(word, maxChars);
   return splitWordWithHyphenation(word, maxChars);
 }
 
 function wrapText(text: string, maxChars: number, breakWords: boolean): string[] {
-  const clean = text.replace(/\s+/g, " ").trim();
+  const clean = normalizeDisplayPunctuation(text).replace(/\s+/g, " ").trim();
   if (!clean) return [];
   const words = clean.split(" ");
   const lines: string[] = [];
@@ -261,7 +336,8 @@ export function renderClueText(
   const maxY = Math.max(...areaRects.map((rect) => rect.y + rect.height));
   const layoutWidth = Math.max(1, maxX - minX);
   const layoutHeight = Math.max(1, maxY - minY);
-  const padding = 1;
+  const edgeInset = clusterFrame === "top-right" ? 0 : convertMmToSvgUnits(CLUE_EDGE_INSET_MM, mode);
+  const padding = 1 + edgeInset;
   const normalized = text.replace(/\s+/g, " ").trim();
   const minFontSizeOverride = Number.isFinite(options.minFontSize)
     ? Math.max(1, Number(options.minFontSize))
@@ -296,43 +372,25 @@ export function renderClueText(
   };
 
   const shrinkUntil = (targetSize: number) => {
-    while (
-      (lines.length > maxLines || (!breakWords && longestWord > maxChars)) &&
-      currentSize > targetSize
-    ) {
+    while (lines.length > CLUE_MAX_LINES && currentSize > targetSize) {
       currentSize = Math.max(targetSize, currentSize - 1);
       recalcLayout();
     }
   };
 
-  shrinkUntil(minFontSize);
-
   if (!breakWords && longestWord > maxChars) {
     breakWords = true;
     recalcLayout();
-    shrinkUntil(minFontSize);
   }
 
-  if (lines.length > maxLines) {
-    shrinkUntil(minFontSize);
-  }
-
-  if (!breakWords && longestWord > maxChars && currentSize > minFontSize) {
-    breakWords = true;
-    recalcLayout();
-    shrinkUntil(minFontSize);
-  }
-
-  if (lines.length > maxLines && breakWords) {
+  if (lines.length > CLUE_MAX_LINES) {
     shrinkUntil(minFontSize);
   }
 
   const textBlockHeight = lineHeight * Math.max(1, lines.length);
   const offsetY = Math.max(0, (availableHeight - textBlockHeight) / 2);
   let textX = alignBottomLeft ? minX + padding + 1 : minX + layoutWidth / 2;
-  let textY = alignBottomLeft
-    ? Math.max(minY + padding, maxY - padding - textBlockHeight)
-    : minY + padding + offsetY;
+  let textY = alignBottomLeft ? minY + padding : minY + padding + offsetY;
   let textAnchor: "start" | "middle" = alignBottomLeft ? "start" : "middle";
 
   const lineWidths = lines.map((line) =>

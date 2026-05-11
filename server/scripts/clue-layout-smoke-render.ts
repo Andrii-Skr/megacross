@@ -266,6 +266,48 @@ function testRenderClueTextContinuesLastHyphenatedSegmentInCorel(): void {
   assert.match(rendered.text, />безделью</);
 }
 
+function testRenderClueTextAvoidsSingleLetterTailAfterHyphenation(): void {
+  const rendered = renderClueText(0, 0, 30, 12, "«чародеи»", "clip-no-single-tail", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize: 12,
+  });
+  assert.doesNotMatch(rendered.text, />и</);
+  assert.doesNotMatch(rendered.text, />и»</);
+}
+
+function testRenderClueTextPrefersExistingHyphenBreak(): void {
+  const rendered = renderClueText(0, 0, 30, 12, "крепость-тюрьма", "clip-hyphen-break", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize: 12,
+  });
+  assert.match(rendered.text, /сть-</);
+  assert.match(rendered.text, />тюр/);
+  assert.doesNotMatch(rendered.text, />пость-т</);
+}
+
+function testRenderClueTextNormalizesNonAsciiHyphenBeforeWrap(): void {
+  const rendered = renderClueText(0, 0, 30, 12, "врач‑стажер", "clip-hyphen-normalized", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize: 12,
+  });
+  assert.match(rendered.text, />врач-</);
+  assert.doesNotMatch(rendered.text, />врач-ст</);
+}
+
+function testRenderClueTextSplitsTooLongLeftPartBeforeHyphen(): void {
+  const rendered = renderClueText(0, 0, 30, 12, "дальневосточник-гольд", "clip-long-left-hyphen", "#000", {
+    mode: "default",
+    textAlign: "center",
+    minFontSize: 12,
+  });
+  assert.doesNotMatch(rendered.text, />дальневосточник-</);
+  assert.match(rendered.text, /ник-</);
+  assert.match(rendered.text, /гольд|>го</);
+}
+
 function testResolveClueRenderLayoutIgnoresDetachedClusterCells(): void {
   const resolved = resolveClueRenderLayout({
     areaCells: [[0, 3]],
@@ -319,6 +361,10 @@ export function runClueRenderSmokeSuite(): void {
   testRenderDetachedClusterDoesNotExpandTailDefinition();
   testRenderClueTextKeepsFullTailWhenLinesOverflow();
   testRenderClueTextContinuesLastHyphenatedSegmentInCorel();
+  testRenderClueTextAvoidsSingleLetterTailAfterHyphenation();
+  testRenderClueTextPrefersExistingHyphenBreak();
+  testRenderClueTextNormalizesNonAsciiHyphenBeforeWrap();
+  testRenderClueTextSplitsTooLongLeftPartBeforeHyphen();
   testResolveClueRenderLayoutIgnoresDetachedClusterCells();
   testResolveClueRenderLayoutKeepsExpandedAnchorArea();
 }
