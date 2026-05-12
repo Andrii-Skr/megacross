@@ -9,6 +9,7 @@ import {
   getFillWordCandidates,
   getJobArchivePath,
   getLatestFillJob,
+  regenerateFillJobTemplate,
   startFillJob,
   subscribeFillJob,
 } from "./services/fillJobService";
@@ -281,6 +282,21 @@ app.post("/api/fill/:jobId/finalize", async (req, res) => {
     res.json(job);
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to finalize job";
+    res.status(400).json({ error: msg });
+  }
+});
+
+app.post("/api/fill/:jobId/regenerate-template", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
+  try {
+    const job = await regenerateFillJobTemplate(jobId, req.body ?? {});
+    res.json(job);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Failed to regenerate template";
     res.status(400).json({ error: msg });
   }
 });

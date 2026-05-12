@@ -20,6 +20,7 @@
     "test:cost-hard-first-rebalance-smoke": "tsx scripts/cost-hard-first-rebalance-smoke.ts",
     "test:edition-hot-ban-smoke": "tsx scripts/edition-hot-ban-smoke.ts",
     "test:solution-polish-smoke": "tsx scripts/solution-polish-smoke.ts",
+    "test:fill-review-regeneration-smoke": "tsx scripts/fill-review-regeneration-smoke.ts",
     "test:solver-priority-slack-smoke": "tsx scripts/solver-priority-slack-smoke.ts",
     "test:solver-csp-smoke": "tsx scripts/solver-csp-smoke.ts",
     "test:solver-csp-parity-smoke": "tsx scripts/solver-csp-parity-smoke.ts",

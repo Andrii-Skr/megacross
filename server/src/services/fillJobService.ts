@@ -72,6 +72,9 @@ import {
   resolveTemplatePaths,
   sanitizeName,
   type SnapshotFile,
+  type TemplateEntry,
+  type TemplateError,
+  type ResolvedTemplate,
 } from "./fillJobTemplateService";
 import {
   buildReviewTemplate,
@@ -84,6 +87,14 @@ import {
   type ReviewTemplate,
   type ReviewWordSelection,
 } from "./fillJobReviewService";
+import {
+  applyReviewTemplateOverrides,
+  applyTemplateReviewResult,
+  buildFillReviewPayload,
+  collectReviewUsageState,
+  type ReviewTemplateOverrideInput,
+  type ReviewTemplateStatusRow,
+} from "./fillJobReviewStateService";
 import {
   buildFinalSlotState,
   buildSolvedGridFromSlots,
@@ -179,6 +190,11 @@ type FinalizePayload = {
   svgTypography?: FinalizeSvgTypographyInput | null;
 };
 
+type RegenerateTemplatePayload = {
+  templateKey?: unknown;
+  templates?: ReviewTemplateOverrideInput[] | null;
+};
+
 type ParsedFinalizeSvgTypography = {
   clueFontBasePt: number | null;
   clueFontMinPt: number | null;
@@ -215,6 +231,73 @@ type IssueContext = {
 type JobRuntime = {
   emitter: EventEmitter;
   lastUpdate: FillJobUpdate | null;
+};
+
+type FillExecutionContext = {
+  issue: IssueContext;
+  overrideTemplateId: number | null;
+  templateId: number;
+  templateSource: string;
+  dictionaryTemplate: DictionaryFilterTemplate;
+  resolved: ResolvedTemplate[];
+  sortedEntries: TemplateEntry[];
+  entryByKey: Map<string, TemplateEntry>;
+  invalidByKey: Map<string, TemplateError>;
+  templateNeighbors: Map<string, Set<string>>;
+  dict: Map<number, string[]>;
+  wordLengthByWord: Map<string, number>;
+  usageCountByWord: Map<string, number>;
+  editionUsageCountByWord: Map<string, number>;
+  usagePriorityByWord: Map<string, number>;
+  editionHotBannedWords: Set<string>;
+  usageRebalanceThresholds: UsageRebalanceThresholds | null;
+  usageRebalanceContext: UsageRebalanceContext | null;
+  usageRebalanceReason: string;
+  usageRebalanceCostMode: boolean;
+  editionHotBanReason: string;
+  definitionWhere: Prisma.opred_vWhereInput;
+  effectiveParallelRestarts: number;
+  cpuParallel: number;
+  languageCode: string;
+  languageId: number | null;
+};
+
+type SolveSingleTemplateState = {
+  solvedWordsByTemplate: Map<string, Set<string>>;
+  usedWordsInJob: Set<string>;
+  usedWordCountInJob: Map<string, number>;
+  usedDefinitionKeys: Set<string>;
+};
+
+type SolveSingleTemplateMetrics = {
+  uniqueFallbackStats?: {
+    probeAttempted: number;
+    probeSolved: number;
+    probeUnsat: number;
+    probeUnknown: number;
+    strictAttempted: number;
+    strictLimited: number;
+    strictSkippedByDeficit: number;
+    strictSolved: number;
+    adaptiveAttempted: number;
+    adaptiveSolved: number;
+    neighborAttempted: number;
+    neighborSolved: number;
+  };
+  usageRebalanceMetrics: ReturnType<typeof buildUsageRebalanceMetrics>;
+  usageCostMetrics: {
+    templatesPolished: number;
+    replacements: number;
+    totalDeltaCost: number;
+    examinedCandidates: number;
+  };
+  editionHotBanMetrics: {
+    loaded: number;
+    applied: number;
+    relaxed: number;
+    relaxedByLen: Map<number, number>;
+    unresolvedByLen: Map<number, number>;
+  };
 };
 
 const jobRuntimes = new Map<string, JobRuntime>();
@@ -939,6 +1022,188 @@ async function loadSnapshotFiles(issueId: bigint): Promise<SnapshotFile[]> {
     .filter((item) => item.name.length > 0);
 }
 
+export function buildInitialTemplatesState(
+  resolved: ResolvedTemplate[],
+  entryByKey: Map<string, TemplateEntry>,
+  invalidByKey: Map<string, TemplateError>,
+): ReviewTemplateStatusRow[] {
+  return resolved.map((item) => {
+    const valid = entryByKey.get(item.key);
+    if (valid) {
+      return {
+        key: item.key,
+        name: valid.name,
+        status: "pending" as const,
+        error: null,
+        order: item.order,
+        sourceName: item.sourceName,
+      };
+    }
+    const bad = invalidByKey.get(item.key);
+    if (bad) {
+      return {
+        key: item.key,
+        name: bad.name,
+        status: "error" as const,
+        error: bad.error,
+        order: item.order,
+        sourceName: item.sourceName,
+      };
+    }
+    return {
+      key: item.key,
+      name: item.name,
+      status: "error" as const,
+      error: item.path ? "Invalid template" : "Template file not found",
+      order: item.order,
+      sourceName: item.sourceName,
+    };
+  });
+}
+
+async function loadFillExecutionContext(issueId: bigint, options: FillJobOptions): Promise<FillExecutionContext> {
+  const issue = await loadIssueContext(issueId);
+  if (!issue) throw new Error("Issue not found");
+  const overrideTemplateId =
+    typeof options.filterTemplateId === "number" &&
+    Number.isFinite(options.filterTemplateId) &&
+    options.filterTemplateId > 0
+      ? Math.floor(options.filterTemplateId)
+      : null;
+  const templateId = overrideTemplateId ?? issue.filterTemplateId ?? issue.snapshotTemplateId;
+  if (!templateId) throw new Error("Filter template is not set for this issue");
+
+  const dictionaryTemplate = await loadFilterTemplate(templateId);
+  if (!dictionaryTemplate) throw new Error("Filter template not found");
+
+  const snapshotFiles = await loadSnapshotFiles(issueId);
+  if (!snapshotFiles.length) throw new Error("No uploaded templates for this issue");
+
+  const issueSamplesDir = getSamplesDirForIssue(issue);
+  const baseSamplesDir = getSamplesDir();
+  const samplesDir = existsSync(issueSamplesDir) ? issueSamplesDir : baseSamplesDir;
+  const resolved = resolveTemplatePaths(snapshotFiles, samplesDir);
+  if (!resolved.length) {
+    throw new Error("Uploaded template files not found on disk");
+  }
+
+  const { entries, lengths, invalid } = buildEntries(resolved);
+  const dict = await loadDictionaryByTemplate(dictionaryTemplate, { lengths });
+  if (!dict.size) throw new Error("Dictionary is empty for selected template");
+
+  const wordLengthByWord = buildWordLengthLookup(dict);
+  const usageCountByWord = new Map<string, number>();
+  const editionUsageCountByWord = new Map<string, number>();
+  const usagePriorityByWord = new Map<string, number>();
+  const editionHotBannedWords = new Set<string>();
+  let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
+  let usageRebalanceContext: UsageRebalanceContext | null = null;
+  let usageRebalanceReason = "off";
+  const usageRebalanceCostMode = options.usageRebalance && options.usageRebalanceMode === "cost";
+  let editionHotBanReason = "off";
+  let editionUsageSnapshot: EditionUsageSnapshot | null = null;
+  const ensureEditionUsageSnapshot = async (): Promise<EditionUsageSnapshot> => {
+    if (!editionUsageSnapshot) {
+      editionUsageSnapshot = await loadEditionUsageSnapshot(dict, issue.editionId, {
+        usageRebalanceEnabled: options.usageRebalance,
+        usageRebalanceMode: options.usageRebalanceMode,
+        db: prisma,
+      });
+    }
+    return editionUsageSnapshot;
+  };
+  if (options.usageStats) {
+    const loadedEditionUsage = await ensureEditionUsageSnapshot();
+    for (const [word, usage] of loadedEditionUsage.usageByWord) {
+      usageCountByWord.set(word, usage);
+    }
+    for (const [word, priority] of loadedEditionUsage.priorityByWord) {
+      usagePriorityByWord.set(word, priority);
+    }
+    if (usagePriorityByWord.size) {
+      sortDictionaryByUsagePriority(dict, usagePriorityByWord);
+    }
+  }
+  if (options.editionHotBan) {
+    const loadedEditionUsage = await ensureEditionUsageSnapshot();
+    for (const [word, usage] of loadedEditionUsage.usageByWord) {
+      editionUsageCountByWord.set(word, usage);
+    }
+    const loadedHotBannedWords = await loadEditionHotBannedWords(issue.editionId, prisma);
+    for (const word of loadedHotBannedWords) {
+      editionHotBannedWords.add(word);
+    }
+    editionHotBanReason = `on (edition=${issue.editionId} banned=${editionHotBannedWords.size})`;
+    if (!editionUsageCountByWord.size) {
+      editionHotBanReason = `${editionHotBanReason} noUsage=1`;
+    }
+  }
+  if (!options.usageRebalance) {
+    usageRebalanceReason = "off";
+  } else if (!options.unique) {
+    usageRebalanceReason = "skipped (unique=off)";
+  } else if (!options.usageStats || !usageCountByWord.size) {
+    usageRebalanceReason = "skipped (no usage stats)";
+  } else {
+    usageRebalanceThresholds = resolveUsageRebalanceThresholds(dict, usageCountByWord, options.usageRebalanceMode);
+    usageRebalanceContext = buildUsageRebalanceContext(dict, usageCountByWord, usageRebalanceThresholds);
+    usageRebalanceReason = usageRebalanceCostMode
+      ? `on (mode=cost strategy=hard-lite+soft+cost soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
+      : `on (mode=${options.usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
+  }
+  const definitionWhere = buildDefinitionWhereFromTemplate(dictionaryTemplate);
+
+  const dictCounts = new Map<number, number>();
+  for (const [len, words] of dict) dictCounts.set(len, words.length);
+  for (const entry of entries) {
+    entry.stats.pressure = computePressure(entry.lenCounts, dictCounts);
+  }
+
+  const sortedEntries = [...entries].sort((a, b) => compareByComplexity(a.stats, b.stats));
+  const entryByKey = new Map(entries.map((entry) => [entry.key, entry]));
+  const invalidByKey = new Map(invalid.map((entry) => [entry.key, entry]));
+  const templateNeighbors = buildTemplateNeighbors(resolved);
+  const cpuParallel = detectCpuParallelism();
+  const effectiveParallelRestarts = resolveParallelRestarts(options.restarts, options.parallelRestarts);
+  const languageCode = dictionaryTemplate.language.toLowerCase();
+  const languageId = await resolveLanguageId(languageCode);
+  const templateSource =
+    overrideTemplateId !== null
+      ? "override"
+      : issue.filterTemplateId !== null
+        ? "issue.filterTemplateId"
+        : "issue.snapshotTemplateId";
+
+  return {
+    issue,
+    overrideTemplateId,
+    templateId,
+    templateSource,
+    dictionaryTemplate,
+    resolved,
+    sortedEntries,
+    entryByKey,
+    invalidByKey,
+    templateNeighbors,
+    dict,
+    wordLengthByWord,
+    usageCountByWord,
+    editionUsageCountByWord,
+    usagePriorityByWord,
+    editionHotBannedWords,
+    usageRebalanceThresholds,
+    usageRebalanceContext,
+    usageRebalanceReason,
+    usageRebalanceCostMode,
+    editionHotBanReason,
+    definitionWhere,
+    effectiveParallelRestarts,
+    cpuParallel,
+    languageCode,
+    languageId,
+  };
+}
+
 function buildSvg(
   grid: Grid,
   slots: Slot[],
@@ -1028,6 +1293,422 @@ function formatFail(info: SolveFailInfo): string {
   if (info.reason === "forward-check") return "forward-check";
   if (info.reason === "zero-pick") return "zero-pick";
   return "no-solution";
+}
+
+async function solveSingleTemplateForReview(
+  entry: TemplateEntry,
+  context: FillExecutionContext,
+  options: FillJobOptions,
+  state: SolveSingleTemplateState,
+  metrics: SolveSingleTemplateMetrics,
+  callbacks: {
+    onProgress?: (info: SolveProgress) => void;
+  } = {},
+): Promise<{ reviewTemplate: ReviewTemplate; wordCounts: Map<string, number> } | { error: string }> {
+  let lastFail: SolveFailInfo | null = null;
+  const onFail = options.explainFail
+    ? (info: SolveFailInfo) => {
+        lastFail = info;
+      }
+    : undefined;
+  const rebalanceLcvPrioritySlack =
+    !options.usageRebalance
+      ? 0
+      : options.usageRebalanceMode === "aggressive"
+        ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
+        : options.usageRebalanceMode === "cost"
+          ? COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK
+          : 0;
+
+  const solveWithDictionary = async (
+    dictForSolve: Map<number, string[]>,
+    overrides: {
+      maxNodes?: number;
+      maxMs?: number;
+      wordPriority?: Map<string, number>;
+      lcv?: boolean;
+      shuffle?: boolean;
+      lcvPrioritySlack?: number;
+    } = {},
+  ) => {
+    const effectiveWordPriority =
+      overrides.wordPriority ?? (options.usageStats ? context.usagePriorityByWord : undefined);
+    const nativeOptions = {
+      shuffle: overrides.shuffle ?? options.shuffle,
+      lcv: overrides.lcv ?? options.lcv,
+      lcvPrioritySlack: overrides.lcvPrioritySlack ?? rebalanceLcvPrioritySlack,
+      restarts: options.restarts,
+      parallelRestarts: context.effectiveParallelRestarts,
+      maxNodes: overrides.maxNodes ?? options.maxNodes,
+      maxMs: overrides.maxMs ?? options.maxMs,
+      nativeDlx: true,
+      label: entry.name,
+      wordPriority: effectiveWordPriority,
+      onProgress: callbacks.onProgress,
+      onFail,
+    };
+    const solvedNative =
+      options.engine === "csp"
+        ? await solveCspNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions)
+        : await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions);
+    if (solvedNative === undefined) {
+      throw new Error(
+        options.engine === "csp"
+          ? "Native CSP solver is not available (JS solver is disabled)"
+          : "Native DLX solver is not available (JS solver is disabled)",
+      );
+    }
+    return solvedNative;
+  };
+
+  let solved: string[] | null | undefined;
+  const applyEditionHotBan = (baseBlockedWords: Set<string>) => {
+    if (!options.editionHotBan || !context.editionHotBannedWords.size) {
+      return {
+        blockedWords: baseBlockedWords,
+        relaxedWords: new Set<string>(),
+        relaxedByLen: new Map<number, number>(),
+        unresolvedDeficitsByLen: new Map<number, number>(),
+        appliedHotWords: 0,
+      };
+    }
+    const relaxed = relaxHotBanForLenDeficits(
+      entry.lenCounts,
+      context.dict,
+      baseBlockedWords,
+      context.editionHotBannedWords,
+      context.editionUsageCountByWord,
+    );
+    metrics.editionHotBanMetrics.applied += relaxed.appliedHotWords;
+    metrics.editionHotBanMetrics.relaxed += relaxed.relaxedWords.size;
+    mergeLenCounter(metrics.editionHotBanMetrics.relaxedByLen, relaxed.relaxedByLen);
+    mergeLenCounter(metrics.editionHotBanMetrics.unresolvedByLen, relaxed.unresolvedDeficitsByLen);
+    return relaxed;
+  };
+
+  if (options.unique) {
+    const neighborBlockedWords = new Set<string>();
+    const neighborKeys = context.templateNeighbors.get(entry.key);
+    if (neighborKeys) {
+      for (const neighborKey of neighborKeys) {
+        const used = state.solvedWordsByTemplate.get(neighborKey);
+        if (!used) continue;
+        for (const word of used) neighborBlockedWords.add(word);
+      }
+    }
+
+    const strictBlockedWords = new Set<string>(neighborBlockedWords);
+    for (const word of state.usedWordsInJob) strictBlockedWords.add(word);
+    const neighborCappedBlockedWords = buildCappedBlockedWords(
+      neighborBlockedWords,
+      state.usedWordCountInJob,
+      MAX_WORD_USES,
+    );
+    const canFallbackToNeighbor = strictBlockedWords.size !== neighborCappedBlockedWords.size;
+    const fallbackPriority = buildInJobUsagePriority(
+      state.usedWordCountInJob,
+      options.usageStats ? context.usagePriorityByWord : undefined,
+      IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
+    );
+    const buildRebalanceBlockedVariants = (
+      baseBlockedWords: Set<string>,
+      variantOptions: { allowCostHardFirst?: boolean } = {},
+    ): RebalanceBlockedVariant[] => {
+      if (
+        !context.usageRebalanceThresholds ||
+        !context.usageRebalanceContext ||
+        !options.usageStats ||
+        !context.usageCountByWord.size
+      ) {
+        return [{ kind: "base", blockedWords: baseBlockedWords }];
+      }
+      if (context.usageRebalanceCostMode) {
+        return buildCostHardFirstRebalanceBlockedVariants(
+          baseBlockedWords,
+          state.usedWordCountInJob,
+          entry.lenCounts,
+          context.usageRebalanceContext,
+          metrics.usageRebalanceMetrics,
+          { allowHardFirst: variantOptions.allowCostHardFirst === true },
+        );
+      }
+      const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
+      const softBlockedWords = buildSoftHotDuplicateBlock(state.usedWordCountInJob, context.usageRebalanceContext);
+      for (const word of softBlockedWords) {
+        if (softOnlyBlockedWords.has(word)) continue;
+        softOnlyBlockedWords.add(word);
+        metrics.usageRebalanceMetrics.softBlocked += 1;
+        const len = context.usageRebalanceContext.wordLenInfoByWord.get(word)?.len;
+        if (typeof len === "number") {
+          incrementUsageRebalanceMetricByLen(metrics.usageRebalanceMetrics.softBlockedByLen, len, 1);
+        }
+      }
+      const hard = applyHardHotBanLengthSafe(entry.lenCounts, softOnlyBlockedWords, context.usageRebalanceContext);
+      metrics.usageRebalanceMetrics.hardCandidates += hard.hardCandidates;
+      metrics.usageRebalanceMetrics.hardApplied += hard.hardApplied;
+      metrics.usageRebalanceMetrics.hardRelaxed += hard.hardRelaxed;
+      if (hard.disabledBySafety) metrics.usageRebalanceMetrics.hardDisabledBySafety += 1;
+      mergeUsageRebalanceMetricByLen(metrics.usageRebalanceMetrics.hardAppliedByLen, hard.hardAppliedByLen);
+
+      return buildRebalanceBlockedVariantCascade(baseBlockedWords, softOnlyBlockedWords, hard.blockedWords);
+    };
+
+    const solveWithBlockedVariants = async (
+      phase: "strict" | "adaptive" | "neighbor",
+      variants: RebalanceBlockedVariant[],
+      phaseOptions: {
+        sortByFallbackPriority: boolean;
+        strictBudget?: { maxNodes: number; maxMs: number } | null;
+      },
+    ): Promise<string[] | null> => {
+      let appliedStrictBudget = false;
+      for (const [index, variant] of variants.entries()) {
+        if (index > 0 && variant.kind === "softOnly") {
+          metrics.usageRebalanceMetrics.hardRetrySoftOnly += 1;
+        }
+        const filtered = filterDictionaryByBlockedWords(context.dict, variant.blockedWords);
+        const dictForSolve = phaseOptions.sortByFallbackPriority
+          ? sortDictionaryByPriority(filtered, fallbackPriority)
+          : filtered;
+        const overrides: {
+          maxNodes?: number;
+          maxMs?: number;
+          wordPriority?: Map<string, number>;
+          lcv?: boolean;
+          shuffle?: boolean;
+          lcvPrioritySlack?: number;
+        } = {};
+        if (phase === "strict" && phaseOptions.strictBudget && !appliedStrictBudget) {
+          overrides.maxNodes = phaseOptions.strictBudget.maxNodes;
+          overrides.maxMs = phaseOptions.strictBudget.maxMs;
+          appliedStrictBudget = true;
+        }
+        if (context.usageRebalanceCostMode) {
+          overrides.wordPriority = fallbackPriority;
+        }
+        if (phase !== "strict") {
+          overrides.wordPriority = fallbackPriority;
+          overrides.lcv = false;
+          overrides.shuffle = false;
+        }
+        const solvedVariant = await solveWithDictionary(dictForSolve, overrides);
+        if (solvedVariant) return solvedVariant;
+      }
+      return null;
+    };
+
+    const strictHotBan = applyEditionHotBan(strictBlockedWords);
+    const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords, {
+      allowCostHardFirst: context.usageRebalanceCostMode,
+    });
+    const strictPrimaryVariant = context.usageRebalanceCostMode
+      ? strictVariants.find((variant) => variant.kind !== "hardAggressive")
+      : strictVariants[0];
+    const strictPrimaryBlockedWords =
+      strictPrimaryVariant?.blockedWords ?? strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
+    const strictProbeBlockedWords = context.usageRebalanceCostMode
+      ? (strictVariants[0]?.blockedWords ?? strictPrimaryBlockedWords)
+      : strictPrimaryBlockedWords;
+    const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
+      entry.lenCounts,
+      context.dict,
+      strictPrimaryBlockedWords,
+    );
+    let adaptiveDeficitLengths = strictDeficitLengths;
+    if (strictDeficitLengths.size === 0) {
+      const strictDict = filterDictionaryByBlockedWords(context.dict, strictProbeBlockedWords);
+      metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.probeAttempted += 1);
+      const probeResult = runDlxProbe(entry.grid.data, entry.slots, strictDict, {
+        label: `${entry.name}:probe`,
+        maxNodes: options.maxNodes,
+        maxMs: options.maxMs,
+        uniqueWords: true,
+        wordPriority: options.usageStats ? context.usagePriorityByWord : undefined,
+        lcvPrioritySlack: rebalanceLcvPrioritySlack,
+      });
+      lastFail = probeResult.failInfo ?? lastFail;
+      if (probeResult.solved) {
+        solved = probeResult.solved;
+        metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.probeSolved += 1);
+      } else if (probeResult.outcome === "unsat") {
+        metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.probeUnsat += 1);
+        const failLen = extractFailedSlotLength(probeResult.failInfo);
+        if (failLen !== null) {
+          adaptiveDeficitLengths = new Set<number>([failLen]);
+        } else {
+          adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
+            entry.lenCounts,
+            context.dict,
+            strictPrimaryBlockedWords,
+          );
+        }
+        metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.strictAttempted += 1);
+        const hasFallbackPotential = canFallbackToNeighbor || state.usedWordsInJob.size > 0;
+        const strictBudget = hasFallbackPotential ? resolveStrictLimitedBudget(options.maxNodes, options.maxMs) : null;
+        if (strictBudget && metrics.uniqueFallbackStats) metrics.uniqueFallbackStats.strictLimited += 1;
+        solved = await solveWithBlockedVariants("strict", strictVariants, {
+          sortByFallbackPriority: false,
+          strictBudget,
+        });
+        if (solved) {
+          metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.strictSolved += 1);
+        } else {
+          const strictFailLen = extractFailedSlotLength(lastFail);
+          if (strictFailLen !== null) {
+            adaptiveDeficitLengths = new Set<number>([strictFailLen]);
+          } else {
+            adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
+              entry.lenCounts,
+              context.dict,
+              strictPrimaryBlockedWords,
+            );
+          }
+        }
+      } else {
+        metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.probeUnknown += 1);
+        metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.strictAttempted += 1);
+        const hasFallbackPotential = canFallbackToNeighbor || state.usedWordsInJob.size > 0;
+        const strictBudget = hasFallbackPotential ? resolveStrictLimitedBudget(options.maxNodes, options.maxMs) : null;
+        if (strictBudget && metrics.uniqueFallbackStats) metrics.uniqueFallbackStats.strictLimited += 1;
+        solved = await solveWithBlockedVariants("strict", strictVariants, {
+          sortByFallbackPriority: false,
+          strictBudget,
+        });
+        if (solved) {
+          metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.strictSolved += 1);
+        } else {
+          const failLen = extractFailedSlotLength(lastFail);
+          if (failLen !== null) {
+            adaptiveDeficitLengths = new Set<number>([failLen]);
+          } else {
+            adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
+              entry.lenCounts,
+              context.dict,
+              strictPrimaryBlockedWords,
+            );
+          }
+        }
+      }
+    } else if (metrics.uniqueFallbackStats) {
+      metrics.uniqueFallbackStats.strictSkippedByDeficit += 1;
+    }
+    if (!solved && adaptiveDeficitLengths.size > 0) {
+      const adaptiveBaseBlockedWords = buildAdaptiveBlockedWords(
+        state.usedWordsInJob,
+        state.usedWordCountInJob,
+        neighborBlockedWords,
+        adaptiveDeficitLengths,
+        context.wordLengthByWord,
+        MAX_WORD_USES,
+      );
+      const adaptiveHotBan = applyEditionHotBan(adaptiveBaseBlockedWords);
+      if (!areSetsEqual(adaptiveHotBan.blockedWords, strictHotBan.blockedWords)) {
+        metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.adaptiveAttempted += 1);
+        const adaptiveVariants = buildRebalanceBlockedVariants(adaptiveHotBan.blockedWords);
+        solved = await solveWithBlockedVariants("adaptive", adaptiveVariants, {
+          sortByFallbackPriority: true,
+          strictBudget: null,
+        });
+        if (solved && metrics.uniqueFallbackStats) metrics.uniqueFallbackStats.adaptiveSolved += 1;
+      }
+    }
+    if (!solved && canFallbackToNeighbor) {
+      metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.neighborAttempted += 1);
+      const neighborHotBan = applyEditionHotBan(neighborCappedBlockedWords);
+      const neighborVariants = buildRebalanceBlockedVariants(neighborHotBan.blockedWords);
+      solved = await solveWithBlockedVariants("neighbor", neighborVariants, {
+        sortByFallbackPriority: true,
+        strictBudget: null,
+      });
+      if (solved && metrics.uniqueFallbackStats) metrics.uniqueFallbackStats.neighborSolved += 1;
+    }
+  } else {
+    const nonUniqueHotBan = applyEditionHotBan(new Set<string>());
+    const hotBanFilteredDict = filterDictionaryByBlockedWords(context.dict, nonUniqueHotBan.blockedWords);
+    const dictForTemplate = new Map<number, string[]>([...hotBanFilteredDict].map(([len, words]) => [len, [...words]]));
+    solved = await solveWithDictionary(dictForTemplate);
+  }
+
+  if (context.usageRebalanceCostMode && solved) {
+    const polishPriority = buildInJobUsagePriority(
+      state.usedWordCountInJob,
+      options.usageStats ? context.usagePriorityByWord : undefined,
+      IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
+    );
+    const polish = polishSolvedRowsByCost({
+      solvedRows: solved,
+      slots: entry.slots,
+      dict: context.dict,
+      uniqueWords: options.unique,
+      maxPasses: COST_REBALANCE_POLISH_PASSES,
+      priorityByWord: polishPriority,
+      usedWordCountByWord: state.usedWordCountInJob,
+      forbiddenWords: options.unique ? state.usedWordsInJob : undefined,
+      repeatPenalty: IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
+    });
+    metrics.usageCostMetrics.examinedCandidates += polish.examinedCandidates;
+    if (polish.improved) {
+      solved = polish.solvedRows;
+      metrics.usageCostMetrics.templatesPolished += 1;
+      metrics.usageCostMetrics.replacements += polish.replacements;
+      metrics.usageCostMetrics.totalDeltaCost += polish.totalDeltaCost;
+      console.log(
+        `🧪 cost-polish: template=${entry.name} passes=${polish.passCount} replacements=${polish.replacements} delta=${polish.totalDeltaCost.toFixed(1)}`,
+      );
+    }
+  }
+
+  if (!solved) {
+    if (!lastFail && options.explainFail) {
+      lastFail = consumeLastNativeFail();
+    }
+    return {
+      error: lastFail ? formatFail(lastFail) : "no-solution",
+    };
+  }
+
+  const usedWordsList = entry.slots.map((slot) => slot.cells.map(([row, col]) => solved?.[row]?.[col] ?? "").join(""));
+  const wordCounts = collectWordCounts(usedWordsList);
+  if (options.unique) {
+    const usedHere = new Set<string>();
+    for (const word of usedWordsList) {
+      const key = normalizeWordKey(word);
+      if (!key) continue;
+      usedHere.add(key);
+      state.usedWordsInJob.add(key);
+      state.usedWordCountInJob.set(key, (state.usedWordCountInJob.get(key) ?? 0) + 1);
+    }
+    state.solvedWordsByTemplate.set(entry.key, usedHere);
+  }
+
+  const usedDefinitionsForTemplate = new Set(state.usedDefinitionKeys);
+  const selectedWords =
+    typeof context.languageId === "number"
+      ? await selectWordsAndDefinitionsForEdition(usedWordsList, {
+          langId: context.languageId,
+          editionId: context.issue.editionId,
+          preferUsageStats: options.usageStats,
+          definitionWhere: context.definitionWhere,
+          usedDefinitions: usedDefinitionsForTemplate,
+        })
+      : new Map<string, ReviewWordSelection>();
+  const fallbackDefinitions = await loadDefinitions(usedWordsList, {
+    langCode: context.dictionaryTemplate.language,
+    definitionWhere: context.definitionWhere,
+  });
+
+  return {
+    reviewTemplate: buildReviewTemplate(
+      entry,
+      solved,
+      context.languageCode,
+      context.languageId ?? null,
+      selectedWords,
+      fallbackDefinitions,
+      state.usedDefinitionKeys,
+    ),
+    wordCounts,
+  };
 }
 
 
@@ -1465,152 +2146,18 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     await updateJob(jobId, { status: "running", progress: 0 });
     updateLocal({ status: "running", progress: 0 });
 
-    const issue = await loadIssueContext(issueId);
-    if (!issue) throw new Error("Issue not found");
-    const overrideTemplateId =
-      typeof options.filterTemplateId === "number" &&
-      Number.isFinite(options.filterTemplateId) &&
-      options.filterTemplateId > 0
-        ? Math.floor(options.filterTemplateId)
-        : null;
-    const templateId = overrideTemplateId ?? issue.filterTemplateId ?? issue.snapshotTemplateId;
-    if (!templateId) throw new Error("Filter template is not set for this issue");
-
-    const template = await loadFilterTemplate(templateId);
-    if (!template) throw new Error("Filter template not found");
-
-    const snapshotFiles = await loadSnapshotFiles(issueId);
-    if (!snapshotFiles.length) throw new Error("No uploaded templates for this issue");
-
-    const issueSamplesDir = getSamplesDirForIssue(issue);
-    const baseSamplesDir = getSamplesDir();
-    const samplesDir = existsSync(issueSamplesDir) ? issueSamplesDir : baseSamplesDir;
-    const resolved = resolveTemplatePaths(snapshotFiles, samplesDir);
-    if (!resolved.length) {
-      throw new Error("Uploaded template files not found on disk");
-    }
-
-    const { entries, lengths, invalid } = buildEntries(resolved);
-    const dict = await loadDictionaryByTemplate(template, { lengths });
-    if (!dict.size) throw new Error("Dictionary is empty for selected template");
-    const wordLengthByWord = buildWordLengthLookup(dict);
-    const usageCountByWord = new Map<string, number>();
-    const editionUsageCountByWord = new Map<string, number>();
-    const usagePriorityByWord = new Map<string, number>();
-    const editionHotBannedWords = new Set<string>();
-    let usageRebalanceThresholds: UsageRebalanceThresholds | null = null;
-    let usageRebalanceContext: UsageRebalanceContext | null = null;
-    let usageRebalanceReason = "off";
-    const usageRebalanceCostMode = options.usageRebalance && options.usageRebalanceMode === "cost";
-    let editionHotBanReason = "off";
-    let editionUsageSnapshot: EditionUsageSnapshot | null = null;
-    const ensureEditionUsageSnapshot = async (): Promise<EditionUsageSnapshot> => {
-      if (!editionUsageSnapshot) {
-        editionUsageSnapshot = await loadEditionUsageSnapshot(dict, issue.editionId, {
-          usageRebalanceEnabled: options.usageRebalance,
-          usageRebalanceMode: options.usageRebalanceMode,
-          db: prisma,
-        });
-      }
-      return editionUsageSnapshot;
-    };
-    if (options.usageStats) {
-      const mainLangId = await resolveLanguageId(template.language);
-      if (mainLangId !== null) {
-        const loadedEditionUsage = await ensureEditionUsageSnapshot();
-        for (const [word, usage] of loadedEditionUsage.usageByWord) {
-          usageCountByWord.set(word, usage);
-        }
-        for (const [word, priority] of loadedEditionUsage.priorityByWord) {
-          usagePriorityByWord.set(word, priority);
-        }
-        if (usagePriorityByWord.size) {
-          sortDictionaryByUsagePriority(dict, usagePriorityByWord);
-        }
-      }
-    }
-    if (options.editionHotBan) {
-      const loadedEditionUsage = await ensureEditionUsageSnapshot();
-      for (const [word, usage] of loadedEditionUsage.usageByWord) {
-        editionUsageCountByWord.set(word, usage);
-      }
-      const loadedHotBannedWords = await loadEditionHotBannedWords(issue.editionId, prisma);
-      for (const word of loadedHotBannedWords) {
-        editionHotBannedWords.add(word);
-      }
-      editionHotBanReason = `on (edition=${issue.editionId} banned=${editionHotBannedWords.size})`;
-      if (!editionUsageCountByWord.size) {
-        editionHotBanReason = `${editionHotBanReason} noUsage=1`;
-      }
-    }
-    if (!options.usageRebalance) {
-      usageRebalanceReason = "off";
-    } else if (!options.unique) {
-      usageRebalanceReason = "skipped (unique=off)";
-    } else if (!options.usageStats || !usageCountByWord.size) {
-      usageRebalanceReason = "skipped (no usage stats)";
-    } else {
-      usageRebalanceThresholds = resolveUsageRebalanceThresholds(
-        dict,
-        usageCountByWord,
-        options.usageRebalanceMode
-      );
-      usageRebalanceContext = buildUsageRebalanceContext(dict, usageCountByWord, usageRebalanceThresholds);
-      usageRebalanceReason = usageRebalanceCostMode
-        ? `on (mode=cost strategy=hard-lite+soft+cost soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`
-        : `on (mode=${options.usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold})`;
-    }
-    const definitionWhere = buildDefinitionWhereFromTemplate(template);
-
-    const dictCounts = new Map<number, number>();
-    for (const [len, words] of dict) dictCounts.set(len, words.length);
-    for (const entry of entries) {
-      entry.stats.pressure = computePressure(entry.lenCounts, dictCounts);
-    }
-
-    const sortedEntries = [...entries].sort((a, b) => compareByComplexity(a.stats, b.stats));
-
-    const entryByKey = new Map(entries.map((entry) => [entry.key, entry]));
-    const invalidByKey = new Map(invalid.map((entry) => [entry.key, entry]));
-
-    const templatesState: FillTemplateStatus[] = resolved.map((item) => {
-      const valid = entryByKey.get(item.key);
-      if (valid) {
-        return {
-          key: item.key,
-          name: valid.name,
-          status: "pending" as const,
-          error: null,
-          order: item.order,
-          sourceName: item.sourceName,
-        };
-      }
-      const bad = invalidByKey.get(item.key);
-      if (bad) {
-        return {
-          key: item.key,
-          name: bad.name,
-          status: "error" as const,
-          error: bad.error,
-          order: item.order,
-          sourceName: item.sourceName,
-        };
-      }
-      return {
-        key: item.key,
-        name: item.name,
-        status: "error" as const,
-        error: item.path ? "Invalid template" : "Template file not found",
-        order: item.order,
-        sourceName: item.sourceName,
-      };
-    });
+    const context = await loadFillExecutionContext(issueId, options);
+    const { issue } = context;
+    const templatesState: ReviewTemplateStatusRow[] = buildInitialTemplatesState(
+      context.resolved,
+      context.entryByKey,
+      context.invalidByKey,
+    );
 
     const indexByKey = new Map<string, number>();
     templatesState.forEach((item, idx) => {
       if (item.key) indexByKey.set(item.key, idx);
     });
-    const templateNeighbors = buildTemplateNeighbors(resolved);
 
     const totalTemplates = templatesState.length;
     let completedTemplates = 0;
@@ -1618,10 +2165,6 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const jobStartedAt = Date.now();
     let solveTotalMs = 0;
     const reviewTemplates: ReviewTemplate[] = [];
-    const langIdCache = new Map<string, number | null>();
-    const solvedWordsByTemplate = new Map<string, Set<string>>();
-    const usedWordsInJob = new Set<string>();
-    const usedWordCountInJob = new Map<string, number>();
     const uniqueFallbackStats = {
       probeAttempted: 0,
       probeSolved: 0,
@@ -1644,15 +2187,26 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       examinedCandidates: 0,
     };
     const editionHotBanMetrics = {
-      loaded: editionHotBannedWords.size,
+      loaded: context.editionHotBannedWords.size,
       applied: 0,
       relaxed: 0,
       relaxedByLen: new Map<number, number>(),
       unresolvedByLen: new Map<number, number>(),
     };
     const templateWordCounts = new Map<string, Map<string, number>>();
-    const templateNameByKey = new Map(sortedEntries.map((entry) => [entry.key, entry.name]));
-    const usedDefinitionKeys = new Set<string>();
+    const templateNameByKey = new Map(context.sortedEntries.map((entry) => [entry.key, entry.name]));
+    const solveState: SolveSingleTemplateState = {
+      solvedWordsByTemplate: new Map<string, Set<string>>(),
+      usedWordsInJob: new Set<string>(),
+      usedWordCountInJob: new Map<string, number>(),
+      usedDefinitionKeys: new Set<string>(),
+    };
+    const solveMetrics: SolveSingleTemplateMetrics = {
+      uniqueFallbackStats,
+      usageRebalanceMetrics,
+      usageCostMetrics,
+      editionHotBanMetrics,
+    };
 
     const pushTemplateUpdate = async (extra: Partial<FillJobUpdate> = {}) => {
       const finished = completedTemplates + failedTemplates;
@@ -1672,7 +2226,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
 
     await pushTemplateUpdate();
 
-    if (!sortedEntries.length) {
+    if (!context.sortedEntries.length) {
       const msg = "No valid templates to fill";
       await updateJob(jobId, {
         status: "error",
@@ -1700,14 +2254,6 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           : "Native DLX solver is not available (JS solver is disabled)"
       );
     }
-    const cpuParallel = detectCpuParallelism();
-    const effectiveParallelRestarts = resolveParallelRestarts(options.restarts, options.parallelRestarts);
-    const templateSource =
-      overrideTemplateId !== null
-        ? "override"
-        : issue.filterTemplateId !== null
-          ? "issue.filterTemplateId"
-          : "issue.snapshotTemplateId";
     const nativeEngineLabel = `${options.engine}(native,required)`;
     const maxNodesLabel =
       typeof options.maxNodes === "number" && Number.isFinite(options.maxNodes)
@@ -1716,23 +2262,23 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     const maxMsLabel =
       typeof options.maxMs === "number" && Number.isFinite(options.maxMs) ? String(options.maxMs) : "none";
     console.log(
-      `⚙ fill options: native=${nativeEngineLabel} shuffle=${options.shuffle ? "on" : "off"} unique=${options.unique ? "on" : "off"} lcv=${options.lcv ? "on" : "off"} restarts=${options.restarts} parallel=${effectiveParallelRestarts} (cfg=${options.parallelRestarts} cpu=${cpuParallel}) maxNodes=${maxNodesLabel} maxMs=${maxMsLabel} style=${options.style} explainFail=${options.explainFail ? "on" : "off"} noDefs=${options.noDefs ? "on" : "off"} usageStats=${options.usageStats ? "on" : "off"} usageRebalance=${usageRebalanceReason} editionHotBan=${editionHotBanReason}`
+      `⚙ fill options: native=${nativeEngineLabel} shuffle=${options.shuffle ? "on" : "off"} unique=${options.unique ? "on" : "off"} lcv=${options.lcv ? "on" : "off"} restarts=${options.restarts} parallel=${context.effectiveParallelRestarts} (cfg=${options.parallelRestarts} cpu=${context.cpuParallel}) maxNodes=${maxNodesLabel} maxMs=${maxMsLabel} style=${options.style} explainFail=${options.explainFail ? "on" : "off"} noDefs=${options.noDefs ? "on" : "off"} usageStats=${options.usageStats ? "on" : "off"} usageRebalance=${context.usageRebalanceReason} editionHotBan=${context.editionHotBanReason}`,
     );
-    if (usageRebalanceThresholds) {
+    if (context.usageRebalanceThresholds) {
       console.log(
-        `🧊 usage rebalance thresholds: mode=${options.usageRebalanceMode} soft=${usageRebalanceThresholds.softThreshold} hard=${usageRebalanceThresholds.hardThreshold}`
+        `🧊 usage rebalance thresholds: mode=${options.usageRebalanceMode} soft=${context.usageRebalanceThresholds.softThreshold} hard=${context.usageRebalanceThresholds.hardThreshold}`,
       );
     }
-    if (usageRebalanceContext) {
-      for (const line of formatUsageBalanceByLen(usageRebalanceContext)) {
+    if (context.usageRebalanceContext) {
+      for (const line of formatUsageBalanceByLen(context.usageRebalanceContext)) {
         console.log(line);
       }
     }
     console.log(
-      `🎯 dictionary template: id=${templateId} source=${templateSource} issueId=${String(issue.issueId)} override=${overrideTemplateId ?? "none"} files=${sortedEntries.length}/${resolved.length}`
+      `🎯 dictionary template: id=${context.templateId} source=${context.templateSource} issueId=${String(issue.issueId)} override=${context.overrideTemplateId ?? "none"} files=${context.sortedEntries.length}/${context.resolved.length}`,
     );
 
-    for (const entry of sortedEntries) {
+    for (const entry of context.sortedEntries) {
       const idx = indexByKey.get(entry.key);
       if (idx !== undefined) {
         templatesState[idx] = {
@@ -1743,12 +2289,6 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       }
       await pushTemplateUpdate({ currentTemplate: entry.name });
 
-      let lastFail: SolveFailInfo | null = null;
-      const onFail = options.explainFail
-        ? (info: SolveFailInfo) => {
-            lastFail = info;
-          }
-        : undefined;
       const onProgress = (info: SolveProgress) => {
         const finished = completedTemplates + failedTemplates;
         const fraction = entry.slots.length
@@ -1759,378 +2299,18 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
           : 0;
         updateLocal({ progress, currentTemplate: entry.name });
       };
-      const rebalanceLcvPrioritySlack =
-        !options.usageRebalance
-          ? 0
-          : options.usageRebalanceMode === "aggressive"
-            ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
-            : options.usageRebalanceMode === "cost"
-              ? COST_REBALANCE_PRIORITY_FIRST_LCV_SLACK
-              : 0;
-
-      const solveWithDictionary = async (
-        dictForSolve: Map<number, string[]>,
-        overrides: {
-          maxNodes?: number;
-          maxMs?: number;
-          wordPriority?: Map<string, number>;
-          lcv?: boolean;
-          shuffle?: boolean;
-          lcvPrioritySlack?: number;
-        } = {}
-      ) => {
-        const effectiveWordPriority =
-          overrides.wordPriority ?? (options.usageStats ? usagePriorityByWord : undefined);
-        const nativeOptions = {
-          shuffle: overrides.shuffle ?? options.shuffle,
-          lcv: overrides.lcv ?? options.lcv,
-          lcvPrioritySlack: overrides.lcvPrioritySlack ?? rebalanceLcvPrioritySlack,
-          restarts: options.restarts,
-          parallelRestarts: effectiveParallelRestarts,
-          maxNodes: overrides.maxNodes ?? options.maxNodes,
-          maxMs: overrides.maxMs ?? options.maxMs,
-          nativeDlx: true,
-          label: entry.name,
-          wordPriority: effectiveWordPriority,
-          onProgress,
-          onFail,
-        };
-        const solvedNative =
-          options.engine === "csp"
-            ? await solveCspNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions)
-            : await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions);
-        if (solvedNative === undefined) {
-          throw new Error(
-            options.engine === "csp"
-              ? "Native CSP solver is not available (JS solver is disabled)"
-              : "Native DLX solver is not available (JS solver is disabled)"
-          );
-        }
-        return solvedNative;
-      };
-
-      let solved: string[] | null | undefined;
       const solveStartedAt = Date.now();
-      const applyEditionHotBan = (baseBlockedWords: Set<string>) => {
-        if (!options.editionHotBan || !editionHotBannedWords.size) {
-          return {
-            blockedWords: baseBlockedWords,
-            relaxedWords: new Set<string>(),
-            relaxedByLen: new Map<number, number>(),
-            unresolvedDeficitsByLen: new Map<number, number>(),
-            appliedHotWords: 0,
-          };
-        }
-        const relaxed = relaxHotBanForLenDeficits(
-          entry.lenCounts,
-          dict,
-          baseBlockedWords,
-          editionHotBannedWords,
-          editionUsageCountByWord
-        );
-        editionHotBanMetrics.applied += relaxed.appliedHotWords;
-        editionHotBanMetrics.relaxed += relaxed.relaxedWords.size;
-        mergeLenCounter(editionHotBanMetrics.relaxedByLen, relaxed.relaxedByLen);
-        mergeLenCounter(editionHotBanMetrics.unresolvedByLen, relaxed.unresolvedDeficitsByLen);
-        return relaxed;
-      };
-      if (options.unique) {
-        const neighborBlockedWords = new Set<string>();
-        const neighborKeys = templateNeighbors.get(entry.key);
-        if (neighborKeys) {
-          for (const neighborKey of neighborKeys) {
-            const used = solvedWordsByTemplate.get(neighborKey);
-            if (!used) continue;
-            for (const word of used) neighborBlockedWords.add(word);
-          }
-        }
-
-        const strictBlockedWords = new Set<string>(neighborBlockedWords);
-        for (const word of usedWordsInJob) strictBlockedWords.add(word);
-        const neighborCappedBlockedWords = buildCappedBlockedWords(
-          neighborBlockedWords,
-          usedWordCountInJob,
-          MAX_WORD_USES
-        );
-        const canFallbackToNeighbor = strictBlockedWords.size !== neighborCappedBlockedWords.size;
-        const fallbackPriority = buildInJobUsagePriority(
-          usedWordCountInJob,
-          options.usageStats ? usagePriorityByWord : undefined,
-          IN_JOB_REPEAT_PRIORITY_MULTIPLIER
-        );
-        const buildRebalanceBlockedVariants = (
-          baseBlockedWords: Set<string>,
-          variantOptions: { allowCostHardFirst?: boolean } = {}
-        ): RebalanceBlockedVariant[] => {
-          if (!usageRebalanceThresholds || !usageRebalanceContext || !options.usageStats || !usageCountByWord.size) {
-            return [{ kind: "base", blockedWords: baseBlockedWords }];
-          }
-          if (usageRebalanceCostMode) {
-            return buildCostHardFirstRebalanceBlockedVariants(
-              baseBlockedWords,
-              usedWordCountInJob,
-              entry.lenCounts,
-              usageRebalanceContext,
-              usageRebalanceMetrics,
-              { allowHardFirst: variantOptions.allowCostHardFirst === true }
-            );
-          }
-          const softOnlyBlockedWords = new Set<string>(baseBlockedWords);
-          const softBlockedWords = buildSoftHotDuplicateBlock(
-            usedWordCountInJob,
-            usageRebalanceContext
-          );
-          for (const word of softBlockedWords) {
-            if (softOnlyBlockedWords.has(word)) continue;
-            softOnlyBlockedWords.add(word);
-            usageRebalanceMetrics.softBlocked += 1;
-            const len = usageRebalanceContext.wordLenInfoByWord.get(word)?.len;
-            if (typeof len === "number") {
-              incrementUsageRebalanceMetricByLen(usageRebalanceMetrics.softBlockedByLen, len, 1);
-            }
-          }
-          const hard = applyHardHotBanLengthSafe(
-            entry.lenCounts,
-            softOnlyBlockedWords,
-            usageRebalanceContext
-          );
-          usageRebalanceMetrics.hardCandidates += hard.hardCandidates;
-          usageRebalanceMetrics.hardApplied += hard.hardApplied;
-          usageRebalanceMetrics.hardRelaxed += hard.hardRelaxed;
-          if (hard.disabledBySafety) usageRebalanceMetrics.hardDisabledBySafety += 1;
-          mergeUsageRebalanceMetricByLen(
-            usageRebalanceMetrics.hardAppliedByLen,
-            hard.hardAppliedByLen
-          );
-
-          return buildRebalanceBlockedVariantCascade(
-            baseBlockedWords,
-            softOnlyBlockedWords,
-            hard.blockedWords
-          );
-        };
-
-        const solveWithBlockedVariants = async (
-          phase: "strict" | "adaptive" | "neighbor",
-          variants: RebalanceBlockedVariant[],
-          phaseOptions: {
-            sortByFallbackPriority: boolean;
-            strictBudget?: { maxNodes: number; maxMs: number } | null;
-          }
-        ): Promise<string[] | null> => {
-          let appliedStrictBudget = false;
-          for (const [index, variant] of variants.entries()) {
-            if (index > 0 && variant.kind === "softOnly") {
-              usageRebalanceMetrics.hardRetrySoftOnly += 1;
-            }
-            const filtered = filterDictionaryByBlockedWords(dict, variant.blockedWords);
-            const dictForSolve = phaseOptions.sortByFallbackPriority
-              ? sortDictionaryByPriority(filtered, fallbackPriority)
-              : filtered;
-            const overrides: {
-              maxNodes?: number;
-              maxMs?: number;
-              wordPriority?: Map<string, number>;
-              lcv?: boolean;
-              shuffle?: boolean;
-              lcvPrioritySlack?: number;
-            } = {};
-            if (phase === "strict" && phaseOptions.strictBudget && !appliedStrictBudget) {
-              overrides.maxNodes = phaseOptions.strictBudget.maxNodes;
-              overrides.maxMs = phaseOptions.strictBudget.maxMs;
-              appliedStrictBudget = true;
-            }
-            if (usageRebalanceCostMode) {
-              overrides.wordPriority = fallbackPriority;
-            }
-            if (phase !== "strict") {
-              overrides.wordPriority = fallbackPriority;
-              overrides.lcv = false;
-              overrides.shuffle = false;
-            }
-            const solvedVariant = await solveWithDictionary(dictForSolve, overrides);
-            if (solvedVariant) return solvedVariant;
-          }
-          return null;
-        };
-
-        const strictHotBan = applyEditionHotBan(strictBlockedWords);
-        const strictVariants = buildRebalanceBlockedVariants(strictHotBan.blockedWords, {
-          allowCostHardFirst: usageRebalanceCostMode,
-        });
-        const strictPrimaryVariant = usageRebalanceCostMode
-          ? strictVariants.find((variant) => variant.kind !== "hardAggressive")
-          : strictVariants[0];
-        const strictPrimaryBlockedWords =
-          strictPrimaryVariant?.blockedWords ?? strictVariants[0]?.blockedWords ?? strictHotBan.blockedWords;
-        const strictProbeBlockedWords = usageRebalanceCostMode
-          ? (strictVariants[0]?.blockedWords ?? strictPrimaryBlockedWords)
-          : strictPrimaryBlockedWords;
-        const strictDeficitLengths = collectLengthDeficitsForBlockedWords(
-          entry.lenCounts,
-          dict,
-          strictPrimaryBlockedWords
-        );
-        let adaptiveDeficitLengths = strictDeficitLengths;
-        if (strictDeficitLengths.size === 0) {
-          const strictDict = filterDictionaryByBlockedWords(dict, strictProbeBlockedWords);
-          uniqueFallbackStats.probeAttempted += 1;
-          const probeResult = runDlxProbe(entry.grid.data, entry.slots, strictDict, {
-            label: `${entry.name}:probe`,
-            maxNodes: options.maxNodes,
-            maxMs: options.maxMs,
-            uniqueWords: true,
-            wordPriority: options.usageStats ? usagePriorityByWord : undefined,
-            lcvPrioritySlack: rebalanceLcvPrioritySlack,
-          });
-          lastFail = probeResult.failInfo ?? lastFail;
-          if (probeResult.solved) {
-            solved = probeResult.solved;
-            uniqueFallbackStats.probeSolved += 1;
-          } else if (probeResult.outcome === "unsat") {
-            uniqueFallbackStats.probeUnsat += 1;
-            const failLen = extractFailedSlotLength(probeResult.failInfo);
-            if (failLen !== null) {
-              adaptiveDeficitLengths = new Set<number>([failLen]);
-            } else {
-              adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
-                entry.lenCounts,
-                dict,
-                strictPrimaryBlockedWords
-              );
-            }
-            uniqueFallbackStats.strictAttempted += 1;
-            const hasFallbackPotential = canFallbackToNeighbor || usedWordsInJob.size > 0;
-            const strictBudget = hasFallbackPotential
-              ? resolveStrictLimitedBudget(options.maxNodes, options.maxMs)
-              : null;
-            if (strictBudget) uniqueFallbackStats.strictLimited += 1;
-            solved = await solveWithBlockedVariants("strict", strictVariants, {
-              sortByFallbackPriority: false,
-              strictBudget,
-            });
-            if (solved) {
-              uniqueFallbackStats.strictSolved += 1;
-            } else {
-              const strictFailLen = extractFailedSlotLength(lastFail);
-              if (strictFailLen !== null) {
-                adaptiveDeficitLengths = new Set<number>([strictFailLen]);
-              } else {
-                adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
-                  entry.lenCounts,
-                  dict,
-                  strictPrimaryBlockedWords
-                );
-              }
-            }
-          } else {
-            uniqueFallbackStats.probeUnknown += 1;
-            uniqueFallbackStats.strictAttempted += 1;
-            const hasFallbackPotential = canFallbackToNeighbor || usedWordsInJob.size > 0;
-            const strictBudget = hasFallbackPotential
-              ? resolveStrictLimitedBudget(options.maxNodes, options.maxMs)
-              : null;
-            if (strictBudget) uniqueFallbackStats.strictLimited += 1;
-            solved = await solveWithBlockedVariants("strict", strictVariants, {
-              sortByFallbackPriority: false,
-              strictBudget,
-            });
-            if (solved) {
-              uniqueFallbackStats.strictSolved += 1;
-            } else {
-              const failLen = extractFailedSlotLength(lastFail);
-              if (failLen !== null) {
-                adaptiveDeficitLengths = new Set<number>([failLen]);
-              } else {
-                adaptiveDeficitLengths = collectMostConstrainedLengthsForBlockedWords(
-                  entry.lenCounts,
-                  dict,
-                  strictPrimaryBlockedWords
-                );
-              }
-            }
-          }
-        } else {
-          uniqueFallbackStats.strictSkippedByDeficit += 1;
-        }
-        if (!solved && adaptiveDeficitLengths.size > 0) {
-          const adaptiveBaseBlockedWords = buildAdaptiveBlockedWords(
-            usedWordsInJob,
-            usedWordCountInJob,
-            neighborBlockedWords,
-            adaptiveDeficitLengths,
-            wordLengthByWord,
-            MAX_WORD_USES
-          );
-          const adaptiveHotBan = applyEditionHotBan(adaptiveBaseBlockedWords);
-          if (!areSetsEqual(adaptiveHotBan.blockedWords, strictHotBan.blockedWords)) {
-            uniqueFallbackStats.adaptiveAttempted += 1;
-            const adaptiveVariants = buildRebalanceBlockedVariants(adaptiveHotBan.blockedWords);
-            solved = await solveWithBlockedVariants("adaptive", adaptiveVariants, {
-              sortByFallbackPriority: true,
-              strictBudget: null,
-            });
-            if (solved) uniqueFallbackStats.adaptiveSolved += 1;
-          }
-        }
-        if (!solved && canFallbackToNeighbor) {
-          uniqueFallbackStats.neighborAttempted += 1;
-          const neighborHotBan = applyEditionHotBan(neighborCappedBlockedWords);
-          const neighborVariants = buildRebalanceBlockedVariants(neighborHotBan.blockedWords);
-          solved = await solveWithBlockedVariants("neighbor", neighborVariants, {
-            sortByFallbackPriority: true,
-            strictBudget: null,
-          });
-          if (solved) uniqueFallbackStats.neighborSolved += 1;
-        }
-      } else {
-        const nonUniqueHotBan = applyEditionHotBan(new Set<string>());
-        const hotBanFilteredDict = filterDictionaryByBlockedWords(dict, nonUniqueHotBan.blockedWords);
-        const dictForTemplate = new Map<number, string[]>(
-          [...hotBanFilteredDict].map(([len, words]) => [len, [...words]])
-        );
-        solved = await solveWithDictionary(dictForTemplate);
-      }
-      if (usageRebalanceCostMode && solved) {
-        const polishPriority = buildInJobUsagePriority(
-          usedWordCountInJob,
-          options.usageStats ? usagePriorityByWord : undefined,
-          IN_JOB_REPEAT_PRIORITY_MULTIPLIER
-        );
-        const polish = polishSolvedRowsByCost({
-          solvedRows: solved,
-          slots: entry.slots,
-          dict,
-          uniqueWords: options.unique,
-          maxPasses: COST_REBALANCE_POLISH_PASSES,
-          priorityByWord: polishPriority,
-          usedWordCountByWord: usedWordCountInJob,
-          forbiddenWords: options.unique ? usedWordsInJob : undefined,
-          repeatPenalty: IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
-        });
-        usageCostMetrics.examinedCandidates += polish.examinedCandidates;
-        if (polish.improved) {
-          solved = polish.solvedRows;
-          usageCostMetrics.templatesPolished += 1;
-          usageCostMetrics.replacements += polish.replacements;
-          usageCostMetrics.totalDeltaCost += polish.totalDeltaCost;
-          console.log(
-            `🧪 cost-polish: template=${entry.name} passes=${polish.passCount} replacements=${polish.replacements} delta=${polish.totalDeltaCost.toFixed(1)}`
-          );
-        }
-      }
+      const result = await solveSingleTemplateForReview(entry, context, options, solveState, solveMetrics, {
+        onProgress,
+      });
       solveTotalMs += Date.now() - solveStartedAt;
 
-      if (!solved) {
-        if (!lastFail && options.explainFail && nativeAvailable) {
-          lastFail = consumeLastNativeFail();
-        }
-        const reason = lastFail ? formatFail(lastFail) : "no-solution";
+      if ("error" in result) {
         if (idx !== undefined) {
           templatesState[idx] = {
             ...templatesState[idx],
             status: "error",
-            error: reason,
+            error: result.error,
           };
         }
         failedTemplates += 1;
@@ -2138,51 +2318,8 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
         continue;
       }
 
-      const usedWordsList = entry.slots.map((s) => s.cells.map(([r, c]) => solved![r][c]).join(""));
-      templateWordCounts.set(entry.key, collectWordCounts(usedWordsList));
-      if (options.unique) {
-        const usedHere = new Set<string>();
-        for (const word of usedWordsList) {
-          const key = normalizeWordKey(word);
-          if (!key) continue;
-          usedHere.add(key);
-          usedWordsInJob.add(key);
-          usedWordCountInJob.set(key, (usedWordCountInJob.get(key) ?? 0) + 1);
-        }
-        solvedWordsByTemplate.set(entry.key, usedHere);
-      }
-      const langCode = template.language.toLowerCase();
-      let langId = langIdCache.get(langCode);
-      if (langId === undefined) {
-        langId = await resolveLanguageId(langCode);
-        langIdCache.set(langCode, langId);
-      }
-      const usedDefinitionsForTemplate = new Set(usedDefinitionKeys);
-      const selectedWords =
-        typeof langId === "number"
-          ? await selectWordsAndDefinitionsForEdition(usedWordsList, {
-              langId,
-              editionId: issue.editionId,
-              preferUsageStats: options.usageStats,
-              definitionWhere,
-              usedDefinitions: usedDefinitionsForTemplate,
-            })
-          : new Map<string, ReviewWordSelection>();
-      const fallbackDefinitions = await loadDefinitions(usedWordsList, {
-        langCode: template.language,
-        definitionWhere,
-      });
-      reviewTemplates.push(
-        buildReviewTemplate(
-          entry,
-          solved!,
-          langCode,
-          langId ?? null,
-          selectedWords,
-          fallbackDefinitions,
-          usedDefinitionKeys
-        )
-      );
+      templateWordCounts.set(entry.key, result.wordCounts);
+      reviewTemplates.push(result.reviewTemplate);
 
       if (idx !== undefined) {
         templatesState[idx] = {
@@ -2217,21 +2354,20 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
       if (a.order !== b.order) return a.order - b.order;
       return a.name.localeCompare(b.name, "ru");
     });
-    const reviewData: FillReviewPayload = {
-      version: 1,
-      issue: {
+    const reviewData = buildFillReviewPayload(
+      {
         issueId: String(issue.issueId),
         editionId: issue.editionId,
         editionCode: issue.editionCode,
         issueLabel: issue.issueLabel,
       },
-      options: {
+      {
         style: options.style,
         writeCrw: options.writeCrw,
         usageStats: options.usageStats,
       },
-      templates: reviewTemplates,
-    };
+      reviewTemplates,
+    );
     const totalMin = ((Date.now() - jobStartedAt) / 60000).toFixed(1);
     const solveMin = (solveTotalMs / 60000).toFixed(1);
     const duplicateReport = buildDuplicateReport(templateWordCounts, templateNameByKey);
@@ -2247,7 +2383,7 @@ async function runFillJob(jobId: bigint, issueId: bigint, options: FillJobOption
     if (options.usageRebalance) {
       console.log(`🧊 ${formatUsageRebalanceMetrics(usageRebalanceMetrics)}`);
       console.log(`🧊 ${formatUsageRebalanceLenMetrics(usageRebalanceMetrics)}`);
-      if (usageRebalanceCostMode) {
+      if (context.usageRebalanceCostMode) {
         console.log(
           `🧪 cost-rebalance: strategy=hard-lite+soft+cost polished=${usageCostMetrics.templatesPolished} replacements=${usageCostMetrics.replacements} delta=${usageCostMetrics.totalDeltaCost.toFixed(1)} examined=${usageCostMetrics.examinedCandidates}`
         );
@@ -2349,6 +2485,82 @@ export async function getJobArchivePath(jobId: bigint, fileName?: string | null)
 export async function getFillJobReview(jobId: bigint): Promise<FillReviewPayload | null> {
   const reviewData = await loadFillJobReviewData(prisma, jobId);
   return parseReviewPayload(reviewData);
+}
+
+export async function regenerateFillJobTemplate(jobId: bigint, payloadRaw: unknown): Promise<FillJobUpdate> {
+  const row = await loadJobRow(jobId);
+  if (!row) throw new Error("Job not found");
+  if (String(row.status ?? "") !== "review") throw new Error("Job is not waiting for review");
+
+  const review = parseReviewPayload(row.reviewData);
+  if (!review) throw new Error("Review data not found for this job");
+
+  const payload = (payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {}) as RegenerateTemplatePayload;
+  const templateKey = typeof payload.templateKey === "string" ? payload.templateKey.trim() : "";
+  if (!templateKey) throw new Error("templateKey is required");
+
+  const options = parseFillJobOptions(row.options);
+  const context = await loadFillExecutionContext(row.issueId, options);
+  const templatesState =
+    parseTemplatesPayload(row.templates) ??
+    buildInitialTemplatesState(context.resolved, context.entryByKey, context.invalidByKey);
+
+  const effectiveReview = applyReviewTemplateOverrides(review, Array.isArray(payload.templates) ? payload.templates : []);
+  const usageState = collectReviewUsageState(effectiveReview, templateKey);
+  const solveMetrics: SolveSingleTemplateMetrics = {
+    usageRebalanceMetrics: buildUsageRebalanceMetrics(),
+    usageCostMetrics: {
+      templatesPolished: 0,
+      replacements: 0,
+      totalDeltaCost: 0,
+      examinedCandidates: 0,
+    },
+    editionHotBanMetrics: {
+      loaded: context.editionHotBannedWords.size,
+      applied: 0,
+      relaxed: 0,
+      relaxedByLen: new Map<number, number>(),
+      unresolvedByLen: new Map<number, number>(),
+    },
+  };
+
+  const targetEntry = context.entryByKey.get(templateKey);
+  const applied = !targetEntry
+    ? applyTemplateReviewResult(effectiveReview, templatesState, templateKey, {
+        type: "error",
+        error: context.invalidByKey.get(templateKey)?.error ?? "Template is not available for regeneration",
+      })
+    : await (async () => {
+        const result = await solveSingleTemplateForReview(targetEntry, context, options, usageState, solveMetrics);
+        if ("error" in result) {
+          return applyTemplateReviewResult(effectiveReview, templatesState, templateKey, {
+            type: "error",
+            error: result.error,
+          });
+        }
+        return applyTemplateReviewResult(effectiveReview, templatesState, templateKey, {
+          type: "success",
+          template: result.reviewTemplate,
+        });
+      })();
+
+  const completedTemplates = applied.templatesState.filter((item) => item.status === "done").length;
+  const totalTemplates = applied.templatesState.length;
+  await updateJob(jobId, {
+    status: "review",
+    progress: 100,
+    currentTemplate: null,
+    completedTemplates,
+    totalTemplates,
+    error: null,
+    templates: applied.templatesState,
+    reviewData: applied.review,
+  });
+  await emitCurrentJob(jobId);
+
+  const updated = await getFillJob(jobId);
+  if (!updated) throw new Error("Failed to load updated job");
+  return updated;
 }
 
 export async function getFillWordCandidates(
