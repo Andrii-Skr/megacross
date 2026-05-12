@@ -285,6 +285,8 @@
   "scanwordsTemplateRunning": "Заповнюється",
   "scanwordsTemplateDone": "Готово",
   "scanwordsTemplateError": "Помилка",
+  "scanwordsTemplateRegenerate": "Перегенерувати",
+  "scanwordsTemplateRegenerateError": "Не вдалося перегенерувати шаблон",
   "scanwordsReviewTitle": "Перевірка слів і визначень",
   "scanwordsReviewDescription": "Перевірте та за потреби змініть слова/визначення перед фінальним складанням SVG.",
   "scanwordsReviewTabByTemplate": "За шаблоном",

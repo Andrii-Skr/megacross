@@ -285,6 +285,8 @@
   "scanwordsTemplateRunning": "Filling",
   "scanwordsTemplateDone": "Done",
   "scanwordsTemplateError": "Failed",
+  "scanwordsTemplateRegenerate": "Regenerate",
+  "scanwordsTemplateRegenerateError": "Failed to regenerate template",
   "scanwordsReviewTitle": "Review words and definitions",
   "scanwordsReviewDescription": "Check and adjust words/definitions before final SVG build.",
   "scanwordsReviewTabByTemplate": "By template",

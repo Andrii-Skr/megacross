@@ -1,6 +1,6 @@
 "use client";
 
-import { Settings } from "lucide-react";
+import { Loader2, RotateCcw, Settings } from "lucide-react";
 import { useFormatter, useTranslations } from "next-intl";
 import { useCallback, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -33,8 +33,10 @@ type GenerationPanelProps = {
   latestArchiveOnly: boolean;
   fillCanStart: boolean;
   fillStarting: boolean;
+  finalizing: boolean;
   reviewAvailable: boolean;
   templateList: FillTemplateStatus[];
+  regeneratingTemplateKey: string | null;
   templateStatusLabel: (status: FillTemplateStatus["status"]) => string;
   templateErrorText: (error?: string | null) => string | null;
   onSettingsOpen: () => void;
@@ -42,6 +44,7 @@ type GenerationPanelProps = {
   onLatestArchiveOnlyChange: (checked: boolean) => void;
   onOpenArchivesDialog: () => void;
   onOpenReview: () => void;
+  onRegenerateTemplate: (templateKey: string) => void;
 };
 
 export function GenerationPanel({
@@ -59,8 +62,10 @@ export function GenerationPanel({
   latestArchiveOnly,
   fillCanStart,
   fillStarting,
+  finalizing,
   reviewAvailable,
   templateList,
+  regeneratingTemplateKey,
   templateStatusLabel,
   templateErrorText,
   onSettingsOpen,
@@ -68,6 +73,7 @@ export function GenerationPanel({
   onLatestArchiveOnlyChange,
   onOpenArchivesDialog,
   onOpenReview,
+  onRegenerateTemplate,
 }: GenerationPanelProps) {
   const t = useTranslations();
   const f = useFormatter();
@@ -219,11 +225,38 @@ export function GenerationPanel({
                   const displayName = item.sourceName ?? item.name;
                   const rowKey = item.key ?? `${item.order ?? idx}-${displayName}`;
                   const errorText = templateErrorText(item.error);
+                  const canRegenerate = fillStatus === "review" && Boolean(item.key);
+                  const regenerating = item.key != null && regeneratingTemplateKey === item.key;
+                  const regenerateDisabled = Boolean(regeneratingTemplateKey) || finalizing;
                   return (
                     <li key={rowKey} className="rounded-md border bg-background/80 p-2 text-xs">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate font-medium">{displayName}</span>
-                        <Badge variant={badgeVariant}>{statusLabel}</Badge>
+                        <div className="flex items-center gap-2">
+                          {canRegenerate && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 w-7 p-0"
+                                  aria-label={t("scanwordsTemplateRegenerate")}
+                                  disabled={regenerateDisabled}
+                                  onClick={() => item.key && onRegenerateTemplate(item.key)}
+                                >
+                                  {regenerating ? (
+                                    <Loader2 className="size-3 animate-spin" aria-hidden />
+                                  ) : (
+                                    <RotateCcw className="size-3" aria-hidden />
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>{t("scanwordsTemplateRegenerate")}</TooltipContent>
+                            </Tooltip>
+                          )}
+                          <Badge variant={badgeVariant}>{statusLabel}</Badge>
+                        </div>
                       </div>
                       {errorText && <div className="mt-1 text-destructive">{errorText}</div>}
                     </li>

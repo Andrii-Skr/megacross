@@ -45,6 +45,26 @@ const DEFINITIONS_DIFFICULTY_BATCH_SIZE = 5000;
 const FILL_START_TIMEOUT_MS = 15_000;
 const HTTP_STATUS_MESSAGE_RE = /^HTTP\s+\d{3}$/i;
 
+export function buildFillOverrides(fillSettings: FillSettings, selectedTemplateId: number | null): FillOverrides {
+  const normalized = normalizeFillSettings(fillSettings);
+  const preset = SPEED_PRESETS[normalized.speedPreset];
+  const filterTemplateId =
+    typeof selectedTemplateId === "number" && Number.isFinite(selectedTemplateId) && selectedTemplateId > 0
+      ? Math.floor(selectedTemplateId)
+      : undefined;
+  return {
+    maxNodes: preset.maxNodes,
+    shuffle: true,
+    unique: true,
+    lcv: true,
+    style: "corel",
+    explainFail: true,
+    noDefs: true,
+    requireNative: true,
+    ...(filterTemplateId !== undefined ? { filterTemplateId } : {}),
+  };
+}
+
 function buildReviewDismissStorageKey(jobId: string): string {
   return `scanwords:fillReviewDismissed:${jobId}`;
 }
@@ -220,6 +240,7 @@ export function useScanwordFill({
   const [reviewOpen, setReviewOpenState] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewFinalizing, setReviewFinalizing] = useState(false);
+  const [regeneratingTemplateKey, setRegeneratingTemplateKey] = useState<string | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<FillReviewPayload | null>(null);
   const prevIssueIdRef = useRef<string | null | undefined>(undefined);
@@ -331,6 +352,7 @@ export function useScanwordFill({
     setReviewOpenState(false);
     setReviewLoading(false);
     setReviewFinalizing(false);
+    setRegeneratingTemplateKey(null);
     setReviewError(null);
     setReviewData(null);
     loadedReviewJobIdRef.current = null;
@@ -358,6 +380,7 @@ export function useScanwordFill({
     setReviewOpenState(false);
     setReviewLoading(false);
     setReviewFinalizing(false);
+    setRegeneratingTemplateKey(null);
     setReviewError(null);
     setReviewData(null);
     loadedReviewJobIdRef.current = null;
@@ -621,23 +644,7 @@ export function useScanwordFill({
   }, [fillJob?.templates]);
 
   const fillOverrides = useMemo<FillOverrides>(() => {
-    const normalized = normalizeFillSettings(fillSettings);
-    const preset = SPEED_PRESETS[normalized.speedPreset];
-    const filterTemplateId =
-      typeof selectedTemplateId === "number" && Number.isFinite(selectedTemplateId) && selectedTemplateId > 0
-        ? Math.floor(selectedTemplateId)
-        : undefined;
-    return {
-      maxNodes: preset.maxNodes,
-      shuffle: true,
-      unique: true,
-      lcv: true,
-      style: "corel",
-      explainFail: true,
-      noDefs: true,
-      requireNative: true,
-      ...(filterTemplateId !== undefined ? { filterTemplateId } : {}),
-    };
+    return buildFillOverrides(fillSettings, selectedTemplateId);
   }, [fillSettings, selectedTemplateId]);
 
   const speedOptions = useMemo<FillSpeedOption[]>(
@@ -1018,6 +1025,44 @@ export function useScanwordFill({
     ? `${crossApiBase}/api/fill/${fillJob.id}/archive`
     : latestAvailableArchiveUrl;
 
+  const regenerateTemplate = useCallback(
+    async (templateKey: string) => {
+      if (!fillJob?.id || !templateKey) return;
+      setRegeneratingTemplateKey(templateKey);
+      setReviewError(null);
+      try {
+        const res = await fetch("/api/scanwords/fill/regenerate-template", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId: fillJob.id,
+            templateKey,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status, payload: data });
+        }
+        const nextJob = normalizeFillJob(data);
+        if (nextJob) {
+          setFillJob(nextJob);
+        }
+        loadedReviewJobIdRef.current = null;
+        setReviewData(null);
+      } catch (err) {
+        const { status } = getActionErrorMeta(err);
+        const apiMessage = extractApiErrorMessage(err);
+        const message = status === 403 ? t("forbidden") : (apiMessage ?? t("scanwordsTemplateRegenerateError"));
+        setReviewError(message);
+        toast.error(message);
+        throw err;
+      } finally {
+        setRegeneratingTemplateKey(null);
+      }
+    },
+    [fillJob?.id, normalizeFillJob, t],
+  );
+
   return {
     fillJob,
     fillStatus,
@@ -1032,10 +1077,12 @@ export function useScanwordFill({
     setReviewOpen,
     reviewLoading,
     reviewFinalizing,
+    regeneratingTemplateKey,
     reviewError,
     reviewData,
     requestWordCandidates,
     finalizeReview,
+    regenerateTemplate,
     fillSettings,
     settingsDraft,
     settingsOpen,

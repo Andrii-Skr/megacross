@@ -236,8 +236,10 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
                 latestArchiveOnly={fill.latestArchiveOnly}
                 fillCanStart={fillCanStart}
                 fillStarting={fill.fillStarting}
+                finalizing={fill.reviewFinalizing}
                 reviewAvailable={fill.fillStatus === "review"}
                 templateList={fill.templateList}
+                regeneratingTemplateKey={fill.regeneratingTemplateKey}
                 templateStatusLabel={fill.templateStatusLabel}
                 templateErrorText={fill.templateErrorText}
                 onSettingsOpen={fill.handleSettingsOpen}
@@ -245,6 +247,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
                 onLatestArchiveOnlyChange={fill.handleLatestArchiveOnlyChange}
                 onOpenArchivesDialog={() => void fill.openArchivesDialog()}
                 onOpenReview={() => fill.setReviewOpen(true)}
+                onRegenerateTemplate={(templateKey) => void fill.regenerateTemplate(templateKey)}
               />
             </div>
 

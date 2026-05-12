@@ -57,6 +57,12 @@ export const prisma = {
     update: vi.fn(),
     delete: vi.fn(),
   },
+  scanwordFillReviewDraft: {
+    findUnique: vi.fn(),
+    deleteMany: vi.fn(),
+    update: vi.fn(),
+    upsert: vi.fn(),
+  },
   issue: {
     count: vi.fn(),
   },

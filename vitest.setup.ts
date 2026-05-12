@@ -1,4 +1,6 @@
 import "@testing-library/jest-dom/vitest";
+import { cleanup } from "@testing-library/react";
+import { afterEach } from "vitest";
 import { vi } from "vitest";
 
 // Ensure required envs exist in test mode (Vite не подхватывает .env.local в тестах)
@@ -30,3 +32,9 @@ console.error = (...args: unknown[]) => {
   // eslint-disable-next-line prefer-spread
   return originalConsoleError.apply(console, args as [] | [unknown, ...unknown[]]);
 };
+
+afterEach(() => {
+  cleanup();
+  document.body.removeAttribute("data-scroll-locked");
+  document.body.style.pointerEvents = "";
+});
