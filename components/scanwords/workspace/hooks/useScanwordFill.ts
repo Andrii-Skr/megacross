@@ -26,6 +26,7 @@ import {
   type FillSpeedOption,
   type FillSpeedPreset,
   type FillTemplateStatus,
+  type TemplateSetupPayload,
   normalizeFillSettings,
   SPEED_PRESETS,
   type SvgFontItem,
@@ -38,6 +39,7 @@ type UseScanwordFillParams = {
   selectedTemplateId: number | null;
   filesSignature: string;
   crossApiBase: string;
+  templateSetup: TemplateSetupPayload | null;
   t: TranslateFn;
 };
 
@@ -218,6 +220,7 @@ export function useScanwordFill({
   selectedTemplateId,
   filesSignature,
   crossApiBase,
+  templateSetup,
   t,
 }: UseScanwordFillParams) {
   const [fillJob, setFillJob] = useState<FillJobState | null>(null);
@@ -907,7 +910,7 @@ export function useScanwordFill({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ issueId: selectedIssueId, options: fillOverrides }),
+          body: JSON.stringify({ issueId: selectedIssueId, options: fillOverrides, templateSetup }),
         },
         FILL_START_TIMEOUT_MS,
       );
@@ -918,13 +921,14 @@ export function useScanwordFill({
       if (job) setFillJob(job);
     } catch (err) {
       const { status } = getActionErrorMeta(err);
-      const message = status === 403 ? t("forbidden") : t("scanwordsFillStartError");
+      const apiMessage = extractApiErrorMessage(err);
+      const message = status === 403 ? t("forbidden") : (apiMessage ?? t("scanwordsFillStartError"));
       setFillError(message);
       toast.error(message);
     } finally {
       setFillStarting(false);
     }
-  }, [crossApiBase, fillOverrides, normalizeFillJob, selectedIssueId, t]);
+  }, [crossApiBase, fillOverrides, normalizeFillJob, selectedIssueId, t, templateSetup]);
 
   const requestWordCandidates = useCallback(
     async (params: {

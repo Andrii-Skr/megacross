@@ -15,6 +15,7 @@ type WorkspaceProgressHeaderProps = {
   uploadHasErrors: boolean;
   conflictsStepComplete: boolean;
   conflictsHasIssues: boolean;
+  templateSetupStepComplete: boolean;
   generationStepComplete: boolean;
   generationHasTemplateErrors: boolean;
   fillStatus: FillJobStatus | null;
@@ -31,6 +32,7 @@ export function WorkspaceProgressHeader({
   uploadHasErrors,
   conflictsStepComplete,
   conflictsHasIssues,
+  templateSetupStepComplete,
   generationStepComplete,
   generationHasTemplateErrors,
   fillStatus,
@@ -39,7 +41,7 @@ export function WorkspaceProgressHeader({
 }: WorkspaceProgressHeaderProps) {
   const t = useTranslations();
   const f = useFormatter();
-  const progressSteps = [1, 2, 3, 4];
+  const progressSteps = [1, 2, 3, 4, 5];
 
   return (
     <div className="grid gap-2 rounded-md border bg-muted/20 p-3">
@@ -71,7 +73,10 @@ export function WorkspaceProgressHeader({
           if (step === 3 && conflictsStepComplete) {
             fillClass = conflictsHasIssues ? "bg-amber-500" : "bg-emerald-500";
           }
-          if (step === 4) {
+          if (step === 4 && templateSetupStepComplete) {
+            fillClass = "bg-emerald-500";
+          }
+          if (step === 5) {
             if (generationHasTemplateErrors) fillClass = "bg-amber-500";
             else if (fillStatus === "done") fillClass = "bg-emerald-500";
             else if (fillStatus === "error") fillClass = "bg-destructive";
@@ -82,7 +87,7 @@ export function WorkspaceProgressHeader({
           return <span key={step} className={cn("h-2 flex-1 rounded-full transition-colors", fillClass)} />;
         })}
       </div>
-      <div className="grid gap-2 sm:grid-cols-4">
+      <div className="grid gap-2 sm:grid-cols-5">
         <Button
           type="button"
           variant={activeTab === "dictionary" ? "secondary" : "outline"}
@@ -126,6 +131,16 @@ export function WorkspaceProgressHeader({
             ) : (
               <CircleCheckBig className="size-4 text-emerald-500" aria-hidden />
             ))}
+        </Button>
+        <Button
+          type="button"
+          variant={activeTab === "templateSetup" ? "secondary" : "outline"}
+          className="w-full justify-between"
+          onClick={() => onTabChange("templateSetup")}
+          aria-pressed={activeTab === "templateSetup"}
+        >
+          <span className="truncate">Настройка</span>
+          {templateSetupStepComplete && <CircleCheckBig className="size-4 text-emerald-500" aria-hidden />}
         </Button>
         <Button
           type="button"

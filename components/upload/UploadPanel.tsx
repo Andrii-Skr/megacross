@@ -15,7 +15,7 @@ import { lengthStats, scanSlots, validate } from "@/utils/cross/grid";
 import { parseFshBytes } from "@/utils/cross/parseFsh";
 
 type UploadPanelProps = {
-  onUploadComplete?: (count: number) => void;
+  onUploadComplete?: (result: { count: number; files: UploadFileInfo[] }) => void;
   onFilesCountChange?: (count: number) => void;
   onFilesMetaChange?: (files: UploadFileInfo[]) => void;
   onUploadingChange?: (uploading: boolean) => void;
@@ -221,8 +221,13 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
         body: fd,
       });
       const savedCount = data.saved?.length ?? 0;
+      const savedFiles: UploadFileInfo[] = (data.saved ?? []).map((item) => ({
+        key: `${item.name}:${item.size}`,
+        name: item.name,
+        size: item.size,
+      }));
       toast.success(t("uploadSuccess", { count: savedCount }));
-      onUploadComplete?.(savedCount);
+      onUploadComplete?.({ count: savedCount, files: savedFiles });
       setFiles([]);
     } catch (e: unknown) {
       const { status } = getActionErrorMeta(e);

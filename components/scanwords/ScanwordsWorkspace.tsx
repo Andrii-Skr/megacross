@@ -16,7 +16,9 @@ import { FillReviewDialog } from "./workspace/FillReviewDialog";
 import { FillSettingsDialog } from "./workspace/FillSettingsDialog";
 import { GenerationPanel } from "./workspace/GenerationPanel";
 import { useScanwordFill } from "./workspace/hooks/useScanwordFill";
+import { useScanwordTemplateSetup } from "./workspace/hooks/useScanwordTemplateSetup";
 import { useScanwordUploadFlow } from "./workspace/hooks/useScanwordUploadFlow";
+import { TemplateSetupPanel } from "./workspace/TemplateSetupPanel";
 import type { ScanwordsWorkspaceProps, WorkspaceTab } from "./workspace/model";
 import { WorkspaceProgressHeader } from "./workspace/WorkspaceProgressHeader";
 
@@ -51,11 +53,17 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
     selectedTemplateName: selectedTemplate?.name ?? null,
   });
 
+  const templateSetup = useScanwordTemplateSetup({
+    selectedIssueId,
+    reloadToken: `${upload.uploadClicked}:${upload.effectiveUploadCount}:${upload.filesSignature}`,
+  });
+
   const fill = useScanwordFill({
     selectedIssueId,
     selectedTemplateId,
     filesSignature: upload.filesSignature,
     crossApiBase,
+    templateSetup: templateSetup.templateSetup,
     t,
   });
 
@@ -63,7 +71,11 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
     if (!selectedIssueId) return;
     const saved = typeof window !== "undefined" && tabStorageKey ? window.localStorage.getItem(tabStorageKey) : null;
     const normalized: WorkspaceTab =
-      saved === "dictionary" || saved === "upload" || saved === "conflicts" || saved === "generation"
+      saved === "dictionary" ||
+      saved === "upload" ||
+      saved === "conflicts" ||
+      saved === "templateSetup" ||
+      saved === "generation"
         ? saved
         : "dictionary";
     setActiveTab(normalized);
@@ -77,6 +89,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
 
   const dictionaryComplete = selectedTemplateId != null;
   const conflictsStepComplete = upload.uploadClicked;
+  const templateSetupStepComplete = upload.uploadClicked;
   const generationStepComplete = fill.fillStatus === "done" || fill.fillStatus === "error";
   const generationHasTemplateErrors = fill.templateList.some((item) => item.status === "error");
 
@@ -117,8 +130,9 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
     (dictionaryComplete ? 1 : 0) +
     (upload.uploadStepComplete ? 1 : 0) +
     (conflictsStepComplete ? 1 : 0) +
+    (templateSetupStepComplete ? 1 : 0) +
     (generationStepComplete ? 1 : 0);
-  const totalSteps = 4;
+  const totalSteps = 5;
 
   if (!selectedIssue) return null;
 
@@ -147,6 +161,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
               uploadHasErrors={upload.uploadHasErrors}
               conflictsStepComplete={conflictsStepComplete}
               conflictsHasIssues={conflictsHasIssues}
+              templateSetupStepComplete={templateSetupStepComplete}
               generationStepComplete={generationStepComplete}
               generationHasTemplateErrors={generationHasTemplateErrors}
               fillStatus={fill.fillStatus}
@@ -219,6 +234,23 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
                 hasShortage={hasShortage}
                 hasExcess={hasExcess}
                 onUploadClick={upload.handleUploadClick}
+              />
+
+              <TemplateSetupPanel
+                active={activeTab === "templateSetup"}
+                loading={templateSetup.loading}
+                saving={templateSetup.saving}
+                dirty={templateSetup.dirty}
+                error={templateSetup.error}
+                hasPreview={templateSetup.hasPreview}
+                dictionaryLanguage={selectedTemplate?.language ?? "ru"}
+                dictionaryReady={Boolean(selectedTemplate)}
+                templates={templateSetup.templates}
+                templateMap={templateSetup.templateMap}
+                onKeywordChange={templateSetup.setKeyword}
+                onFixedSlotChange={templateSetup.setFixedSlot}
+                onFixedSlotClear={templateSetup.clearFixedSlot}
+                onSave={() => void templateSetup.save()}
               />
 
               <GenerationPanel

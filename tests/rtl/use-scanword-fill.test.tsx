@@ -131,6 +131,7 @@ describe("useScanwordFill", () => {
         selectedTemplateId: 7,
         filesSignature: "files",
         crossApiBase: "http://cross",
+        templateSetup: null,
         t: ((key: string) => key) as never,
       }),
     );
@@ -175,6 +176,7 @@ describe("useScanwordFill", () => {
         selectedTemplateId: 7,
         filesSignature: "files",
         crossApiBase: "http://cross",
+        templateSetup: null,
         t: ((key: string) => key) as never,
       }),
     );
@@ -227,6 +229,7 @@ describe("useScanwordFill", () => {
         selectedTemplateId: 7,
         filesSignature: "files",
         crossApiBase: "http://cross",
+        templateSetup: null,
         t: ((key: string) => key) as never,
       }),
     );
@@ -294,6 +297,7 @@ describe("useScanwordFill", () => {
         selectedTemplateId: 7,
         filesSignature: "files",
         crossApiBase: "http://cross",
+        templateSetup: null,
         t: ((key: string) => key) as never,
       }),
     );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { getScanwordUploadSnapshotAction, saveScanwordUploadSnapshotAction } from "@/app/actions/scanwords";
 import type { UploadFileInfo, UploadPanelHandle, UploadParseError } from "@/components/upload/UploadPanel";
 
@@ -133,9 +134,14 @@ export function useScanwordUploadFlow({
     void uploadPanelRef.current?.upload();
   }, [currentFiles, liveFilesCount, parseErrors, uploadTotals]);
 
-  const handleUploadComplete = useCallback(async () => {
+  const handleUploadComplete = useCallback(async (result?: { count: number; files: UploadFileInfo[] }) => {
     if (!selectedIssueId) return;
-    const snapshot = lastUploadRef.current;
+    const snapshot = {
+      ...lastUploadRef.current,
+      count: result?.count ?? lastUploadRef.current.count,
+      files: result?.files?.length ? result.files : lastUploadRef.current.files,
+    };
+    lastUploadRef.current = snapshot;
     setLastUploadCount(snapshot.count);
     setLastUploadErrors(snapshot.errors);
     setLastUploadTotals(snapshot.neededStats ?? null);
@@ -151,7 +157,8 @@ export function useScanwordUploadFlow({
         neededStats: snapshot.neededStats ?? null,
       });
     } catch {
-      // ignore save errors in UI
+      setUploadClicked(false);
+      toast.error("Не удалось сохранить состояние загруженных шаблонов. Повторите загрузку.");
     }
   }, [selectedIssueId, selectedTemplateId, selectedTemplateName]);
 

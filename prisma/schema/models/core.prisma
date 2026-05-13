@@ -269,6 +269,7 @@ model ScanwordUploadSnapshot {
   fileCount    Int      @default(0)
   errorCount   Int      @default(0)
   neededStats  Json?
+  templateSetup Json?
   files        Json?
   errors       Json?
   createdAt    DateTime @default(now())

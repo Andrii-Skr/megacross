@@ -1,7 +1,7 @@
 import type { DictionaryTemplateItem, FilterStats } from "@/types/dictionary-templates";
 import type { Edition, Issue } from "../types";
 
-export type WorkspaceTab = "dictionary" | "upload" | "conflicts" | "generation";
+export type WorkspaceTab = "dictionary" | "upload" | "conflicts" | "templateSetup" | "generation";
 
 export type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
 
@@ -102,6 +102,7 @@ export type FillReviewTemplate = {
     areaCellCount?: number;
   }>;
   startPositions?: FillReviewStartPosition[];
+  keyword?: FillTemplateKeyword | null;
 };
 
 export type FillReviewPayload = {
@@ -118,6 +119,83 @@ export type FillReviewPayload = {
     usageStats: boolean;
   };
   templates: FillReviewTemplate[];
+};
+
+export type TemplateSetupFixedSlot = {
+  slotId: number;
+  wordId: string;
+  word: string;
+};
+
+export type TemplateSetupTemplate = {
+  templateKey: string;
+  keyword: string | null;
+  fixedSlots: TemplateSetupFixedSlot[];
+};
+
+export type TemplateSetupPayload = {
+  version: 1;
+  templates: TemplateSetupTemplate[];
+};
+
+export type TemplateSetupPreviewCell = {
+  row: number;
+  col: number;
+  isIntersection: boolean;
+  slotIds: number[];
+};
+
+export type TemplateSetupPreviewArrow = {
+  row: number;
+  col: number;
+  markup: string;
+};
+
+export type TemplateSetupPreviewSlot = {
+  slotId: number;
+  r: number;
+  c: number;
+  dir: "down" | "right";
+  len: number;
+  cells: [number, number][];
+  startNumber: number | null;
+};
+
+export type TemplateSetupPreviewTemplate = {
+  key: string;
+  name: string;
+  sourceName: string;
+  order: number;
+  grid: {
+    rows: number;
+    cols: number;
+    data: string[];
+    marker: string;
+    codes: number[][];
+  };
+  slots: TemplateSetupPreviewSlot[];
+  startPositions: FillReviewStartPosition[];
+  cells: TemplateSetupPreviewCell[];
+  arrows: TemplateSetupPreviewArrow[];
+  setup: TemplateSetupTemplate | null;
+};
+
+export type TemplateSetupPreviewPayload = {
+  issueId: string;
+  templates: TemplateSetupPreviewTemplate[];
+  templateSetup: TemplateSetupPayload | null;
+  updatedAt: string | null;
+};
+
+export type FillTemplateKeywordCell = {
+  row: number;
+  col: number;
+  index: number;
+};
+
+export type FillTemplateKeyword = {
+  text: string;
+  cells: FillTemplateKeywordCell[];
 };
 
 export type FillMaskCandidate = {
@@ -219,6 +297,82 @@ export type FillOverrides = {
   requireNative: boolean;
   filterTemplateId?: number;
 };
+
+function normalizeTemplateSetupWord(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, "").toUpperCase();
+}
+
+function normalizeTemplateKeyword(value: string | null | undefined): string | null {
+  const normalized = normalizeTemplateSetupWord(value);
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeTemplateFixedSlot(value: unknown): TemplateSetupFixedSlot | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { slotId?: unknown; wordId?: unknown; word?: unknown };
+  const slotId = typeof raw.slotId === "number" ? raw.slotId : Number(raw.slotId);
+  const wordId = typeof raw.wordId === "string" ? raw.wordId.trim() : "";
+  const word = typeof raw.word === "string" ? normalizeTemplateSetupWord(raw.word) : "";
+  if (!Number.isFinite(slotId) || slotId < 0 || !wordId || !word) return null;
+  return {
+    slotId: Math.trunc(slotId),
+    wordId,
+    word,
+  };
+}
+
+function normalizeTemplateSetupTemplate(value: unknown): TemplateSetupTemplate | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { templateKey?: unknown; keyword?: unknown; fixedSlots?: unknown };
+  const templateKey = typeof raw.templateKey === "string" ? raw.templateKey.trim() : "";
+  if (!templateKey) return null;
+  const bySlotId = new Map<number, TemplateSetupFixedSlot>();
+  if (Array.isArray(raw.fixedSlots)) {
+    for (const item of raw.fixedSlots) {
+      const fixedSlot = normalizeTemplateFixedSlot(item);
+      if (!fixedSlot) continue;
+      bySlotId.set(fixedSlot.slotId, fixedSlot);
+    }
+  }
+  return {
+    templateKey,
+    keyword: normalizeTemplateKeyword(typeof raw.keyword === "string" ? raw.keyword : null),
+    fixedSlots: [...bySlotId.values()].sort((a, b) => a.slotId - b.slotId),
+  };
+}
+
+export function normalizeTemplateSetupPayload(value: unknown): TemplateSetupPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { version?: unknown; templates?: unknown };
+  const version = raw.version === 1 ? 1 : null;
+  if (version !== 1 || !Array.isArray(raw.templates)) return null;
+  const byKey = new Map<string, TemplateSetupTemplate>();
+  for (const item of raw.templates) {
+    const template = normalizeTemplateSetupTemplate(item);
+    if (!template) continue;
+    if (!template.keyword && template.fixedSlots.length === 0) continue;
+    byKey.set(template.templateKey, template);
+  }
+  return {
+    version: 1,
+    templates: [...byKey.values()].sort((a, b) => a.templateKey.localeCompare(b.templateKey)),
+  };
+}
+
+export function mapTemplateSetupByKey(payload: TemplateSetupPayload | null | undefined): Map<string, TemplateSetupTemplate> {
+  const map = new Map<string, TemplateSetupTemplate>();
+  for (const template of payload?.templates ?? []) {
+    map.set(template.templateKey, template);
+  }
+  return map;
+}
+
+export function buildTemplateSetupPayload(templates: TemplateSetupTemplate[]): TemplateSetupPayload | null {
+  return normalizeTemplateSetupPayload({
+    version: 1,
+    templates,
+  });
+}
 
 export type ScanwordsWorkspaceProps = {
   selectedEdition: Edition | null;

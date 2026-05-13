@@ -1,6 +1,6 @@
 "use server";
 
-import { readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
@@ -8,9 +8,20 @@ import { getServerSession } from "next-auth";
 import { getLocale } from "next-intl/server";
 import { z } from "zod";
 import { authOptions } from "@/auth";
+import {
+  type TemplateSetupPreviewCell,
+  type TemplateSetupPreviewArrow,
+  type TemplateSetupPreviewPayload,
+  type TemplateSetupPreviewSlot,
+  type TemplateSetupPreviewTemplate,
+  normalizeTemplateSetupPayload,
+} from "@/components/scanwords/workspace/model";
 import { actionError } from "@/lib/action-error";
 import { Permissions, requirePermissionAsync } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
+import { parseFshBytes } from "@/utils/cross/parseFsh";
+import { scanSlotsDetailed, validate } from "@/utils/cross/grid";
+import type { GridCell } from "@/utils/cross/types";
 
 const editionSchema = z.object({
   name: z.string().trim().min(1).max(255),
@@ -50,6 +61,7 @@ const uploadSnapshotSchema = z.object({
   templateName: z.string().trim().max(120).nullable().optional(),
   fileCount: z.number().int().min(0),
   neededStats: z.record(z.string(), z.number()).nullable().optional(),
+  templateSetup: z.unknown().nullable().optional(),
   files: z.array(
     z.object({
       key: z.string().min(1),
@@ -68,6 +80,11 @@ const uploadSnapshotSchema = z.object({
 
 const uploadSnapshotLoadSchema = z.object({
   issueId: z.string().min(1),
+});
+
+const templateSetupSaveSchema = z.object({
+  issueId: z.string().min(1),
+  templateSetup: z.unknown().nullable(),
 });
 
 const fillArchivesLoadSchema = z.object({
@@ -90,6 +107,104 @@ const DEFAULT_SVG_TYPOGRAPHY_PERCENT = 80;
 const DEFAULT_SVG_CLUE_FONT_BASE_PT = 9;
 const DEFAULT_SVG_CLUE_FONT_MIN_PT = 7.6;
 const DEFAULT_SVG_SYSTEM_FONT_FAMILY = "Arial";
+
+type PreviewArrowAsset = {
+  body: string;
+  width: number;
+  height: number;
+};
+
+const PREVIEW_ARROW_FILES: Record<number, string> = {
+  0x01: "01.svg",
+  0x02: "02.svg",
+  0x03: "03.svg",
+  0x04: "04.svg",
+  0x05: "05.svg",
+  0x06: "06.svg",
+  0x08: "08.svg",
+  0x10: "10.svg",
+  0x18: "18.svg",
+  0x20: "20.svg",
+  0x28: "28.svg",
+  0x30: "30.svg",
+  0x38: "38.svg",
+};
+
+const PREVIEW_CLUE_MAP: Record<number, Array<{ cluePos: number; dirKey: number }>> = {
+  0x01: [{ cluePos: 2, dirKey: 8 }],
+  0x02: [{ cluePos: 1, dirKey: 8 }],
+  0x03: [{ cluePos: 4, dirKey: 8 }],
+  0x04: [{ cluePos: 7, dirKey: 8 }],
+  0x05: [{ cluePos: 9, dirKey: 8 }],
+  0x06: [{ cluePos: 6, dirKey: 8 }],
+  0x07: [{ cluePos: 3, dirKey: 8 }],
+  0x08: [{ cluePos: 2, dirKey: 6 }],
+  0x0a: [{ cluePos: 1, dirKey: 8 }, { cluePos: 2, dirKey: 6 }],
+  0x0b: [{ cluePos: 2, dirKey: 6 }, { cluePos: 4, dirKey: 8 }],
+  0x0d: [{ cluePos: 2, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
+  0x10: [{ cluePos: 1, dirKey: 6 }],
+  0x11: [{ cluePos: 2, dirKey: 8 }, { cluePos: 1, dirKey: 6 }],
+  0x13: [{ cluePos: 1, dirKey: 6 }, { cluePos: 4, dirKey: 8 }],
+  0x15: [{ cluePos: 1, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
+  0x18: [{ cluePos: 4, dirKey: 6 }],
+  0x19: [{ cluePos: 2, dirKey: 8 }, { cluePos: 4, dirKey: 6 }],
+  0x1a: [{ cluePos: 1, dirKey: 8 }, { cluePos: 4, dirKey: 6 }],
+  0x1c: [{ cluePos: 4, dirKey: 6 }, { cluePos: 7, dirKey: 8 }],
+  0x1d: [{ cluePos: 4, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
+  0x20: [{ cluePos: 7, dirKey: 6 }],
+  0x21: [{ cluePos: 2, dirKey: 8 }, { cluePos: 7, dirKey: 6 }],
+  0x23: [{ cluePos: 4, dirKey: 8 }, { cluePos: 7, dirKey: 6 }],
+  0x28: [{ cluePos: 9, dirKey: 6 }],
+  0x29: [{ cluePos: 2, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
+  0x2a: [{ cluePos: 3, dirKey: 2 }, { cluePos: 7, dirKey: 6 }],
+  0x2b: [{ cluePos: 4, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
+  0x2c: [{ cluePos: 7, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
+  0x30: [{ cluePos: 8, dirKey: 6 }],
+  0x38: [{ cluePos: 3, dirKey: 6 }],
+  0x39: [{ cluePos: 2, dirKey: 8 }, { cluePos: 3, dirKey: 6 }],
+  0x3d: [{ cluePos: 3, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
+};
+
+const PREVIEW_CLUE_POS_FACTORS: Record<number, [number, number]> = {
+  1: [0, 0],
+  2: [0.5, 0],
+  3: [1, 0],
+  4: [0, 0.5],
+  5: [0.5, 0.5],
+  6: [1, 0.5],
+  7: [0, 1],
+  8: [0.5, 1],
+  9: [1, 1],
+};
+
+const PREVIEW_SIMPLE_ARROW_CLUE_POS: Record<number, number> = Object.fromEntries(
+  Object.entries(PREVIEW_CLUE_MAP)
+    .map(([key, entries]) => [Number(key), entries] as const)
+    .filter(([code, entries]) => Number.isFinite(code) && entries.length === 1 && PREVIEW_ARROW_FILES[code] !== undefined)
+    .map(([code, entries]) => [code, entries[0]!.cluePos]),
+) as Record<number, number>;
+
+const PREVIEW_SIMPLE_ARROW_BY_CLUE: Record<string, number> = Object.fromEntries(
+  Object.entries(PREVIEW_CLUE_MAP)
+    .map(([key, entries]) => [Number(key), entries] as const)
+    .filter(([code, entries]) => Number.isFinite(code) && entries.length === 1 && PREVIEW_ARROW_FILES[code] !== undefined)
+    .map(([code, entries]) => [`${entries[0]!.cluePos}:${entries[0]!.dirKey}`, code]),
+) as Record<string, number>;
+
+const PREVIEW_DOUBLE_ARROW_COMPONENTS: Record<number, number[]> = Object.fromEntries(
+  Object.entries(PREVIEW_CLUE_MAP)
+    .map(([key, entries]) => [Number(key), entries] as const)
+    .filter(([code, entries]) => {
+      return (
+        Number.isFinite(code) &&
+        entries.length === 2 &&
+        entries.every((entry) => PREVIEW_SIMPLE_ARROW_BY_CLUE[`${entry.cluePos}:${entry.dirKey}`] !== undefined)
+      );
+    })
+    .map(([code, entries]) => [code, entries.map((entry) => PREVIEW_SIMPLE_ARROW_BY_CLUE[`${entry.cluePos}:${entry.dirKey}`]!)]),
+) as Record<number, number[]>;
+
+let previewArrowAssetsPromise: Promise<Record<number, PreviewArrowAsset>> | null = null;
 
 type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
 
@@ -187,6 +302,265 @@ function buildCandidateCode(base: string, suffix: number | null) {
 
 function snapshotCutoffDate() {
   return new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+}
+
+function samplesBaseDir() {
+  const configured = process.env.CROSS_SAMPLES_DIR?.trim();
+  if (!configured) {
+    throw new Error("CROSS_SAMPLES_DIR is not configured");
+  }
+  return configured;
+}
+
+function sanitizeName(name: string) {
+  const base = path.basename(name).replace(/[\r\n\t]/g, " ").trim();
+  const normalized = base.normalize("NFC");
+  const safe = normalized.replace(/[^\p{L}\p{N}\p{M}\-_. ]+/gu, "_");
+  return safe.replace(/_{2,}/g, "_").replace(/ {2,}/g, " ");
+}
+
+async function resolveIssueSamplesDir(issueId: bigint): Promise<string | null> {
+  const issue = await prisma.issue.findUnique({
+    where: { id: issueId },
+    select: {
+      edition: { select: { code: true } },
+      issueNumber: { select: { label: true } },
+    },
+  });
+  if (!issue) return null;
+  return path.join(samplesBaseDir(), sanitizeName(issue.edition.code), sanitizeName(issue.issueNumber.label));
+}
+
+function buildPreviewCells(slots: TemplateSetupPreviewSlot[]): TemplateSetupPreviewCell[] {
+  const byKey = new Map<string, TemplateSetupPreviewCell>();
+  for (const slot of slots) {
+    for (const [row, col] of slot.cells) {
+      const key = `${row},${col}`;
+      const current = byKey.get(key) ?? {
+        row,
+        col,
+        isIntersection: false,
+        slotIds: [],
+      };
+      if (!current.slotIds.includes(slot.slotId)) {
+        current.slotIds.push(slot.slotId);
+      }
+      current.isIntersection = current.slotIds.length > 1;
+      byKey.set(key, current);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => a.row - b.row || a.col - b.col);
+}
+
+function parsePreviewArrowPoints(pointsRaw: string): [number, number][] {
+  const nums = pointsRaw
+    .trim()
+    .split(/[\s,]+/)
+    .map((value) => Number.parseFloat(value))
+    .filter((value) => Number.isFinite(value));
+  const points: [number, number][] = [];
+  for (let index = 0; index < nums.length - 1; index += 2) {
+    points.push([nums[index]!, nums[index + 1]!]);
+  }
+  return points;
+}
+
+function parsePreviewArrowClassStyles(source: string): Record<string, Record<string, string>> {
+  const result: Record<string, Record<string, string>> = {};
+  const styleRegex = /<style\b[^>]*>([\s\S]*?)<\/style>/gi;
+  for (const match of source.matchAll(styleRegex)) {
+    const css = match[1]?.replace(/<!\[CDATA\[/gi, "").replace(/\]\]>/gi, "") ?? "";
+    const ruleRegex = /\.([_a-zA-Z][-\w]*)\s*\{([^}]*)\}/g;
+    for (const rule of css.matchAll(ruleRegex)) {
+      const className = rule[1]!;
+      const declarations = rule[2] ?? "";
+      const styleMap = result[className] ?? {};
+      for (const declaration of declarations.split(";")) {
+        const [rawProp, rawValue] = declaration.split(":");
+        const prop = (rawProp ?? "").trim().toLowerCase();
+        const value = (rawValue ?? "").trim();
+        if (!prop || !value) continue;
+        styleMap[prop] = value;
+      }
+      result[className] = styleMap;
+    }
+  }
+  return result;
+}
+
+function inlinePreviewArrowClassStyles(bodyRaw: string, classStyles: Record<string, Record<string, string>>): string {
+  return bodyRaw.replace(/<([a-zA-Z][\w:-]*)([^>]*)>/g, (full, tagName, attrs) => {
+    if (full.startsWith("</")) return full;
+    const classMatch = attrs.match(/\sclass\s*=\s*"([^"]+)"/i);
+    if (!classMatch) return full;
+    const classes = classMatch[1]!.trim().split(/\s+/).filter(Boolean);
+    if (!classes.length) return full;
+    const merged: Record<string, string> = {};
+    for (const className of classes) {
+      const styleMap = classStyles[className];
+      if (!styleMap) continue;
+      for (const [prop, value] of Object.entries(styleMap)) merged[prop] = value;
+    }
+    if (!Object.keys(merged).length) return full;
+
+    let tag = `<${tagName}${attrs}>`.replace(/\sclass\s*=\s*"[^"]*"/i, "");
+    for (const prop of ["fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "opacity"]) {
+      const value = merged[prop];
+      if (!value) continue;
+      const close = tag.endsWith("/>") ? "/>" : ">";
+      tag = `${tag.slice(0, -close.length)} ${prop}="${value}"${close}`;
+    }
+    return tag;
+  });
+}
+
+function readPreviewArrowNumericAttr(tag: string, name: string): number | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = tag.match(new RegExp(`${escaped}\\s*=\\s*"([^"]+)"`, "i"));
+  if (!match) return null;
+  const value = Number.parseFloat(match[1]!);
+  return Number.isFinite(value) ? value : null;
+}
+
+function extractPreviewArrowBounds(body: string): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const bounds = {
+    minX: Number.POSITIVE_INFINITY,
+    minY: Number.POSITIVE_INFINITY,
+    maxX: Number.NEGATIVE_INFINITY,
+    maxY: Number.NEGATIVE_INFINITY,
+  };
+  const update = (x: number, y: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    bounds.minX = Math.min(bounds.minX, x);
+    bounds.minY = Math.min(bounds.minY, y);
+    bounds.maxX = Math.max(bounds.maxX, x);
+    bounds.maxY = Math.max(bounds.maxY, y);
+  };
+
+  for (const match of body.matchAll(/<(?:polyline|polygon)\b[^>]*\bpoints\s*=\s*"([^"]+)"[^>]*>/gi)) {
+    for (const [x, y] of parsePreviewArrowPoints(match[1]!)) update(x, y);
+  }
+  for (const match of body.matchAll(/<line\b[^>]*>/gi)) {
+    const tag = match[0];
+    const x1 = readPreviewArrowNumericAttr(tag, "x1");
+    const y1 = readPreviewArrowNumericAttr(tag, "y1");
+    const x2 = readPreviewArrowNumericAttr(tag, "x2");
+    const y2 = readPreviewArrowNumericAttr(tag, "y2");
+    if (x1 !== null && y1 !== null) update(x1, y1);
+    if (x2 !== null && y2 !== null) update(x2, y2);
+  }
+
+  if (!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.minY)) return null;
+  return bounds;
+}
+
+async function loadPreviewArrowAssets(): Promise<Record<number, PreviewArrowAsset>> {
+  if (previewArrowAssetsPromise) return previewArrowAssetsPromise;
+  previewArrowAssetsPromise = (async () => {
+    const baseDir = path.join(process.cwd(), "..", "cross", "server", "src", "arrows");
+    const entries = await Promise.all(
+      Object.entries(PREVIEW_ARROW_FILES).map(async ([rawCode, fileName]) => {
+        const code = Number(rawCode);
+        const raw = await readFile(path.join(baseDir, fileName), "utf8");
+        const svgMatch = raw.match(/<svg[^>]*>([\s\S]*?)<\/svg>/i);
+        const bodyRaw = svgMatch ? svgMatch[1]! : raw;
+        const bodyStyled = inlinePreviewArrowClassStyles(bodyRaw, parsePreviewArrowClassStyles(raw))
+          .replace(/<defs[\s\S]*?<\/defs>/gi, "")
+          .replace(/<metadata\b[^>]*>[\s\S]*?<\/metadata>/gi, "")
+          .replace(/<metadata\b[^>]*\/>/gi, "")
+          .replace(/\s+id="[^"]*"/g, "")
+          .trim();
+
+        let width = 100;
+        let height = 100;
+        const viewBoxMatch = raw.match(/viewBox="([^"]+)"/i);
+        if (viewBoxMatch) {
+          const parts = viewBoxMatch[1]!
+            .trim()
+            .split(/[\s,]+/)
+            .map((value) => Number.parseFloat(value));
+          if (parts.length === 4 && parts.every((value) => Number.isFinite(value))) {
+            width = parts[2] ?? width;
+            height = parts[3] ?? height;
+          }
+        }
+
+        const bounds = extractPreviewArrowBounds(bodyStyled);
+        if (!bounds) {
+          return [code, { body: bodyStyled, width, height }] as const;
+        }
+
+        const boundsWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const boundsHeight = Math.max(1, bounds.maxY - bounds.minY);
+        const oversizedCanvas = width / boundsWidth > 3 || height / boundsHeight > 3;
+        if (!oversizedCanvas) {
+          return [code, { body: bodyStyled, width, height }] as const;
+        }
+
+        const tx = Math.round(-bounds.minX * 1000) / 1000;
+        const ty = Math.round(-bounds.minY * 1000) / 1000;
+        return [
+          code,
+          {
+            body: `<g transform="translate(${tx} ${ty})">${bodyStyled}</g>`,
+            width: boundsWidth,
+            height: boundsHeight,
+          },
+        ] as const;
+      }),
+    );
+    return Object.fromEntries(entries);
+  })();
+  return previewArrowAssetsPromise;
+}
+
+function buildPreviewArrowMarkupForCell(
+  assets: Record<number, PreviewArrowAsset>,
+  code: number,
+  orig: GridCell,
+): string | null {
+  if ([0x01, 0x02, 0x03, 0x04, 0x05, 0x06].includes(code) && orig !== "↓") {
+    return null;
+  }
+  const componentCodes = PREVIEW_DOUBLE_ARROW_COMPONENTS[code] ?? (PREVIEW_SIMPLE_ARROW_CLUE_POS[code] ? [code] : []);
+  if (!componentCodes.length) return null;
+  const cell = 100;
+  const baseSize = 68;
+  const parts = componentCodes
+    .map((arrowCode) => {
+      const asset = assets[arrowCode];
+      if (!asset) return "";
+      const cluePos = PREVIEW_SIMPLE_ARROW_CLUE_POS[arrowCode] ?? 5;
+      const [fx, fy] = PREVIEW_CLUE_POS_FACTORS[cluePos] ?? [0.5, 0.5];
+      const scaleBoost = arrowCode === 0x01 || arrowCode === 0x18 ? 0.52 : 0.9;
+      const size = baseSize * scaleBoost;
+      const ax = cell * fx - size * fx;
+      const ay = cell * fy - size * fy;
+      const scale = Math.min(size / (asset.width || size), size / (asset.height || size));
+      const dx = ax + (size - asset.width * scale) * fx;
+      const dy = ay + (size - asset.height * scale) * fy;
+      const tx = Math.round(dx * 1_000_000) / 1_000_000;
+      const ty = Math.round(dy * 1_000_000) / 1_000_000;
+      const sc = Math.round(scale * 1_000_000) / 1_000_000;
+      return `<g transform="matrix(${sc} 0 0 ${sc} ${tx} ${ty})">${asset.body}</g>`;
+    })
+    .filter(Boolean);
+  return parts.length ? parts.join("") : null;
+}
+
+async function buildPreviewArrows(grid: { rows: number; cols: number; data: string[]; codes: number[][] }): Promise<TemplateSetupPreviewArrow[]> {
+  const assets = await loadPreviewArrowAssets();
+  const arrows: TemplateSetupPreviewArrow[] = [];
+  for (let row = 0; row < grid.rows; row += 1) {
+    for (let col = 0; col < grid.cols; col += 1) {
+      const code = grid.codes[row]?.[col] ?? 0;
+      const orig = (grid.data[row]?.[col] ?? "*") as GridCell;
+      const markup = buildPreviewArrowMarkupForCell(assets, code, orig);
+      if (!markup) continue;
+      arrows.push({ row, col, markup });
+    }
+  }
+  return arrows;
 }
 
 function toIntOrNull(value: number | string | null | undefined) {
@@ -568,33 +942,63 @@ export async function saveScanwordUploadSnapshotAction(input: z.infer<typeof upl
   const data = uploadSnapshotSchema.parse(input);
   const issueId = BigInt(data.issueId);
   const cutoff = snapshotCutoffDate();
+  const templateSetup = normalizeTemplateSetupPayload(data.templateSetup);
   await prisma.scanwordUploadSnapshot.deleteMany({
     where: { updatedAt: { lt: cutoff } },
   });
 
-  await prisma.scanwordUploadSnapshot.upsert({
-    where: { issueId },
-    update: {
-      templateId: data.templateId ?? null,
-      templateName: data.templateName ?? null,
-      fileCount: data.fileCount,
-      errorCount: data.errors.length,
-      neededStats: data.neededStats ?? Prisma.JsonNull,
-      files: data.files,
-      errors: data.errors,
-    },
-    create: {
-      issueId,
-      templateId: data.templateId ?? null,
-      templateName: data.templateName ?? null,
-      fileCount: data.fileCount,
-      errorCount: data.errors.length,
-      neededStats: data.neededStats ?? Prisma.JsonNull,
-      files: data.files,
-      errors: data.errors,
-    },
-    select: { id: true },
-  });
+  try {
+    await prisma.scanwordUploadSnapshot.upsert({
+      where: { issueId },
+      update: {
+        templateId: data.templateId ?? null,
+        templateName: data.templateName ?? null,
+        fileCount: data.fileCount,
+        errorCount: data.errors.length,
+        neededStats: data.neededStats ?? Prisma.JsonNull,
+        templateSetup: templateSetup ?? Prisma.JsonNull,
+        files: data.files,
+        errors: data.errors,
+      },
+      create: {
+        issueId,
+        templateId: data.templateId ?? null,
+        templateName: data.templateName ?? null,
+        fileCount: data.fileCount,
+        errorCount: data.errors.length,
+        neededStats: data.neededStats ?? Prisma.JsonNull,
+        templateSetup: templateSetup ?? Prisma.JsonNull,
+        files: data.files,
+        errors: data.errors,
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (!isMissingColumnError(error)) throw error;
+    await prisma.scanwordUploadSnapshot.upsert({
+      where: { issueId },
+      update: {
+        templateId: data.templateId ?? null,
+        templateName: data.templateName ?? null,
+        fileCount: data.fileCount,
+        errorCount: data.errors.length,
+        neededStats: data.neededStats ?? Prisma.JsonNull,
+        files: data.files,
+        errors: data.errors,
+      },
+      create: {
+        issueId,
+        templateId: data.templateId ?? null,
+        templateName: data.templateName ?? null,
+        fileCount: data.fileCount,
+        errorCount: data.errors.length,
+        neededStats: data.neededStats ?? Prisma.JsonNull,
+        files: data.files,
+        errors: data.errors,
+      },
+      select: { id: true },
+    });
+  }
 }
 
 export async function getScanwordUploadSnapshotAction(input: z.infer<typeof uploadSnapshotLoadSchema>) {
@@ -606,25 +1010,70 @@ export async function getScanwordUploadSnapshotAction(input: z.infer<typeof uplo
     where: { updatedAt: { lt: cutoff } },
   });
 
-  const snapshot = await prisma.scanwordUploadSnapshot.findUnique({
-    where: { issueId },
-    select: {
-      templateId: true,
-      templateName: true,
-      fileCount: true,
-      errorCount: true,
-      neededStats: true,
-      files: true,
-      errors: true,
-      updatedAt: true,
-    },
-  });
+  let snapshot:
+    | {
+        templateId: number | null;
+        templateName: string | null;
+        fileCount: number;
+        errorCount: number;
+        neededStats: Prisma.JsonValue | null;
+        templateSetup: Prisma.JsonValue | null;
+        files: Prisma.JsonValue;
+        errors: Prisma.JsonValue;
+        updatedAt: Date;
+      }
+    | {
+        templateId: number | null;
+        templateName: string | null;
+        fileCount: number;
+        errorCount: number;
+        neededStats: Prisma.JsonValue | null;
+        files: Prisma.JsonValue;
+        errors: Prisma.JsonValue;
+        updatedAt: Date;
+      }
+    | null = null;
+
+  try {
+    snapshot = await prisma.scanwordUploadSnapshot.findUnique({
+      where: { issueId },
+      select: {
+        templateId: true,
+        templateName: true,
+        fileCount: true,
+        errorCount: true,
+        neededStats: true,
+        templateSetup: true,
+        files: true,
+        errors: true,
+        updatedAt: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingColumnError(error)) throw error;
+    snapshot = await prisma.scanwordUploadSnapshot.findUnique({
+      where: { issueId },
+      select: {
+        templateId: true,
+        templateName: true,
+        fileCount: true,
+        errorCount: true,
+        neededStats: true,
+        files: true,
+        errors: true,
+        updatedAt: true,
+      },
+    });
+  }
 
   if (!snapshot) return null;
 
   const files = snapshotFilesSchema.safeParse(snapshot.files);
   const errors = snapshotErrorsSchema.safeParse(snapshot.errors);
   const neededStats = snapshotNeededStatsSchema.safeParse(snapshot.neededStats ?? {});
+  const templateSetup = normalizeTemplateSetupPayload(
+    "templateSetup" in snapshot ? snapshot.templateSetup : null,
+  );
 
   return {
     templateId: snapshot.templateId,
@@ -634,7 +1083,101 @@ export async function getScanwordUploadSnapshotAction(input: z.infer<typeof uplo
     files: files.success ? files.data : [],
     errors: errors.success ? errors.data : [],
     neededStats: neededStats.success ? neededStats.data : null,
+    templateSetup,
     updatedAt: snapshot.updatedAt.toISOString(),
+  };
+}
+
+export async function saveScanwordTemplateSetupAction(input: z.infer<typeof templateSetupSaveSchema>) {
+  await ensureScanwordsAccess();
+  const data = templateSetupSaveSchema.parse(input);
+  const issueId = BigInt(data.issueId);
+  const templateSetup = normalizeTemplateSetupPayload(data.templateSetup);
+  try {
+    await prisma.scanwordUploadSnapshot.upsert({
+      where: { issueId },
+      update: {
+        templateSetup: templateSetup ?? Prisma.JsonNull,
+      },
+      create: {
+        issueId,
+        fileCount: 0,
+        errorCount: 0,
+        templateSetup: templateSetup ?? Prisma.JsonNull,
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (!isMissingColumnError(error)) throw error;
+    await prisma.scanwordUploadSnapshot.upsert({
+      where: { issueId },
+      update: {},
+      create: {
+        issueId,
+        fileCount: 0,
+        errorCount: 0,
+      },
+      select: { id: true },
+    });
+  }
+}
+
+export async function getScanwordTemplateSetupPreviewAction(
+  input: z.infer<typeof uploadSnapshotLoadSchema>,
+): Promise<TemplateSetupPreviewPayload | null> {
+  await ensureScanwordsAccess();
+  const data = uploadSnapshotLoadSchema.parse(input);
+  const issueId = BigInt(data.issueId);
+  const snapshot = await getScanwordUploadSnapshotAction({ issueId: data.issueId });
+  if (!snapshot?.files?.length) return null;
+
+  const samplesDir = await resolveIssueSamplesDir(issueId);
+  if (!samplesDir) return null;
+
+  const setupByKey = new Map((snapshot.templateSetup?.templates ?? []).map((item) => [item.templateKey, item]));
+  const templates: TemplateSetupPreviewTemplate[] = [];
+
+  for (const [order, file] of snapshot.files.entries()) {
+    const filePath = path.join(samplesDir, sanitizeName(file.name));
+    const buffer = await readFile(filePath);
+    const grid = parseFshBytes(buffer);
+    validate(grid);
+    const slotScan = scanSlotsDetailed(grid);
+    const slots: TemplateSetupPreviewSlot[] = slotScan.slots.map((slot) => ({
+      slotId: slot.id,
+      r: slot.r,
+      c: slot.c,
+      dir: slot.dir.dr === 0 ? "right" : "down",
+      len: slot.len,
+      cells: slot.cells,
+      startNumber: slotScan.startNumberBySlotId.get(slot.id) ?? null,
+    }));
+    const arrows = await buildPreviewArrows(grid);
+    const key = file.key;
+    templates.push({
+      key,
+      name: path.basename(file.name, path.extname(file.name)) || file.name,
+      sourceName: file.name,
+      order,
+      grid,
+      slots,
+      startPositions: slotScan.starts,
+      cells: buildPreviewCells(slots),
+      arrows,
+      setup: setupByKey.get(key) ?? null,
+    });
+  }
+
+  return {
+    issueId: data.issueId,
+    templates,
+    templateSetup: normalizeTemplateSetupPayload({
+      version: 1,
+      templates: templates
+        .map((template) => template.setup)
+        .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+    }),
+    updatedAt: snapshot.updatedAt,
   };
 }
 
