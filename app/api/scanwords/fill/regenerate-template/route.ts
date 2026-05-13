@@ -1,11 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import type { FillReviewPayload } from "@/components/scanwords/workspace/model";
+import {
+  buildEditableTemplateStates,
+  mapPersistedRowsByTemplate,
+  normalizePersistedRows,
+} from "@/components/scanwords/workspace/reviewDraftState";
 import { Permissions } from "@/lib/authz";
 import { prisma } from "@/lib/db";
 import { getNumericUserId } from "@/lib/user";
-import { buildEditableTemplateStates, mapPersistedRowsByTemplate, normalizePersistedRows } from "@/components/scanwords/workspace/reviewDraftState";
-import type { FillReviewPayload } from "@/components/scanwords/workspace/model";
 import { apiRoute } from "@/utils/appRoute";
 
 const schema = z.object({
@@ -88,10 +92,7 @@ function getUserId(user: { id?: string | number | null } | null): number | null 
 }
 
 function isStorageUnavailableError(err: unknown): boolean {
-  return (
-    err instanceof Prisma.PrismaClientKnownRequestError &&
-    (err.code === "P2021" || err.code === "P2022")
-  );
+  return err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2021" || err.code === "P2022");
 }
 
 function parseReviewPayload(raw: unknown): FillReviewPayload | null {
@@ -109,10 +110,7 @@ async function loadDraftRows(jobId: bigint, userId: number): Promise<ReturnType<
     });
     if (!draft) return new Map();
     if (draft.expiresAt && draft.expiresAt <= new Date()) return new Map();
-    const payload =
-      typeof draft.data === "string"
-        ? parseJsonSafe(draft.data)
-        : draft.data;
+    const payload = typeof draft.data === "string" ? parseJsonSafe(draft.data) : draft.data;
     const rows = normalizePersistedRows(asObject(payload)?.rows);
     return mapPersistedRowsByTemplate(rows);
   } catch (err) {
@@ -121,21 +119,14 @@ async function loadDraftRows(jobId: bigint, userId: number): Promise<ReturnType<
   }
 }
 
-async function deleteTemplateRowsFromDraft(
-  jobId: bigint,
-  userId: number,
-  templateKey: string,
-): Promise<void> {
+async function deleteTemplateRowsFromDraft(jobId: bigint, userId: number, templateKey: string): Promise<void> {
   try {
     const draft = await prisma.scanwordFillReviewDraft.findUnique({
       where: { jobId_userId: { jobId, userId } },
       select: { data: true, expiresAt: true },
     });
     if (!draft) return;
-    const payload =
-      typeof draft.data === "string"
-        ? parseJsonSafe(draft.data)
-        : draft.data;
+    const payload = typeof draft.data === "string" ? parseJsonSafe(draft.data) : draft.data;
     const rows = normalizePersistedRows(asObject(payload)?.rows).filter((row) => row.templateKey !== templateKey);
     if (!rows.length) {
       await prisma.scanwordFillReviewDraft.deleteMany({
@@ -198,16 +189,18 @@ export const POST = apiRoute<Body>(
     }
 
     const draftRowsByTemplate = await loadDraftRows(jobId, userId);
-    const editableTemplates = buildEditableTemplateStates(reviewPayload.templates, draftRowsByTemplate).map((template) => ({
-      key: template.key,
-      slots: template.slots.map((slot) => ({
-        slotId: slot.slotId,
-        word: slot.word,
-        definition: slot.definition,
-        wordId: slot.wordId,
-        opredId: slot.opredId,
-      })),
-    }));
+    const editableTemplates = buildEditableTemplateStates(reviewPayload.templates, draftRowsByTemplate).map(
+      (template) => ({
+        key: template.key,
+        slots: template.slots.map((slot) => ({
+          slotId: slot.slotId,
+          word: slot.word,
+          definition: slot.definition,
+          wordId: slot.wordId,
+          opredId: slot.opredId,
+        })),
+      }),
+    );
 
     let upstream: Response | null = null;
     let lastNetworkError: unknown = null;

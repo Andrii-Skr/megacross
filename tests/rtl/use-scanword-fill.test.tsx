@@ -137,7 +137,11 @@ describe("useScanwordFill", () => {
     );
 
     await waitFor(() => expect(result.current.fillJob?.id).toBe("job-1"));
-    expect(result.current.templateList.map((item) => item.sourceName ?? item.name)).toEqual(["8.fsh", "9.fsh", "11.fsh"]);
+    expect(result.current.templateList.map((item) => item.sourceName ?? item.name)).toEqual([
+      "8.fsh",
+      "9.fsh",
+      "11.fsh",
+    ]);
   });
 
   it("autoloads review payload for jobs in review state", async () => {
@@ -247,10 +251,7 @@ describe("useScanwordFill", () => {
     });
 
     expect(result.current.fillJob?.status).toBe("done");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/scanwords/fill/finalize",
-      expect.objectContaining({ method: "POST" }),
-    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/scanwords/fill/finalize", expect.objectContaining({ method: "POST" }));
   });
 
   it("regenerates a single template through next route and resets cached review data", async () => {
@@ -309,10 +310,12 @@ describe("useScanwordFill", () => {
 
     expect(result.current.fillJob?.templates?.[0]?.status).toBe("error");
     expect(result.current.regeneratingTemplateKey).toBeNull();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/scanwords/fill/regenerate-template",
-      expect.objectContaining({ method: "POST" }),
-    ));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/scanwords/fill/regenerate-template",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
   });
 
   it("builds fill overrides from settings defaults", () => {

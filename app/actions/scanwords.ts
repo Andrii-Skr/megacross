@@ -1,6 +1,6 @@
 "use server";
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
@@ -9,18 +9,18 @@ import { getLocale } from "next-intl/server";
 import { z } from "zod";
 import { authOptions } from "@/auth";
 import {
-  type TemplateSetupPreviewCell,
+  normalizeTemplateSetupPayload,
   type TemplateSetupPreviewArrow,
+  type TemplateSetupPreviewCell,
   type TemplateSetupPreviewPayload,
   type TemplateSetupPreviewSlot,
   type TemplateSetupPreviewTemplate,
-  normalizeTemplateSetupPayload,
 } from "@/components/scanwords/workspace/model";
 import { actionError } from "@/lib/action-error";
 import { Permissions, requirePermissionAsync } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
-import { parseFshBytes } from "@/utils/cross/parseFsh";
 import { scanSlotsDetailed, validate } from "@/utils/cross/grid";
+import { parseFshBytes } from "@/utils/cross/parseFsh";
 import type { GridCell } from "@/utils/cross/types";
 
 const editionSchema = z.object({
@@ -115,54 +115,108 @@ type PreviewArrowAsset = {
 };
 
 const PREVIEW_ARROW_FILES: Record<number, string> = {
-  0x01: "01.svg",
-  0x02: "02.svg",
-  0x03: "03.svg",
-  0x04: "04.svg",
-  0x05: "05.svg",
-  0x06: "06.svg",
-  0x08: "08.svg",
-  0x10: "10.svg",
-  0x18: "18.svg",
-  0x20: "20.svg",
-  0x28: "28.svg",
-  0x30: "30.svg",
-  0x38: "38.svg",
+  1: "01.svg",
+  2: "02.svg",
+  3: "03.svg",
+  4: "04.svg",
+  5: "05.svg",
+  6: "06.svg",
+  8: "08.svg",
+  16: "10.svg",
+  24: "18.svg",
+  32: "20.svg",
+  40: "28.svg",
+  48: "30.svg",
+  56: "38.svg",
 };
 
 const PREVIEW_CLUE_MAP: Record<number, Array<{ cluePos: number; dirKey: number }>> = {
-  0x01: [{ cluePos: 2, dirKey: 8 }],
-  0x02: [{ cluePos: 1, dirKey: 8 }],
-  0x03: [{ cluePos: 4, dirKey: 8 }],
-  0x04: [{ cluePos: 7, dirKey: 8 }],
-  0x05: [{ cluePos: 9, dirKey: 8 }],
-  0x06: [{ cluePos: 6, dirKey: 8 }],
-  0x07: [{ cluePos: 3, dirKey: 8 }],
-  0x08: [{ cluePos: 2, dirKey: 6 }],
-  0x0a: [{ cluePos: 1, dirKey: 8 }, { cluePos: 2, dirKey: 6 }],
-  0x0b: [{ cluePos: 2, dirKey: 6 }, { cluePos: 4, dirKey: 8 }],
-  0x0d: [{ cluePos: 2, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
-  0x10: [{ cluePos: 1, dirKey: 6 }],
-  0x11: [{ cluePos: 2, dirKey: 8 }, { cluePos: 1, dirKey: 6 }],
-  0x13: [{ cluePos: 1, dirKey: 6 }, { cluePos: 4, dirKey: 8 }],
-  0x15: [{ cluePos: 1, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
-  0x18: [{ cluePos: 4, dirKey: 6 }],
-  0x19: [{ cluePos: 2, dirKey: 8 }, { cluePos: 4, dirKey: 6 }],
-  0x1a: [{ cluePos: 1, dirKey: 8 }, { cluePos: 4, dirKey: 6 }],
-  0x1c: [{ cluePos: 4, dirKey: 6 }, { cluePos: 7, dirKey: 8 }],
-  0x1d: [{ cluePos: 4, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
-  0x20: [{ cluePos: 7, dirKey: 6 }],
-  0x21: [{ cluePos: 2, dirKey: 8 }, { cluePos: 7, dirKey: 6 }],
-  0x23: [{ cluePos: 4, dirKey: 8 }, { cluePos: 7, dirKey: 6 }],
-  0x28: [{ cluePos: 9, dirKey: 6 }],
-  0x29: [{ cluePos: 2, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
-  0x2a: [{ cluePos: 3, dirKey: 2 }, { cluePos: 7, dirKey: 6 }],
-  0x2b: [{ cluePos: 4, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
-  0x2c: [{ cluePos: 7, dirKey: 8 }, { cluePos: 9, dirKey: 6 }],
-  0x30: [{ cluePos: 8, dirKey: 6 }],
-  0x38: [{ cluePos: 3, dirKey: 6 }],
-  0x39: [{ cluePos: 2, dirKey: 8 }, { cluePos: 3, dirKey: 6 }],
-  0x3d: [{ cluePos: 3, dirKey: 6 }, { cluePos: 9, dirKey: 8 }],
+  1: [{ cluePos: 2, dirKey: 8 }],
+  2: [{ cluePos: 1, dirKey: 8 }],
+  3: [{ cluePos: 4, dirKey: 8 }],
+  4: [{ cluePos: 7, dirKey: 8 }],
+  5: [{ cluePos: 9, dirKey: 8 }],
+  6: [{ cluePos: 6, dirKey: 8 }],
+  7: [{ cluePos: 3, dirKey: 8 }],
+  8: [{ cluePos: 2, dirKey: 6 }],
+  10: [
+    { cluePos: 1, dirKey: 8 },
+    { cluePos: 2, dirKey: 6 },
+  ],
+  11: [
+    { cluePos: 2, dirKey: 6 },
+    { cluePos: 4, dirKey: 8 },
+  ],
+  13: [
+    { cluePos: 2, dirKey: 6 },
+    { cluePos: 9, dirKey: 8 },
+  ],
+  16: [{ cluePos: 1, dirKey: 6 }],
+  17: [
+    { cluePos: 2, dirKey: 8 },
+    { cluePos: 1, dirKey: 6 },
+  ],
+  19: [
+    { cluePos: 1, dirKey: 6 },
+    { cluePos: 4, dirKey: 8 },
+  ],
+  21: [
+    { cluePos: 1, dirKey: 6 },
+    { cluePos: 9, dirKey: 8 },
+  ],
+  24: [{ cluePos: 4, dirKey: 6 }],
+  25: [
+    { cluePos: 2, dirKey: 8 },
+    { cluePos: 4, dirKey: 6 },
+  ],
+  26: [
+    { cluePos: 1, dirKey: 8 },
+    { cluePos: 4, dirKey: 6 },
+  ],
+  28: [
+    { cluePos: 4, dirKey: 6 },
+    { cluePos: 7, dirKey: 8 },
+  ],
+  29: [
+    { cluePos: 4, dirKey: 6 },
+    { cluePos: 9, dirKey: 8 },
+  ],
+  32: [{ cluePos: 7, dirKey: 6 }],
+  33: [
+    { cluePos: 2, dirKey: 8 },
+    { cluePos: 7, dirKey: 6 },
+  ],
+  35: [
+    { cluePos: 4, dirKey: 8 },
+    { cluePos: 7, dirKey: 6 },
+  ],
+  40: [{ cluePos: 9, dirKey: 6 }],
+  41: [
+    { cluePos: 2, dirKey: 8 },
+    { cluePos: 9, dirKey: 6 },
+  ],
+  42: [
+    { cluePos: 3, dirKey: 2 },
+    { cluePos: 7, dirKey: 6 },
+  ],
+  43: [
+    { cluePos: 4, dirKey: 8 },
+    { cluePos: 9, dirKey: 6 },
+  ],
+  44: [
+    { cluePos: 7, dirKey: 8 },
+    { cluePos: 9, dirKey: 6 },
+  ],
+  48: [{ cluePos: 8, dirKey: 6 }],
+  56: [{ cluePos: 3, dirKey: 6 }],
+  57: [
+    { cluePos: 2, dirKey: 8 },
+    { cluePos: 3, dirKey: 6 },
+  ],
+  61: [
+    { cluePos: 3, dirKey: 6 },
+    { cluePos: 9, dirKey: 8 },
+  ],
 };
 
 const PREVIEW_CLUE_POS_FACTORS: Record<number, [number, number]> = {
@@ -180,15 +234,25 @@ const PREVIEW_CLUE_POS_FACTORS: Record<number, [number, number]> = {
 const PREVIEW_SIMPLE_ARROW_CLUE_POS: Record<number, number> = Object.fromEntries(
   Object.entries(PREVIEW_CLUE_MAP)
     .map(([key, entries]) => [Number(key), entries] as const)
-    .filter(([code, entries]) => Number.isFinite(code) && entries.length === 1 && PREVIEW_ARROW_FILES[code] !== undefined)
-    .map(([code, entries]) => [code, entries[0]!.cluePos]),
+    .filter(
+      ([code, entries]) => Number.isFinite(code) && entries.length === 1 && PREVIEW_ARROW_FILES[code] !== undefined,
+    )
+    .flatMap(([code, entries]) => {
+      const entry = entries[0];
+      return entry ? [[code, entry.cluePos] as const] : [];
+    }),
 ) as Record<number, number>;
 
 const PREVIEW_SIMPLE_ARROW_BY_CLUE: Record<string, number> = Object.fromEntries(
   Object.entries(PREVIEW_CLUE_MAP)
     .map(([key, entries]) => [Number(key), entries] as const)
-    .filter(([code, entries]) => Number.isFinite(code) && entries.length === 1 && PREVIEW_ARROW_FILES[code] !== undefined)
-    .map(([code, entries]) => [`${entries[0]!.cluePos}:${entries[0]!.dirKey}`, code]),
+    .filter(
+      ([code, entries]) => Number.isFinite(code) && entries.length === 1 && PREVIEW_ARROW_FILES[code] !== undefined,
+    )
+    .flatMap(([code, entries]) => {
+      const entry = entries[0];
+      return entry ? [[`${entry.cluePos}:${entry.dirKey}`, code] as const] : [];
+    }),
 ) as Record<string, number>;
 
 const PREVIEW_DOUBLE_ARROW_COMPONENTS: Record<number, number[]> = Object.fromEntries(
@@ -201,7 +265,12 @@ const PREVIEW_DOUBLE_ARROW_COMPONENTS: Record<number, number[]> = Object.fromEnt
         entries.every((entry) => PREVIEW_SIMPLE_ARROW_BY_CLUE[`${entry.cluePos}:${entry.dirKey}`] !== undefined)
       );
     })
-    .map(([code, entries]) => [code, entries.map((entry) => PREVIEW_SIMPLE_ARROW_BY_CLUE[`${entry.cluePos}:${entry.dirKey}`]!)]),
+    .flatMap(([code, entries]) => {
+      const componentCodes = entries
+        .map((entry) => PREVIEW_SIMPLE_ARROW_BY_CLUE[`${entry.cluePos}:${entry.dirKey}`])
+        .filter((value): value is number => value !== undefined);
+      return componentCodes.length === entries.length ? [[code, componentCodes] as const] : [];
+    }),
 ) as Record<number, number[]>;
 
 let previewArrowAssetsPromise: Promise<Record<number, PreviewArrowAsset>> | null = null;
@@ -313,7 +382,10 @@ function samplesBaseDir() {
 }
 
 function sanitizeName(name: string) {
-  const base = path.basename(name).replace(/[\r\n\t]/g, " ").trim();
+  const base = path
+    .basename(name)
+    .replace(/[\r\n\t]/g, " ")
+    .trim();
   const normalized = base.normalize("NFC");
   const safe = normalized.replace(/[^\p{L}\p{N}\p{M}\-_. ]+/gu, "_");
   return safe.replace(/_{2,}/g, "_").replace(/ {2,}/g, " ");
@@ -360,7 +432,10 @@ function parsePreviewArrowPoints(pointsRaw: string): [number, number][] {
     .filter((value) => Number.isFinite(value));
   const points: [number, number][] = [];
   for (let index = 0; index < nums.length - 1; index += 2) {
-    points.push([nums[index]!, nums[index + 1]!]);
+    const x = nums[index];
+    const y = nums[index + 1];
+    if (x === undefined || y === undefined) continue;
+    points.push([x, y]);
   }
   return points;
 }
@@ -372,7 +447,8 @@ function parsePreviewArrowClassStyles(source: string): Record<string, Record<str
     const css = match[1]?.replace(/<!\[CDATA\[/gi, "").replace(/\]\]>/gi, "") ?? "";
     const ruleRegex = /\.([_a-zA-Z][-\w]*)\s*\{([^}]*)\}/g;
     for (const rule of css.matchAll(ruleRegex)) {
-      const className = rule[1]!;
+      const className = rule[1];
+      if (!className) continue;
       const declarations = rule[2] ?? "";
       const styleMap = result[className] ?? {};
       for (const declaration of declarations.split(";")) {
@@ -393,7 +469,9 @@ function inlinePreviewArrowClassStyles(bodyRaw: string, classStyles: Record<stri
     if (full.startsWith("</")) return full;
     const classMatch = attrs.match(/\sclass\s*=\s*"([^"]+)"/i);
     if (!classMatch) return full;
-    const classes = classMatch[1]!.trim().split(/\s+/).filter(Boolean);
+    const classNames = classMatch[1];
+    if (!classNames) return full;
+    const classes = classNames.trim().split(/\s+/).filter(Boolean);
     if (!classes.length) return full;
     const merged: Record<string, string> = {};
     for (const className of classes) {
@@ -404,7 +482,16 @@ function inlinePreviewArrowClassStyles(bodyRaw: string, classStyles: Record<stri
     if (!Object.keys(merged).length) return full;
 
     let tag = `<${tagName}${attrs}>`.replace(/\sclass\s*=\s*"[^"]*"/i, "");
-    for (const prop of ["fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "opacity"]) {
+    for (const prop of [
+      "fill",
+      "fill-rule",
+      "stroke",
+      "stroke-width",
+      "stroke-linecap",
+      "stroke-linejoin",
+      "stroke-miterlimit",
+      "opacity",
+    ]) {
       const value = merged[prop];
       if (!value) continue;
       const close = tag.endsWith("/>") ? "/>" : ">";
@@ -418,7 +505,9 @@ function readPreviewArrowNumericAttr(tag: string, name: string): number | null {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = tag.match(new RegExp(`${escaped}\\s*=\\s*"([^"]+)"`, "i"));
   if (!match) return null;
-  const value = Number.parseFloat(match[1]!);
+  const rawValue = match[1];
+  if (!rawValue) return null;
+  const value = Number.parseFloat(rawValue);
   return Number.isFinite(value) ? value : null;
 }
 
@@ -438,7 +527,9 @@ function extractPreviewArrowBounds(body: string): { minX: number; minY: number; 
   };
 
   for (const match of body.matchAll(/<(?:polyline|polygon)\b[^>]*\bpoints\s*=\s*"([^"]+)"[^>]*>/gi)) {
-    for (const [x, y] of parsePreviewArrowPoints(match[1]!)) update(x, y);
+    const pointsRaw = match[1];
+    if (!pointsRaw) continue;
+    for (const [x, y] of parsePreviewArrowPoints(pointsRaw)) update(x, y);
   }
   for (const match of body.matchAll(/<line\b[^>]*>/gi)) {
     const tag = match[0];
@@ -463,7 +554,7 @@ async function loadPreviewArrowAssets(): Promise<Record<number, PreviewArrowAsse
         const code = Number(rawCode);
         const raw = await readFile(path.join(baseDir, fileName), "utf8");
         const svgMatch = raw.match(/<svg[^>]*>([\s\S]*?)<\/svg>/i);
-        const bodyRaw = svgMatch ? svgMatch[1]! : raw;
+        const bodyRaw = svgMatch?.[1] ?? raw;
         const bodyStyled = inlinePreviewArrowClassStyles(bodyRaw, parsePreviewArrowClassStyles(raw))
           .replace(/<defs[\s\S]*?<\/defs>/gi, "")
           .replace(/<metadata\b[^>]*>[\s\S]*?<\/metadata>/gi, "")
@@ -475,11 +566,12 @@ async function loadPreviewArrowAssets(): Promise<Record<number, PreviewArrowAsse
         let height = 100;
         const viewBoxMatch = raw.match(/viewBox="([^"]+)"/i);
         if (viewBoxMatch) {
-          const parts = viewBoxMatch[1]!
-            .trim()
+          const viewBoxValue = viewBoxMatch[1];
+          const parts = viewBoxValue
+            ?.trim()
             .split(/[\s,]+/)
             .map((value) => Number.parseFloat(value));
-          if (parts.length === 4 && parts.every((value) => Number.isFinite(value))) {
+          if (parts?.length === 4 && parts.every((value) => Number.isFinite(value))) {
             width = parts[2] ?? width;
             height = parts[3] ?? height;
           }
@@ -548,7 +640,12 @@ function buildPreviewArrowMarkupForCell(
   return parts.length ? parts.join("") : null;
 }
 
-async function buildPreviewArrows(grid: { rows: number; cols: number; data: string[]; codes: number[][] }): Promise<TemplateSetupPreviewArrow[]> {
+async function buildPreviewArrows(grid: {
+  rows: number;
+  cols: number;
+  data: string[];
+  codes: number[][];
+}): Promise<TemplateSetupPreviewArrow[]> {
   const assets = await loadPreviewArrowAssets();
   const arrows: TemplateSetupPreviewArrow[] = [];
   for (let row = 0; row < grid.rows; row += 1) {
@@ -1071,9 +1168,7 @@ export async function getScanwordUploadSnapshotAction(input: z.infer<typeof uplo
   const files = snapshotFilesSchema.safeParse(snapshot.files);
   const errors = snapshotErrorsSchema.safeParse(snapshot.errors);
   const neededStats = snapshotNeededStatsSchema.safeParse(snapshot.neededStats ?? {});
-  const templateSetup = normalizeTemplateSetupPayload(
-    "templateSetup" in snapshot ? snapshot.templateSetup : null,
-  );
+  const templateSetup = normalizeTemplateSetupPayload("templateSetup" in snapshot ? snapshot.templateSetup : null);
 
   return {
     templateId: snapshot.templateId,

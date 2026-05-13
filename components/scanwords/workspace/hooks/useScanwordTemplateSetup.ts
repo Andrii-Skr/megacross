@@ -2,10 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import {
-  getScanwordTemplateSetupPreviewAction,
-  saveScanwordTemplateSetupAction,
-} from "@/app/actions/scanwords";
+import { getScanwordTemplateSetupPreviewAction, saveScanwordTemplateSetupAction } from "@/app/actions/scanwords";
 import {
   buildTemplateSetupPayload,
   mapTemplateSetupByKey,
@@ -70,68 +67,85 @@ export function useScanwordTemplateSetup({ selectedIssueId, reloadToken }: UseSc
 
   const templateMap = useMemo(() => mapTemplateSetupByKey(templateSetup), [templateSetup]);
 
-  const updateTemplate = useCallback((templateKey: string, updater: (current: TemplateSetupTemplate | null) => TemplateSetupTemplate | null) => {
-    setTemplateSetup((currentPayload) => {
-      const currentMap = mapTemplateSetupByKey(currentPayload);
-      const nextValue = updater(currentMap.get(templateKey) ?? null);
-      if (nextValue) currentMap.set(templateKey, nextValue);
-      else currentMap.delete(templateKey);
-      const nextPayload = buildTemplateSetupPayload([...currentMap.values()]);
-      setDirty(true);
-      return nextPayload;
-    });
-  }, []);
+  const updateTemplate = useCallback(
+    (templateKey: string, updater: (current: TemplateSetupTemplate | null) => TemplateSetupTemplate | null) => {
+      setTemplateSetup((currentPayload) => {
+        const currentMap = mapTemplateSetupByKey(currentPayload);
+        const nextValue = updater(currentMap.get(templateKey) ?? null);
+        if (nextValue) currentMap.set(templateKey, nextValue);
+        else currentMap.delete(templateKey);
+        const nextPayload = buildTemplateSetupPayload([...currentMap.values()]);
+        setDirty(true);
+        return nextPayload;
+      });
+    },
+    [],
+  );
 
-  const setKeyword = useCallback((templateKey: string, keyword: string) => {
-    updateTemplate(templateKey, (current) => {
-      const normalized = normalizeTemplateSetupPayload({
-        version: 1,
-        templates: [
-          {
-            templateKey,
-            keyword,
-            fixedSlots: current?.fixedSlots ?? [],
-          },
-        ],
-      })?.templates[0] ?? null;
-      return normalized;
-    });
-  }, [updateTemplate]);
+  const setKeyword = useCallback(
+    (templateKey: string, keyword: string) => {
+      updateTemplate(templateKey, (current) => {
+        const normalized =
+          normalizeTemplateSetupPayload({
+            version: 1,
+            templates: [
+              {
+                templateKey,
+                keyword,
+                fixedSlots: current?.fixedSlots ?? [],
+              },
+            ],
+          })?.templates[0] ?? null;
+        return normalized;
+      });
+    },
+    [updateTemplate],
+  );
 
-  const setFixedSlot = useCallback((templateKey: string, fixedSlot: TemplateSetupFixedSlot | null) => {
-    updateTemplate(templateKey, (current) => {
-      const nextSlots = new Map<number, TemplateSetupFixedSlot>((current?.fixedSlots ?? []).map((item) => [item.slotId, item]));
-      if (fixedSlot) nextSlots.set(fixedSlot.slotId, fixedSlot);
-      const normalized = normalizeTemplateSetupPayload({
-        version: 1,
-        templates: [
-          {
-            templateKey,
-            keyword: current?.keyword ?? null,
-            fixedSlots: [...nextSlots.values()],
-          },
-        ],
-      })?.templates[0] ?? null;
-      return normalized;
-    });
-  }, [updateTemplate]);
+  const setFixedSlot = useCallback(
+    (templateKey: string, fixedSlot: TemplateSetupFixedSlot | null) => {
+      updateTemplate(templateKey, (current) => {
+        const nextSlots = new Map<number, TemplateSetupFixedSlot>(
+          (current?.fixedSlots ?? []).map((item) => [item.slotId, item]),
+        );
+        if (fixedSlot) nextSlots.set(fixedSlot.slotId, fixedSlot);
+        const normalized =
+          normalizeTemplateSetupPayload({
+            version: 1,
+            templates: [
+              {
+                templateKey,
+                keyword: current?.keyword ?? null,
+                fixedSlots: [...nextSlots.values()],
+              },
+            ],
+          })?.templates[0] ?? null;
+        return normalized;
+      });
+    },
+    [updateTemplate],
+  );
 
-  const clearFixedSlot = useCallback((templateKey: string, slotId: number) => {
-    updateTemplate(templateKey, (current) => {
-      const nextSlots = (current?.fixedSlots ?? []).filter((item) => item.slotId !== slotId);
-      const normalized = normalizeTemplateSetupPayload({
-        version: 1,
-        templates: [
-          {
-            templateKey,
-            keyword: current?.keyword ?? null,
-            fixedSlots: nextSlots,
-          },
-        ],
-      })?.templates[0] ?? null;
-      return normalized;
-    });
-  }, [updateTemplate]);
+  const clearFixedSlot = useCallback(
+    (templateKey: string, slotId: number) => {
+      updateTemplate(templateKey, (current) => {
+        const nextSlots = (current?.fixedSlots ?? []).filter((item) => item.slotId !== slotId);
+        const normalized =
+          normalizeTemplateSetupPayload({
+            version: 1,
+            templates: [
+              {
+                templateKey,
+                keyword: current?.keyword ?? null,
+                fixedSlots: nextSlots,
+              },
+            ],
+          })?.templates[0] ?? null;
+        return normalized;
+      });
+    },
+    [updateTemplate],
+  );
 
   const save = useCallback(async () => {
     if (!selectedIssueId) return;

@@ -2,11 +2,12 @@ CrossNext – Modern Next.js app scaffold with NextAuth, Prisma, Tailwind, shadc
 
 Quickstart
 
+- Node.js: `>=20.19.0` is required for Prisma 7 commands.
 - Install deps:
   - pnpm: corepack enable && pnpm i
   - set up DB: docker compose up -d db
-  - migrate: pnpm prisma migrate dev
-  - generate client: pnpm prisma generate
+  - migrate: pnpm prisma:migrate
+  - generate client: pnpm prisma:generate
   - seed admin: pnpm ts-node prisma/seed.ts or pnpm exec tsx prisma/seed.ts
 - Run dev: pnpm dev
 - Build: pnpm build && pnpm start
@@ -21,7 +22,8 @@ ENV
 Migrations & Seeding
 
 - Create DB (Docker): docker compose up -d db
-- Apply migrations: pnpm prisma migrate dev
+- Apply migrations: pnpm prisma:migrate
+- Generate Prisma Client: pnpm prisma:generate
 - Seed admin: pnpm ts-node prisma/seed.ts
 
 Testing

@@ -359,7 +359,9 @@ export function normalizeTemplateSetupPayload(value: unknown): TemplateSetupPayl
   };
 }
 
-export function mapTemplateSetupByKey(payload: TemplateSetupPayload | null | undefined): Map<string, TemplateSetupTemplate> {
+export function mapTemplateSetupByKey(
+  payload: TemplateSetupPayload | null | undefined,
+): Map<string, TemplateSetupTemplate> {
   const map = new Map<string, TemplateSetupTemplate>();
   for (const template of payload?.templates ?? []) {
     map.set(template.templateKey, template);

@@ -37,8 +37,8 @@ import { cn } from "@/lib/utils";
 import type {
   FillDefinitionLimits,
   FillFinalizePayload,
-  FillReviewDefinitionOption,
   FillMaskCandidate,
+  FillReviewDefinitionOption,
   FillReviewPayload,
   FillReviewSlot,
   FillReviewTemplate,
@@ -47,13 +47,13 @@ import {
   buildFinalizePayload,
   buildInitialTemplateState,
   buildPersistedRows,
+  type EditableReviewSlotState as EditableSlot,
   mapPersistedRowsByTemplate,
   mergeTemplateStateWithDraft,
   normalizeDefinitionKey,
   normalizeDefinitionOptions,
   normalizePersistedRows,
   normalizeWordInput,
-  type EditableReviewSlotState as EditableSlot,
   type PersistedReviewRow,
 } from "./reviewDraftState";
 
@@ -262,7 +262,6 @@ function cleanupLegacyReviewDraftStorage() {
     }
   }
 }
-
 
 function buildWordOptions(row: EditableSlot, candidates: FillMaskCandidate[]): WordOption[] {
   const byKey = new Map<string, WordOption>();
@@ -1232,17 +1231,7 @@ export function FillReviewDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [
-    definitionLimits.maxPerCell,
-    definitionLimits.maxPerHalfCell,
-    onFinalize,
-    reviewData,
-    sendModerationCards,
-    slotsByTemplate,
-    draftStorageKey,
-    reviewJobId,
-    t,
-  ]);
+  }, [definitionLimits, onFinalize, reviewData, sendModerationCards, slotsByTemplate, draftStorageKey, reviewJobId, t]);
 
   const handleFinalize = useCallback(async () => {
     if (!reviewData) return;

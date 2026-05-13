@@ -1,7 +1,8 @@
 "use client";
 
 import { Loader2, Save, Search, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import Image from "next/image";
+import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -80,6 +81,12 @@ function startLabel(start: FillReviewStartPosition) {
   return `${start.number}. ${start.dir === "right" ? "→" : "↓"}`;
 }
 
+function buildPreviewArrowDataUrl(markup: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${markup}</svg>`,
+  )}`;
+}
+
 export function TemplateSetupPanel({
   active,
   loading,
@@ -119,7 +126,7 @@ export function TemplateSetupPanel({
     () => templates.find((item) => item.key === selectedTemplateKey) ?? null,
     [selectedTemplateKey, templates],
   );
-  const selectedSetup = selectedTemplate ? templateMap.get(selectedTemplate.key) ?? null : null;
+  const selectedSetup = selectedTemplate ? (templateMap.get(selectedTemplate.key) ?? null) : null;
 
   const fixedSlotMap = useMemo(
     () => new Map((selectedSetup?.fixedSlots ?? []).map((item) => [item.slotId, item])),
@@ -166,10 +173,7 @@ export function TemplateSetupPanel({
     return map;
   }, [selectedTemplate]);
 
-  const startsByCell = useMemo(
-    () => buildStartsByCell(selectedTemplate?.startPositions ?? []),
-    [selectedTemplate],
-  );
+  const startsByCell = useMemo(() => buildStartsByCell(selectedTemplate?.startPositions ?? []), [selectedTemplate]);
   const slotById = useMemo(
     () => new Map((selectedTemplate?.slots ?? []).map((slot) => [slot.slotId, slot])),
     [selectedTemplate],
@@ -179,7 +183,7 @@ export function TemplateSetupPanel({
     () => selectedTemplate?.slots.find((slot) => slot.slotId === editingSlotId) ?? null,
     [editingSlotId, selectedTemplate],
   );
-  const editingFixedSlot = editingSlot ? fixedSlotMap.get(editingSlot.slotId) ?? null : null;
+  const editingFixedSlot = editingSlot ? (fixedSlotMap.get(editingSlot.slotId) ?? null) : null;
   const modalOpen = Boolean(selectedTemplate && editingSlot);
   const modalWordValue = modalWord.join("");
 
@@ -215,7 +219,8 @@ export function TemplateSetupPanel({
     (starts: FillReviewStartPosition[]) => {
       if (starts.length === 0) return;
       if (starts.length === 1) {
-        openSlotEditor(starts[0]!.slotId);
+        const [start] = starts;
+        if (start) openSlotEditor(start.slotId);
         return;
       }
       setPendingStarts(starts);
@@ -322,7 +327,9 @@ export function TemplateSetupPanel({
   useEffect(() => {
     if (!editingSlot || modalWord.length === editingSlot.len) return;
     setModalWord((current) =>
-      current.length === editingSlot.len ? current : Array.from({ length: editingSlot.len }, (_, index) => current[index] ?? ""),
+      current.length === editingSlot.len
+        ? current
+        : Array.from({ length: editingSlot.len }, (_, index) => current[index] ?? ""),
     );
   }, [editingSlot, modalWord.length]);
 
@@ -346,9 +353,10 @@ export function TemplateSetupPanel({
                 className="justify-start"
                 onClick={() => openSlotEditor(start.slotId)}
               >
-                {slotById.has(start.slotId)
-                  ? `Слот ${slotLabel(slotById.get(start.slotId)!)}`
-                  : `Слот ${startLabel(start)}`}
+                {(() => {
+                  const slot = slotById.get(start.slotId) ?? null;
+                  return slot ? `Слот ${slotLabel(slot)}` : `Слот ${startLabel(start)}`;
+                })()}
               </Button>
             ))}
           </div>
@@ -364,9 +372,7 @@ export function TemplateSetupPanel({
       <Dialog open={modalOpen} onOpenChange={(next) => (!next ? closeSlotEditor() : null)}>
         <DialogContent className="sm:max-w-xl" aria-describedby={undefined}>
           <DialogHeader>
-            <DialogTitle>
-              {editingSlot ? `Слот ${slotLabel(editingSlot)}` : "Выбор слова"}
-            </DialogTitle>
+            <DialogTitle>{editingSlot ? `Слот ${slotLabel(editingSlot)}` : "Выбор слова"}</DialogTitle>
             <DialogDescription>
               Введите слово по буквам. Поиск идет только по словарю и только по точному совпадению длины.
             </DialogDescription>
@@ -404,7 +410,12 @@ export function TemplateSetupPanel({
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" disabled={!dictionaryReady || modalLoading} onClick={() => void searchModalWord()}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!dictionaryReady || modalLoading}
+                  onClick={() => void searchModalWord()}
+                >
                   {modalLoading ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Search className="mr-2 size-4" />}
                   Найти в словаре
                 </Button>
@@ -465,10 +476,16 @@ export function TemplateSetupPanel({
             <div>
               <div className="text-sm font-medium">Настройка шаблонов</div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Кликните по клетке со стрелкой в превью, чтобы закрепить словарное слово за слотом, и при необходимости задайте ключевое слово.
+                Кликните по клетке со стрелкой в превью, чтобы закрепить словарное слово за слотом, и при необходимости
+                задайте ключевое слово.
               </p>
             </div>
-            <Button type="button" variant="default" disabled={!dirty || saving || loading || !hasPreview} onClick={onSave}>
+            <Button
+              type="button"
+              variant="default"
+              disabled={!dirty || saving || loading || !hasPreview}
+              onClick={onSave}
+            >
               {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
               Сохранить
             </Button>
@@ -482,7 +499,9 @@ export function TemplateSetupPanel({
         </div>
 
         {loading && (
-          <div className="rounded-md border bg-background/80 p-4 text-sm text-muted-foreground">Загрузка превью шаблонов…</div>
+          <div className="rounded-md border bg-background/80 p-4 text-sm text-muted-foreground">
+            Загрузка превью шаблонов…
+          </div>
         )}
 
         {!loading && !hasPreview && (
@@ -545,9 +564,12 @@ export function TemplateSetupPanel({
                               const previewCell = previewCellByKey.get(cellKey);
                               const previewArrow = previewArrowByKey.get(cellKey);
                               const starts = startsByCell.get(cellKey) ?? [];
+                              const singleStart = starts.length === 1 ? (starts[0] ?? null) : null;
+                              const singleSlot = singleStart ? (slotById.get(singleStart.slotId) ?? null) : null;
                               const isFixed = fixedCellSet.has(cellKey);
                               const fixedLetter = fixedLetterByCell.get(cellKey) ?? "";
-                              const visibleLetter = fixedLetter || (cell === "*" || cell === "#" || previewArrow ? "" : cell);
+                              const visibleLetter =
+                                fixedLetter || (cell === "*" || cell === "#" || previewArrow ? "" : cell);
                               const visibleLetterIsFixed = fixedLetter.length > 0;
                               return (
                                 <div
@@ -565,11 +587,14 @@ export function TemplateSetupPanel({
                                   title={`${rowIndex + 1}:${colIndex + 1}`}
                                 >
                                   {previewArrow?.markup ? (
-                                    <svg
+                                    <Image
                                       className="pointer-events-none absolute inset-[8%] z-[2] size-[84%]"
-                                      viewBox="0 0 100 100"
+                                      src={buildPreviewArrowDataUrl(previewArrow.markup)}
+                                      alt=""
                                       aria-hidden
-                                      dangerouslySetInnerHTML={{ __html: previewArrow.markup }}
+                                      width={84}
+                                      height={84}
+                                      unoptimized
                                     />
                                   ) : null}
                                   {starts.length > 0 && (
@@ -577,17 +602,17 @@ export function TemplateSetupPanel({
                                       type="button"
                                       className="absolute inset-0 z-10 rounded-[2px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70"
                                       title={
-                                        starts.length === 1
-                                          ? slotById.has(starts[0]!.slotId)
-                                            ? `Открыть слот ${slotLabel(slotById.get(starts[0]!.slotId)!)}`
-                                            : `Открыть слот ${startLabel(starts[0]!)}`
+                                        singleStart
+                                          ? singleSlot
+                                            ? `Открыть слот ${slotLabel(singleSlot)}`
+                                            : `Открыть слот ${startLabel(singleStart)}`
                                           : "Выбрать слот из этой клетки"
                                       }
                                       onClick={() => openStartCell(starts)}
                                     >
                                       <span className="sr-only">
-                                        {starts.length === 1
-                                          ? `Открыть ${slotById.has(starts[0]!.slotId) ? slotLabel(slotById.get(starts[0]!.slotId)!) : startLabel(starts[0]!)}`
+                                        {singleStart
+                                          ? `Открыть ${singleSlot ? slotLabel(singleSlot) : startLabel(singleStart)}`
                                           : "Выбрать слот из клетки"}
                                       </span>
                                     </button>
@@ -603,16 +628,18 @@ export function TemplateSetupPanel({
                                     <div className="pointer-events-none absolute inset-0 flex items-start justify-start gap-0.5 p-0.5">
                                       {!previewArrow &&
                                         starts.map((start) => (
-                                        <span
-                                          key={`${start.slotId}:${start.dir}`}
-                                          className={cn(
-                                            "inline-flex h-4 min-w-4 items-center justify-center rounded border border-slate-300 bg-white/90 px-1 text-[9px] leading-none shadow-sm transition hover:bg-slate-100",
-                                            fixedSlotMap.has(start.slotId) ? "border-sky-500 text-sky-700" : "text-slate-700",
-                                          )}
-                                        >
-                                          {start.dir === "right" ? "→" : "↓"}
-                                        </span>
-                                      ))}
+                                          <span
+                                            key={`${start.slotId}:${start.dir}`}
+                                            className={cn(
+                                              "inline-flex h-4 min-w-4 items-center justify-center rounded border border-slate-300 bg-white/90 px-1 text-[9px] leading-none shadow-sm transition hover:bg-slate-100",
+                                              fixedSlotMap.has(start.slotId)
+                                                ? "border-sky-500 text-sky-700"
+                                                : "text-slate-700",
+                                            )}
+                                          >
+                                            {start.dir === "right" ? "→" : "↓"}
+                                          </span>
+                                        ))}
                                     </div>
                                   )}
                                 </div>
@@ -643,7 +670,6 @@ export function TemplateSetupPanel({
                     </div>
                   </CardContent>
                 </Card>
-
               </div>
             )}
           </div>

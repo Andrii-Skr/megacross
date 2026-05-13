@@ -134,33 +134,36 @@ export function useScanwordUploadFlow({
     void uploadPanelRef.current?.upload();
   }, [currentFiles, liveFilesCount, parseErrors, uploadTotals]);
 
-  const handleUploadComplete = useCallback(async (result?: { count: number; files: UploadFileInfo[] }) => {
-    if (!selectedIssueId) return;
-    const snapshot = {
-      ...lastUploadRef.current,
-      count: result?.count ?? lastUploadRef.current.count,
-      files: result?.files?.length ? result.files : lastUploadRef.current.files,
-    };
-    lastUploadRef.current = snapshot;
-    setLastUploadCount(snapshot.count);
-    setLastUploadErrors(snapshot.errors);
-    setLastUploadTotals(snapshot.neededStats ?? null);
-    setUploadClicked(snapshot.count > 0);
-    try {
-      await saveScanwordUploadSnapshotAction({
-        issueId: selectedIssueId,
-        templateId: selectedTemplateId ?? null,
-        templateName: selectedTemplateName ?? null,
-        fileCount: snapshot.count,
-        files: snapshot.files,
-        errors: snapshot.errors,
-        neededStats: snapshot.neededStats ?? null,
-      });
-    } catch {
-      setUploadClicked(false);
-      toast.error("Не удалось сохранить состояние загруженных шаблонов. Повторите загрузку.");
-    }
-  }, [selectedIssueId, selectedTemplateId, selectedTemplateName]);
+  const handleUploadComplete = useCallback(
+    async (result?: { count: number; files: UploadFileInfo[] }) => {
+      if (!selectedIssueId) return;
+      const snapshot = {
+        ...lastUploadRef.current,
+        count: result?.count ?? lastUploadRef.current.count,
+        files: result?.files?.length ? result.files : lastUploadRef.current.files,
+      };
+      lastUploadRef.current = snapshot;
+      setLastUploadCount(snapshot.count);
+      setLastUploadErrors(snapshot.errors);
+      setLastUploadTotals(snapshot.neededStats ?? null);
+      setUploadClicked(snapshot.count > 0);
+      try {
+        await saveScanwordUploadSnapshotAction({
+          issueId: selectedIssueId,
+          templateId: selectedTemplateId ?? null,
+          templateName: selectedTemplateName ?? null,
+          fileCount: snapshot.count,
+          files: snapshot.files,
+          errors: snapshot.errors,
+          neededStats: snapshot.neededStats ?? null,
+        });
+      } catch {
+        setUploadClicked(false);
+        toast.error("Не удалось сохранить состояние загруженных шаблонов. Повторите загрузку.");
+      }
+    },
+    [selectedIssueId, selectedTemplateId, selectedTemplateName],
+  );
 
   const effectiveUploadCount = hasLiveFiles ? liveFilesCount : lastUploadCount;
   const effectiveErrors = hasLiveFiles ? parseErrors : lastUploadErrors;

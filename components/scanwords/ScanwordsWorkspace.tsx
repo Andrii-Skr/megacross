@@ -18,8 +18,8 @@ import { GenerationPanel } from "./workspace/GenerationPanel";
 import { useScanwordFill } from "./workspace/hooks/useScanwordFill";
 import { useScanwordTemplateSetup } from "./workspace/hooks/useScanwordTemplateSetup";
 import { useScanwordUploadFlow } from "./workspace/hooks/useScanwordUploadFlow";
-import { TemplateSetupPanel } from "./workspace/TemplateSetupPanel";
 import type { ScanwordsWorkspaceProps, WorkspaceTab } from "./workspace/model";
+import { TemplateSetupPanel } from "./workspace/TemplateSetupPanel";
 import { WorkspaceProgressHeader } from "./workspace/WorkspaceProgressHeader";
 
 export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {

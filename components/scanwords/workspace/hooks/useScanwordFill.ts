@@ -26,10 +26,10 @@ import {
   type FillSpeedOption,
   type FillSpeedPreset,
   type FillTemplateStatus,
-  type TemplateSetupPayload,
   normalizeFillSettings,
   SPEED_PRESETS,
   type SvgFontItem,
+  type TemplateSetupPayload,
 } from "../model";
 
 type TranslateFn = ReturnType<typeof useTranslations>;
