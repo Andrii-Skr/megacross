@@ -60,6 +60,57 @@ function buildOtpWord(value: string | null | undefined, len: number): string[] {
   return Array.from({ length: len }, (_, index) => chars[index] ?? "");
 }
 
+function buildLockedSlotLetters(
+  template: TemplateSetupPreviewTemplate,
+  fixedSlotMap: Map<number, TemplateSetupFixedSlot>,
+): Map<number, Map<number, string>> {
+  const fixedLettersByCell = new Map<string, Array<{ slotId: number; letter: string }>>();
+
+  for (const slot of template.slots) {
+    const fixed = fixedSlotMap.get(slot.slotId);
+    if (!fixed) continue;
+    const letters = Array.from(fixed.word.toUpperCase());
+    slot.cells.forEach(([row, col], index) => {
+      const letter = letters[index] ?? "";
+      if (!letter) return;
+      const key = `${row},${col}`;
+      const current = fixedLettersByCell.get(key) ?? [];
+      current.push({ slotId: slot.slotId, letter });
+      fixedLettersByCell.set(key, current);
+    });
+  }
+
+  const lockedBySlotId = new Map<number, Map<number, string>>();
+  for (const slot of template.slots) {
+    const locked = new Map<number, string>();
+    slot.cells.forEach(([row, col], index) => {
+      const cellSources = fixedLettersByCell.get(`${row},${col}`) ?? [];
+      const source = cellSources.find((item) => item.slotId !== slot.slotId);
+      if (source?.letter) locked.set(index, source.letter);
+    });
+    lockedBySlotId.set(slot.slotId, locked);
+  }
+
+  return lockedBySlotId;
+}
+
+function applyLockedLettersToWord(baseWord: string[], len: number, lockedLetters: Map<number, string>): string[] {
+  const next = Array.from({ length: len }, (_, index) => baseWord[index] ?? "");
+  for (const [index, letter] of lockedLetters) {
+    if (index < 0 || index >= len) continue;
+    next[index] = letter;
+  }
+  return next;
+}
+
+function wordMatchesLockedLetters(word: string, lockedLetters: Map<number, string>): boolean {
+  const normalized = normalizeOtpLetters(word).join("");
+  for (const [index, letter] of lockedLetters) {
+    if (normalized[index] !== letter) return false;
+  }
+  return true;
+}
+
 function buildStartsByCell(startPositions: FillReviewStartPosition[]): Map<string, FillReviewStartPosition[]> {
   const map = new Map<string, FillReviewStartPosition[]>();
   for (const start of startPositions) {
@@ -178,14 +229,41 @@ export function TemplateSetupPanel({
     () => new Map((selectedTemplate?.slots ?? []).map((slot) => [slot.slotId, slot])),
     [selectedTemplate],
   );
+  const lockedLettersBySlotId = useMemo(
+    () =>
+      selectedTemplate
+        ? buildLockedSlotLetters(selectedTemplate, fixedSlotMap)
+        : new Map<number, Map<number, string>>(),
+    [fixedSlotMap, selectedTemplate],
+  );
 
   const editingSlot = useMemo(
     () => selectedTemplate?.slots.find((slot) => slot.slotId === editingSlotId) ?? null,
     [editingSlotId, selectedTemplate],
   );
   const editingFixedSlot = editingSlot ? (fixedSlotMap.get(editingSlot.slotId) ?? null) : null;
+  const editingLockedLetters = useMemo(
+    () => (editingSlot ? (lockedLettersBySlotId.get(editingSlot.slotId) ?? new Map<number, string>()) : new Map()),
+    [editingSlot, lockedLettersBySlotId],
+  );
   const modalOpen = Boolean(selectedTemplate && editingSlot);
   const modalWordValue = modalWord.join("");
+
+  const focusEditableIndex = useCallback(
+    (startIndex: number, direction: 1 | -1) => {
+      if (!editingSlot) return;
+      let nextIndex = startIndex;
+      while (nextIndex >= 0 && nextIndex < editingSlot.len) {
+        if (!editingLockedLetters.has(nextIndex)) {
+          otpRefs.current[nextIndex]?.focus();
+          otpRefs.current[nextIndex]?.select();
+          return;
+        }
+        nextIndex += direction;
+      }
+    },
+    [editingLockedLetters, editingSlot],
+  );
 
   const openSlotEditor = useCallback(
     (slotId: number) => {
@@ -193,18 +271,23 @@ export function TemplateSetupPanel({
       const slot = selectedTemplate.slots.find((item) => item.slotId === slotId);
       if (!slot) return;
       const fixed = fixedSlotMap.get(slotId) ?? null;
+      const lockedLetters = lockedLettersBySlotId.get(slotId) ?? new Map<number, string>();
       setEditingSlotId(slotId);
       setPendingStarts(null);
-      setModalWord(buildOtpWord(fixed?.word ?? "", slot.len));
+      setModalWord(applyLockedLettersToWord(buildOtpWord(fixed?.word ?? "", slot.len), slot.len, lockedLetters));
       setModalCandidates([]);
       setModalError(null);
       setModalLoading(false);
       window.setTimeout(() => {
-        otpRefs.current[0]?.focus();
-        otpRefs.current[0]?.select();
+        const firstEditableIndex = Array.from({ length: slot.len }, (_, index) => index).find(
+          (index) => !lockedLetters.has(index),
+        );
+        const targetIndex = firstEditableIndex ?? 0;
+        otpRefs.current[targetIndex]?.focus();
+        otpRefs.current[targetIndex]?.select();
       }, 0);
     },
-    [fixedSlotMap, selectedTemplate],
+    [fixedSlotMap, lockedLettersBySlotId, selectedTemplate],
   );
 
   const closeSlotEditor = useCallback(() => {
@@ -270,6 +353,7 @@ export function TemplateSetupPanel({
   const applyOtpInput = useCallback(
     (index: number, rawValue: string) => {
       if (!editingSlot) return;
+      if (editingLockedLetters.has(index)) return;
       const letters = normalizeOtpLetters(rawValue);
       setModalCandidates([]);
       setModalError(null);
@@ -279,41 +363,63 @@ export function TemplateSetupPanel({
           next[index] = letters[0] ?? "";
           return next;
         }
-        for (let offset = 0; offset < letters.length; offset += 1) {
-          const targetIndex = index + offset;
+        let targetIndex = index;
+        for (const letter of letters) {
+          while (targetIndex < editingSlot.len && editingLockedLetters.has(targetIndex)) {
+            targetIndex += 1;
+          }
           if (targetIndex >= editingSlot.len) break;
-          next[targetIndex] = letters[offset] ?? "";
+          next[targetIndex] = letter;
+          targetIndex += 1;
         }
         return next;
       });
-      const nextIndex = Math.min(index + Math.max(letters.length, 1), editingSlot.len - 1);
+      if (letters.length === 0) return;
       window.setTimeout(() => {
-        otpRefs.current[nextIndex]?.focus();
-        otpRefs.current[nextIndex]?.select();
+        focusEditableIndex(index + Math.max(letters.length, 1), 1);
       }, 0);
     },
-    [editingSlot],
+    [editingLockedLetters, editingSlot, focusEditableIndex],
   );
 
   const handleOtpKeyDown = useCallback(
     (index: number, event: ReactKeyboardEvent<HTMLInputElement>) => {
       if (!editingSlot) return;
-      if (event.key === "Backspace" && !modalWord[index] && index > 0) {
+      if (editingLockedLetters.has(index)) return;
+      if (event.key === "Backspace") {
         event.preventDefault();
-        otpRefs.current[index - 1]?.focus();
-        otpRefs.current[index - 1]?.select();
+        setModalCandidates([]);
+        setModalError(null);
+        if (modalWord[index]) {
+          setModalWord((current) => {
+            const next = [...current];
+            next[index] = "";
+            return next;
+          });
+          return;
+        }
+        focusEditableIndex(index - 1, -1);
+        return;
+      }
+      if (event.key === "Delete") {
+        event.preventDefault();
+        setModalCandidates([]);
+        setModalError(null);
+        setModalWord((current) => {
+          const next = [...current];
+          next[index] = "";
+          return next;
+        });
         return;
       }
       if (event.key === "ArrowLeft" && index > 0) {
         event.preventDefault();
-        otpRefs.current[index - 1]?.focus();
-        otpRefs.current[index - 1]?.select();
+        focusEditableIndex(index - 1, -1);
         return;
       }
       if (event.key === "ArrowRight" && index < editingSlot.len - 1) {
         event.preventDefault();
-        otpRefs.current[index + 1]?.focus();
-        otpRefs.current[index + 1]?.select();
+        focusEditableIndex(index + 1, 1);
         return;
       }
       if (event.key === "Enter") {
@@ -321,7 +427,7 @@ export function TemplateSetupPanel({
         void searchModalWord();
       }
     },
-    [editingSlot, modalWord, searchModalWord],
+    [editingLockedLetters, editingSlot, focusEditableIndex, modalWord, searchModalWord],
   );
 
   useEffect(() => {
@@ -389,24 +495,34 @@ export function TemplateSetupPanel({
               </div>
 
               <div className="flex flex-wrap gap-2">
-                {Array.from({ length: editingSlot.len }, (_, index) => (
-                  <Input
-                    key={`${editingSlot.slotId}:${index}`}
-                    ref={(node) => {
-                      otpRefs.current[index] = node;
-                    }}
-                    value={modalWord[index] ?? ""}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value;
-                      applyOtpInput(index, value);
-                    }}
-                    onKeyDown={(event) => handleOtpKeyDown(index, event)}
-                    className="h-11 w-11 text-center text-base font-semibold uppercase"
-                    autoComplete="off"
-                    inputMode="text"
-                    maxLength={editingSlot.len}
-                  />
-                ))}
+                {Array.from({ length: editingSlot.len }, (_, index) =>
+                  (() => {
+                    const isLocked = editingLockedLetters.has(index);
+                    return (
+                      <Input
+                        key={`${editingSlot.slotId}:${index}`}
+                        ref={(node) => {
+                          otpRefs.current[index] = node;
+                        }}
+                        value={modalWord[index] ?? ""}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value;
+                          applyOtpInput(index, value);
+                        }}
+                        onKeyDown={(event) => handleOtpKeyDown(index, event)}
+                        className={cn(
+                          "h-11 w-11 text-center text-base font-semibold uppercase",
+                          isLocked ? "border-sky-400 bg-sky-50 text-sky-900" : "",
+                        )}
+                        autoComplete="off"
+                        inputMode="text"
+                        maxLength={1}
+                        readOnly={isLocked}
+                        aria-readonly={isLocked}
+                      />
+                    );
+                  })(),
+                )}
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -446,6 +562,10 @@ export function TemplateSetupPanel({
                       variant={editingFixedSlot?.wordId === candidate.id ? "secondary" : "outline"}
                       onClick={() => {
                         if (!selectedTemplate) return;
+                        if (!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)) {
+                          setModalError("Слово не подходит по уже заполненным пересечениям.");
+                          return;
+                        }
                         onFixedSlotChange(selectedTemplate.key, {
                           slotId: editingSlot.slotId,
                           wordId: candidate.id,
@@ -453,6 +573,7 @@ export function TemplateSetupPanel({
                         });
                         closeSlotEditor();
                       }}
+                      disabled={!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)}
                     >
                       {candidate.word_text}
                     </Button>

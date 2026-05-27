@@ -3,6 +3,7 @@ import type {
   FillFinalizePayload,
   FillReviewDefinitionOption,
   FillReviewPayload,
+  FillReviewSlot,
   FillReviewTemplate,
 } from "./model";
 
@@ -27,6 +28,11 @@ export type EditableReviewSlotState = {
 export type EditableReviewTemplateState = {
   key: string;
   slots: EditableReviewSlotState[];
+};
+
+export type FixedSlotLetter = {
+  index: number;
+  letter: string;
 };
 
 function normalizeDefinitionDifficulty(value: number | null | undefined): number | null {
@@ -77,6 +83,40 @@ export function normalizeDefinitionOptions(
     }
   }
   return [...byText.values()];
+}
+
+export function buildSlotFixedLetters(
+  slot: FillReviewSlot,
+  rowsBySlotId: Map<number, Pick<EditableReviewSlotState, "word">>,
+): FixedSlotLetter[] {
+  const byIndex = new Map<number, string>();
+  for (const intersection of slot.intersections) {
+    const other = rowsBySlotId.get(intersection.slotId);
+    const otherWord = normalizeWordInput(other?.word ?? "");
+    const letter = otherWord[intersection.otherIndex];
+    if (!letter) continue;
+    byIndex.set(intersection.index, letter);
+  }
+  return [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([index, letter]) => ({ index, letter }));
+}
+
+export function buildSlotIntersectionMask(
+  slot: FillReviewSlot,
+  rowsBySlotId: Map<number, Pick<EditableReviewSlotState, "word">>,
+): string {
+  const mask = Array.from({ length: slot.len }, () => ".");
+  for (const fixed of buildSlotFixedLetters(slot, rowsBySlotId)) {
+    mask[fixed.index] = fixed.letter;
+  }
+  return mask.join("");
+}
+
+export function wordMatchesFixedLetters(word: string, fixedLetters: FixedSlotLetter[]): boolean {
+  const normalizedWord = normalizeWordInput(word);
+  for (const fixed of fixedLetters) {
+    if (normalizedWord[fixed.index] !== fixed.letter) return false;
+  }
+  return true;
 }
 
 export function buildInitialTemplateState(template: FillReviewTemplate): EditableReviewSlotState[] {

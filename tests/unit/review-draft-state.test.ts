@@ -3,8 +3,11 @@ import type { FillReviewPayload } from "@/components/scanwords/workspace/model";
 import {
   buildEditableTemplateStates,
   buildFinalizePayload,
+  buildSlotFixedLetters,
+  buildSlotIntersectionMask,
   mapPersistedRowsByTemplate,
   normalizePersistedRows,
+  wordMatchesFixedLetters,
 } from "@/components/scanwords/workspace/reviewDraftState";
 
 function makeReviewPayload(): FillReviewPayload {
@@ -198,5 +201,52 @@ describe("review draft state helpers", () => {
         maxPerHalfCell: 99,
       },
     });
+  });
+
+  it("locks intersecting letters to the values already filled in the dialog", () => {
+    const slot = {
+      slotId: 4,
+      r: 0,
+      c: 0,
+      dir: "down" as const,
+      len: 6,
+      cells: [
+        [0, 0],
+        [1, 0],
+        [2, 0],
+        [3, 0],
+        [4, 0],
+        [5, 0],
+      ],
+      word: "ГРОЗАА",
+      wordId: "11",
+      opredId: null,
+      definition: "Гроза",
+      definitionOptions: [{ opredId: null, text: "Гроза", difficulty: null }],
+      isPhotoDefinition: false,
+      intersections: [{ slotId: 1, index: 0, otherIndex: 0, row: 0, col: 0, letter: "Г" }],
+      clueCell: null,
+      startNumber: 4,
+    };
+    const rowsBySlotId = new Map([
+      [
+        1,
+        {
+          slotId: 1,
+          word: "ГРАНИТ",
+          definition: "Гранит",
+          wordId: "10",
+          opredId: null,
+          definitionOptions: [],
+        },
+      ],
+    ]);
+
+    const fixedLetters = buildSlotFixedLetters(slot, rowsBySlotId);
+
+    expect(fixedLetters).toEqual([{ index: 0, letter: "Г" }]);
+    expect(buildSlotIntersectionMask(slot, rowsBySlotId)).toBe("Г.....");
+    expect(wordMatchesFixedLetters("ГОРИЗО", fixedLetters)).toBe(true);
+    expect(wordMatchesFixedLetters("АГУТИН", fixedLetters)).toBe(false);
   });
 });

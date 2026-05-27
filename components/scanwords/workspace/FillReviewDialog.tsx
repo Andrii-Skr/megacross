@@ -47,6 +47,8 @@ import {
   buildFinalizePayload,
   buildInitialTemplateState,
   buildPersistedRows,
+  buildSlotFixedLetters,
+  buildSlotIntersectionMask,
   type EditableReviewSlotState as EditableSlot,
   mapPersistedRowsByTemplate,
   mergeTemplateStateWithDraft,
@@ -55,6 +57,7 @@ import {
   normalizePersistedRows,
   normalizeWordInput,
   type PersistedReviewRow,
+  wordMatchesFixedLetters,
 } from "./reviewDraftState";
 
 type WordOption = {
@@ -606,14 +609,16 @@ export function FillReviewDialog({
     (template: FillReviewTemplate, slot: FillReviewSlot): string => {
       const currentSlots = slotsByTemplate[template.key] ?? [];
       const byId = new Map(currentSlots.map((item) => [item.slotId, item]));
-      const mask = Array.from({ length: slot.len }, () => ".");
-      for (const intersection of slot.intersections) {
-        const other = byId.get(intersection.slotId);
-        const otherWord = normalizeWordInput(other?.word ?? "");
-        const letter = otherWord[intersection.otherIndex];
-        if (letter) mask[intersection.index] = letter;
-      }
-      return mask.join("");
+      return buildSlotIntersectionMask(slot, byId);
+    },
+    [slotsByTemplate],
+  );
+
+  const buildFixedLetters = useCallback(
+    (template: FillReviewTemplate, slot: FillReviewSlot) => {
+      const currentSlots = slotsByTemplate[template.key] ?? [];
+      const byId = new Map(currentSlots.map((item) => [item.slotId, item]));
+      return buildSlotFixedLetters(slot, byId);
     },
     [slotsByTemplate],
   );
@@ -1041,6 +1046,10 @@ export function FillReviewDialog({
   const applyNewWord = useCallback(
     (target: WordCreateTarget, payload: NewWordCreatedPayload) => {
       const normalizedWord = normalizeWordInput(payload.word);
+      if (!wordMatchesFixedLetters(normalizedWord, target.fixedLetters)) {
+        toast.error(t("scanwordsReviewValidationError"));
+        return;
+      }
       const nextOptions = payload.definitions
         .map((item) => ({
           text: item.text.trim(),
@@ -1063,7 +1072,7 @@ export function FillReviewDialog({
         definitionOptions: nextOptions.length > 0 ? nextOptions : slot.definitionOptions,
       }));
     },
-    [updateSlot],
+    [t, updateSlot],
   );
 
   const applyAddedDefinitions = useCallback(
@@ -1330,6 +1339,7 @@ export function FillReviewDialog({
         ? selectedDefIndex
         : filteredDefinitionOptions.findIndex((option) => option.text === row.definition);
     const intersectionIndexes = new Set(slot.intersections.map((item) => item.index));
+    const fixedLetters = buildFixedLetters(template, slot);
     const templateLang = toSupportedLanguage(template.language);
 
     return (
@@ -1371,6 +1381,7 @@ export function FillReviewDialog({
                   if (!value) return;
                   const selectedOption = wordOptions.find((option) => option.value === value);
                   if (!selectedOption) return;
+                  if (!wordMatchesFixedLetters(selectedOption.word, fixedLetters)) return;
                   updateSlot(template.key, slot.slotId, (prev) => {
                     const nextDefinitions = selectedOption.definitions;
                     const selectedDefinition =
@@ -1435,7 +1446,11 @@ export function FillReviewDialog({
                     </SelectItem>
                   )}
                   {wordOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
+                    <SelectItem
+                      key={option.value}
+                      value={option.value}
+                      disabled={!wordMatchesFixedLetters(option.word, fixedLetters)}
+                    >
                       <span className="inline-flex font-sans text-[12px] tracking-[0.12em]">
                         {Array.from({ length: slot.len }, (_, index) => {
                           const letter = option.word[index] ?? ".";
