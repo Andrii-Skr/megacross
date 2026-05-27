@@ -1,6 +1,7 @@
 import ruHyphen from "hyphen/ru";
 import type { ClueLayout } from "../src/utils/clues";
 import { COREL_UNITS_PER_MM } from "./svg-theme";
+import { estimateTextWidth } from "./text-position";
 
 type ClueRect = {
   x: number;
@@ -13,13 +14,38 @@ export const CLUE_FONT_BASE_PT = 9;
 export const CLUE_FONT_MIN_PT = 8;
 export const CLUE_GLYPH_WIDTH_SCALE = 0.8;
 export const CLUE_LINE_HEIGHT_SCALE = 0.8;
+export const CLUE_EDGE_INSET_MM = 0.1;
+export const CLUE_TEXT_ASCENT_RATIO = 0.64;
+export const CLUE_TEXT_DESCENT_RATIO = 0.16;
 const MM_PER_PT = 25.4 / 72;
 const PX_PER_MM = 96 / 25.4;
 export const MIN_CLUE_FONT_SIZE = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
 const MIN_COREL_CLUE_FONT_SIZE = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "corel");
 const CLUE_MAX_LINES = 4;
-const CLUE_CHAR_WIDTH_FACTOR = 0.56;
-const CLUE_EDGE_INSET_MM = 0.1;
+
+type LayoutRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type WordSplitResult = {
+  lines: string[];
+  isValid: boolean;
+};
+
+type WrapResult = {
+  lines: string[];
+  isValid: boolean;
+};
+
+type LayoutCandidate = {
+  breakWords: boolean;
+  wrapResult: WrapResult;
+  lines: string[];
+  lineWidths: number[];
+};
 
 export function convertCluePtToSvgUnits(pt: number, mode: "default" | "corel"): number {
   if (mode === "corel") {
@@ -42,13 +68,38 @@ function normalizeScale(value: number | undefined, fallback: number): number {
 }
 
 function estimateScaledLineWidth(line: string, fontSize: number, glyphWidthScale: number): number {
-  return (
-    Math.round(Math.max(1, line.length * fontSize * CLUE_CHAR_WIDTH_FACTOR * glyphWidthScale) * 1000) / 1000
-  );
+  return Math.round(Math.max(1, estimateTextWidth(line, fontSize) * glyphWidthScale) * 1000) / 1000;
+}
+
+function fitsLineWidth(line: string, availableWidth: number, fontSize: number, glyphWidthScale: number): boolean {
+  return estimateScaledLineWidth(line, fontSize, glyphWidthScale) <= availableWidth + 0.0001;
 }
 
 function resolveLineHeight(fontSize: number, lineHeightScale: number): number {
   return fontSize * lineHeightScale;
+}
+
+function insetRect(rect: LayoutRect, inset: number): LayoutRect {
+  const clampedInset = Math.max(0, inset);
+  const width = Math.max(1, rect.width - clampedInset * 2);
+  const height = Math.max(1, rect.height - clampedInset * 2);
+  return {
+    x: rect.x + clampedInset,
+    y: rect.y + clampedInset,
+    width,
+    height,
+  };
+}
+
+function clampRectToBounds(rect: LayoutRect, bounds: LayoutRect): LayoutRect {
+  const width = Math.min(rect.width, bounds.width);
+  const height = Math.min(rect.height, bounds.height);
+  return {
+    x: Math.max(bounds.x, Math.min(rect.x, bounds.x + bounds.width - width)),
+    y: Math.max(bounds.y, Math.min(rect.y, bounds.y + bounds.height - height)),
+    width,
+    height,
+  };
 }
 
 function buildUniformScaleTransform(anchorX: number, glyphWidthScale: number): string {
@@ -80,30 +131,58 @@ function normalizeDisplayPunctuation(text: string): string {
     .replace(/[‐‑‒–—−]/g, "-");
 }
 
-function splitLongWord(word: string, maxChars: number): string[] {
-  if (word.length <= maxChars) return [word];
+function startsWithDisallowedLineBreakChar(text: string): boolean {
+  return /^[ЬьЪъЫы]/u.test(text);
+}
+
+function splitLongWord(
+  word: string,
+  maxChars: number,
+  availableWidth: number,
+  fontSize: number,
+  glyphWidthScale: number
+): string[] {
+  if (word.length <= maxChars && fitsLineWidth(word, availableWidth, fontSize, glyphWidthScale)) return [word];
+  if (maxChars < 2) return [...word];
   const parts: string[] = [];
   let i = 0;
-  while (word.length - i > maxChars) {
-    let take = maxChars;
+  while (
+    word.length - i > maxChars ||
+    !fitsLineWidth(word.slice(i), availableWidth, fontSize, glyphWidthScale)
+  ) {
+    let take = Math.max(1, maxChars - 1);
     const remaining = word.length - (i + take);
-    if (remaining > 0 && remaining < 3 && take > 3) {
-      take -= 3 - remaining;
+    if (remaining > 0 && remaining < 2 && take > 2) {
+      take -= 2 - remaining;
     }
-    parts.push(word.slice(i, i + take));
+    while (take > 2 && startsWithDisallowedLineBreakChar(word.slice(i + take))) {
+      take -= 1;
+    }
+    while (take > 1 && !fitsLineWidth(`${word.slice(i, i + take)}-`, availableWidth, fontSize, glyphWidthScale)) {
+      take -= 1;
+    }
+    parts.push(`${word.slice(i, i + take)}-`);
     i += take;
   }
   if (i < word.length) parts.push(word.slice(i));
   return parts;
 }
 
-function splitWordWithHyphenation(word: string, maxChars: number): string[] {
-  if (word.length <= maxChars) return [word];
-  if (maxChars < 2) return splitLongWord(word, maxChars);
+function splitWordWithHyphenation(
+  word: string,
+  maxChars: number,
+  availableWidth: number,
+  fontSize: number,
+  glyphWidthScale: number
+): WordSplitResult {
+  if (word.length <= maxChars && fitsLineWidth(word, availableWidth, fontSize, glyphWidthScale)) {
+    return { lines: [word], isValid: true };
+  }
+  if (maxChars < 2) return { lines: [word], isValid: false };
   const parts = ruHyphen
     .hyphenateSync(word, { hyphenChar: HYPHENATION_SEPARATOR })
     .split(HYPHENATION_SEPARATOR);
-  if (parts.length <= 1) return splitLongWord(word, maxChars);
+  if (parts.length <= 1) return { lines: [word], isValid: false };
 
   const breaks: number[] = [];
   let offset = 0;
@@ -121,49 +200,73 @@ function splitWordWithHyphenation(word: string, maxChars: number): string[] {
     }
     return count;
   };
-  while (word.length - start > maxChars) {
+  while (
+    word.length - start > maxChars ||
+    !fitsLineWidth(word.slice(start), availableWidth, fontSize, glyphWidthScale)
+  ) {
     const limit = maxChars - 1;
     let breakPos = -1;
     for (const pos of breaks) {
       const tailLetters = countLetters(word.slice(pos));
-      if (pos > start && pos - start <= limit && tailLetters >= 2) {
+      if (
+        pos > start &&
+        pos - start <= limit &&
+        tailLetters >= 2 &&
+        fitsLineWidth(`${word.slice(start, pos)}-`, availableWidth, fontSize, glyphWidthScale)
+      ) {
         breakPos = pos;
       }
     }
     if (breakPos === -1) {
-      lines.push(...splitLongWord(word.slice(start), maxChars));
-      return lines;
+      return { lines: [word], isValid: false };
     }
     lines.push(`${word.slice(start, breakPos)}-`);
     start = breakPos;
   }
-  if (start < word.length) lines.push(word.slice(start));
-  return lines;
+  if (start < word.length) {
+    const tail = word.slice(start);
+    if (!fitsLineWidth(tail, availableWidth, fontSize, glyphWidthScale)) {
+      return { lines: [word], isValid: false };
+    }
+    lines.push(tail);
+  }
+  return { lines, isValid: true };
 }
 
-function splitWordByExistingHyphen(word: string, maxChars: number): string[] {
-  if (!word.includes("-")) return [word];
+function splitWordByExistingHyphen(
+  word: string,
+  maxChars: number,
+  availableWidth: number,
+  fontSize: number,
+  glyphWidthScale: number
+): WordSplitResult {
+  if (!word.includes("-")) return { lines: [word], isValid: true };
   const parts = word.split("-");
-  if (parts.length <= 1) return [word];
+  if (parts.length <= 1) return { lines: [word], isValid: true };
 
   const lines: string[] = [];
   let current = parts[0] ?? "";
+  let isValid = true;
 
   for (let idx = 1; idx < parts.length; idx += 1) {
     const part = parts[idx] ?? "";
     const combined = current ? `${current}-${part}` : part;
-    if (combined.length <= maxChars) {
+    if (fitsLineWidth(combined, availableWidth, fontSize, glyphWidthScale)) {
       current = combined;
       continue;
     }
 
-    if (current.length > maxChars) {
-      const splitCurrent = splitWordWithHyphenation(current, maxChars);
-      if (splitCurrent.length > 1) {
-        lines.push(...splitCurrent.slice(0, -1));
-        current = splitCurrent[splitCurrent.length - 1] ?? "";
+    if (current.length > maxChars || !fitsLineWidth(current, availableWidth, fontSize, glyphWidthScale)) {
+      const splitCurrent = splitWordWithHyphenation(current, maxChars, availableWidth, fontSize, glyphWidthScale);
+      if (!splitCurrent.isValid) {
+        isValid = false;
+        return { lines: [word], isValid };
+      }
+      if (splitCurrent.lines.length > 1) {
+        lines.push(...splitCurrent.lines.slice(0, -1));
+        current = splitCurrent.lines[splitCurrent.lines.length - 1] ?? "";
       } else {
-        current = splitCurrent[0] ?? current;
+        current = splitCurrent.lines[0] ?? current;
       }
     }
 
@@ -172,45 +275,73 @@ function splitWordByExistingHyphen(word: string, maxChars: number): string[] {
     }
     current = part;
 
-    if (current.length > maxChars) {
-      const split = splitWordWithHyphenation(current, maxChars);
-      if (split.length > 1) {
-        lines.push(...split.slice(0, -1));
-        current = split[split.length - 1] ?? "";
+    if (current.length > maxChars || !fitsLineWidth(current, availableWidth, fontSize, glyphWidthScale)) {
+      const split = splitWordWithHyphenation(current, maxChars, availableWidth, fontSize, glyphWidthScale);
+      if (!split.isValid) {
+        isValid = false;
+        return { lines: [word], isValid };
+      }
+      if (split.lines.length > 1) {
+        lines.push(...split.lines.slice(0, -1));
+        current = split.lines[split.lines.length - 1] ?? "";
       } else {
-        current = split[0] ?? current;
+        current = split.lines[0] ?? current;
       }
     }
   }
 
   if (current) lines.push(current);
-  return lines;
+  return { lines, isValid: isValid && lines.every((line) => fitsLineWidth(line, availableWidth, fontSize, glyphWidthScale)) };
 }
 
-function splitWord(word: string, maxChars: number, breakWords: boolean): string[] {
-  if (word.length <= maxChars) return [word];
-  if (!breakWords) return [word];
-  if (word.includes("-")) return splitWordByExistingHyphen(word, maxChars);
-  return splitWordWithHyphenation(word, maxChars);
+function splitWord(
+  word: string,
+  maxChars: number,
+  availableWidth: number,
+  fontSize: number,
+  glyphWidthScale: number,
+  breakWords: boolean
+): WordSplitResult {
+  if (word.length <= maxChars && fitsLineWidth(word, availableWidth, fontSize, glyphWidthScale)) {
+    return { lines: [word], isValid: true };
+  }
+  if (!breakWords) return { lines: [word], isValid: false };
+  if (word.includes("-")) return splitWordByExistingHyphen(word, maxChars, availableWidth, fontSize, glyphWidthScale);
+  if (!/\p{L}/u.test(word)) {
+    return {
+      lines: splitLongWord(word, maxChars, availableWidth, fontSize, glyphWidthScale),
+      isValid: true,
+    };
+  }
+  return splitWordWithHyphenation(word, maxChars, availableWidth, fontSize, glyphWidthScale);
 }
 
-function wrapText(text: string, maxChars: number, breakWords: boolean): string[] {
+function wrapText(
+  text: string,
+  maxChars: number,
+  availableWidth: number,
+  fontSize: number,
+  glyphWidthScale: number,
+  breakWords: boolean
+): WrapResult {
   const clean = normalizeDisplayPunctuation(text).replace(/\s+/g, " ").trim();
-  if (!clean) return [];
+  if (!clean) return { lines: [], isValid: true };
   const words = clean.split(" ");
   const lines: string[] = [];
   let line = "";
+  let isValid = true;
 
   const appendSplitWord = (word: string): void => {
-    const splitLines = splitWord(word, maxChars, breakWords);
-    if (!splitLines.length) return;
-    lines.push(...splitLines.slice(0, -1));
-    line = splitLines[splitLines.length - 1] ?? "";
+    const splitLines = splitWord(word, maxChars, availableWidth, fontSize, glyphWidthScale, breakWords);
+    if (!splitLines.isValid) isValid = false;
+    if (!splitLines.lines.length) return;
+    lines.push(...splitLines.lines.slice(0, -1));
+    line = splitLines.lines[splitLines.lines.length - 1] ?? "";
   };
 
   for (const word of words) {
     if (!line) {
-      if (word.length > maxChars) {
+      if (!fitsLineWidth(word, availableWidth, fontSize, glyphWidthScale)) {
         appendSplitWord(word);
         continue;
       }
@@ -218,13 +349,14 @@ function wrapText(text: string, maxChars: number, breakWords: boolean): string[]
       continue;
     }
 
-    if (line.length + 1 + word.length <= maxChars) {
-      line = `${line} ${word}`;
+    const joinedLine = `${line} ${word}`;
+    if (fitsLineWidth(joinedLine, availableWidth, fontSize, glyphWidthScale)) {
+      line = joinedLine;
       continue;
     }
 
     lines.push(line);
-    if (word.length > maxChars) {
+    if (!fitsLineWidth(word, availableWidth, fontSize, glyphWidthScale)) {
       appendSplitWord(word);
     } else {
       line = word;
@@ -232,7 +364,7 @@ function wrapText(text: string, maxChars: number, breakWords: boolean): string[]
   }
 
   if (line) lines.push(line);
-  return lines;
+  return { lines, isValid };
 }
 
 export function buildClueTextMap(
@@ -261,10 +393,15 @@ export function resolveClueRenderLayout(
 } {
   const definitionAreaCells = [...layout.areaCells];
   const isExpandedDefinition = definitionAreaCells.length > 1;
+  const hasAttachedClusterCells =
+    (layout.clusterCells?.length ?? 0) > 1 &&
+    definitionAreaCells.some(([areaRow, areaCol]) =>
+      (layout.clusterCells ?? []).some(([clusterRow, clusterCol]) => clusterRow === areaRow && clusterCol === areaCol)
+    );
   return {
     definitionAreaCells,
     isExpandedDefinition,
-    isClusterDefinition: isExpandedDefinition,
+    isClusterDefinition: isExpandedDefinition || (!isExpandedDefinition && hasAttachedClusterCells),
   };
 }
 
@@ -336,110 +473,118 @@ export function renderClueText(
   const maxY = Math.max(...areaRects.map((rect) => rect.y + rect.height));
   const layoutWidth = Math.max(1, maxX - minX);
   const layoutHeight = Math.max(1, maxY - minY);
-  const edgeInset = clusterFrame === "top-right" ? 0 : convertMmToSvgUnits(CLUE_EDGE_INSET_MM, mode);
+  const edgeInset = convertMmToSvgUnits(CLUE_EDGE_INSET_MM, mode);
   const padding = 1 + edgeInset;
   const normalized = text.replace(/\s+/g, " ").trim();
   const minFontSizeOverride = Number.isFinite(options.minFontSize)
     ? Math.max(1, Number(options.minFontSize))
     : null;
   const minFontSize = Math.min(minFontSizeOverride ?? resolveMinClueFontSize(mode), fontSize);
-  const innerHeight = layoutHeight - padding * 2;
-  const clusterInset = clusterFrame === "top-right" ? clusterPadding * 2 : 0;
-  const availableWidth = Math.max(1, layoutWidth - padding * 2 - clusterInset);
-  const availableHeight = Math.max(1, innerHeight - clusterInset);
+  const layoutRect: LayoutRect = { x: minX, y: minY, width: layoutWidth, height: layoutHeight };
+  const safeRect = insetRect(layoutRect, padding);
+  const textSafeRect =
+    clusterFrame === "top-right" ? insetRect(safeRect, clusterPadding) : safeRect;
+  const availableWidth = Math.max(1, textSafeRect.width);
+  const availableHeight = Math.max(1, textSafeRect.height);
   let currentSize = Math.max(fontSize, minFontSize);
   let lineHeight = resolveLineHeight(currentSize, lineHeightScale);
-  let maxChars = Math.max(
-    1,
-    Math.floor(availableWidth / (currentSize * CLUE_CHAR_WIDTH_FACTOR * glyphWidthScale))
-  );
+  let maxChars = Math.max(1, Math.floor(availableWidth / Math.max(1, currentSize * 0.3 * glyphWidthScale)));
   let maxLinesByHeight = Math.max(1, Math.floor((availableHeight + 0.0001) / lineHeight));
   let maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
-  const words = normalized ? normalized.split(" ") : [];
-  const longestWord = words.reduce((max, word) => Math.max(max, word.length), 0);
-  let breakWords = false;
-  let lines = wrapText(normalized, maxChars, breakWords);
+  let wrapResult = wrapText(normalized, maxChars, availableWidth, currentSize, glyphWidthScale, false);
+  let lines = wrapResult.lines;
+  let lineWidths = lines.map((line) => estimateScaledLineWidth(line, currentSize, glyphWidthScale));
+
+  const buildCandidate = (breakWords: boolean): LayoutCandidate => {
+    const candidateWrap = wrapText(normalized, maxChars, availableWidth, currentSize, glyphWidthScale, breakWords);
+    const candidateLines = candidateWrap.lines;
+    const candidateWidths = candidateLines.map((line) =>
+      estimateScaledLineWidth(line, currentSize, glyphWidthScale)
+    );
+    return {
+      breakWords,
+      wrapResult: candidateWrap,
+      lines: candidateLines,
+      lineWidths: candidateWidths,
+    };
+  };
+
+  const isCandidateValid = (candidate: LayoutCandidate): boolean =>
+    candidate.wrapResult.isValid &&
+    candidate.lines.length <= maxLines &&
+    candidate.lineWidths.every((width) => width <= availableWidth + 0.0001);
+
+  const chooseCandidate = (): LayoutCandidate => {
+    const plain = buildCandidate(false);
+    const hyphenated = buildCandidate(true);
+    const plainValid = isCandidateValid(plain);
+    const hyphenatedValid = isCandidateValid(hyphenated);
+    if (plainValid) return plain;
+    if (hyphenatedValid) return hyphenated;
+    return hyphenated.wrapResult.isValid ? hyphenated : plain;
+  };
 
   const recalcLayout = () => {
     lineHeight = resolveLineHeight(currentSize, lineHeightScale);
-    maxChars = Math.max(
-      1,
-      Math.floor(availableWidth / (currentSize * CLUE_CHAR_WIDTH_FACTOR * glyphWidthScale))
-    );
+    maxChars = Math.max(1, Math.floor(availableWidth / Math.max(1, currentSize * 0.3 * glyphWidthScale)));
     maxLinesByHeight = Math.max(1, Math.floor((availableHeight + 0.0001) / lineHeight));
     maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
-    lines = wrapText(normalized, maxChars, breakWords);
+    const chosen = chooseCandidate();
+    wrapResult = chosen.wrapResult;
+    lines = chosen.lines;
+    lineWidths = chosen.lineWidths;
   };
 
+  const linesFitBounds = () =>
+    wrapResult.isValid &&
+    lines.length <= maxLines &&
+    lineWidths.every((width) => width <= availableWidth + 0.0001);
+
   const shrinkUntil = (targetSize: number) => {
-    while (lines.length > CLUE_MAX_LINES && currentSize > targetSize) {
+    while (!linesFitBounds() && currentSize > targetSize) {
       currentSize = Math.max(targetSize, currentSize - 1);
       recalcLayout();
     }
   };
-
-  if (!breakWords && longestWord > maxChars) {
-    breakWords = true;
-    recalcLayout();
-  }
-
-  if (lines.length > CLUE_MAX_LINES) {
-    shrinkUntil(minFontSize);
-  }
+  recalcLayout();
+  if (!linesFitBounds()) shrinkUntil(minFontSize);
 
   const textBlockHeight = lineHeight * Math.max(1, lines.length);
   const offsetY = Math.max(0, (availableHeight - textBlockHeight) / 2);
-  let textX = alignBottomLeft ? minX + padding + 1 : minX + layoutWidth / 2;
-  let textY = alignBottomLeft ? minY + padding : minY + padding + offsetY;
-  let textAnchor: "start" | "middle" = alignBottomLeft ? "start" : "middle";
-
-  const lineWidths = lines.map((line) =>
-    Math.min(availableWidth, estimateScaledLineWidth(line, currentSize, glyphWidthScale))
-  );
+  const textTopY = textSafeRect.y + offsetY;
   const textBlockWidth = Math.max(1, ...lineWidths);
+  let textX = alignBottomLeft ? textSafeRect.x : textSafeRect.x + textSafeRect.width / 2;
+  let textY = textTopY;
+  let textAnchor: "start" | "middle" = alignBottomLeft ? "start" : "middle";
   const backgroundPadX = Math.max(1, Math.round(currentSize * 0.14));
   const backgroundPadY = Math.max(1, Math.round(currentSize * 0.08));
-  let backgroundX = alignBottomLeft
-    ? textX - backgroundPadX
-    : textX - textBlockWidth / 2 - backgroundPadX;
-  let backgroundY = textY - backgroundPadY;
+  const textBlockLeftX = alignBottomLeft ? textX : textX - textBlockWidth / 2;
+  let backgroundX = textBlockLeftX - backgroundPadX;
+  let backgroundY = textTopY - backgroundPadY;
   let backgroundWidth = textBlockWidth + backgroundPadX * 2;
   let backgroundHeight = textBlockHeight + backgroundPadY * 2;
 
-  if (background === "text-block" && isMultiCellArea) {
-    const boundaryInset = Math.max(0, options.backgroundInset ?? 0);
-    if (boundaryInset > 0) {
-      const safeMinX = minX + boundaryInset;
-      const safeMaxX = maxX - boundaryInset;
-      const safeMinY = minY + boundaryInset;
-      const safeMaxY = maxY - boundaryInset;
-      const safeWidth = Math.max(0, safeMaxX - safeMinX);
-      const safeHeight = Math.max(0, safeMaxY - safeMinY);
+  if (background === "text-block") {
+    const boundaryInset = Math.max(padding, Math.max(0, options.backgroundInset ?? 0));
+    const backgroundBounds = insetRect(layoutRect, boundaryInset);
+    const clampedBackground = clampRectToBounds(
+      { x: backgroundX, y: backgroundY, width: backgroundWidth, height: backgroundHeight },
+      backgroundBounds
+    );
+    backgroundX = clampedBackground.x;
+    backgroundY = clampedBackground.y;
+    backgroundWidth = clampedBackground.width;
+    backgroundHeight = clampedBackground.height;
 
-      if (backgroundWidth > safeWidth) {
-        backgroundWidth = safeWidth;
-        backgroundX = safeMinX;
-      } else {
-        backgroundX = Math.max(safeMinX, Math.min(backgroundX, safeMaxX - backgroundWidth));
-      }
-
-      if (backgroundHeight > safeHeight) {
-        backgroundHeight = safeHeight;
-        backgroundY = safeMinY;
-      } else {
-        backgroundY = Math.max(safeMinY, Math.min(backgroundY, safeMaxY - backgroundHeight));
-      }
+    if (clusterFrame === "top-right") {
+      backgroundWidth = Math.min(layoutRect.width, textBlockWidth + clusterPadding * 2);
+      backgroundHeight = Math.min(layoutRect.height, textBlockHeight + clusterPadding * 2);
+      backgroundX = layoutRect.x;
+      backgroundY = layoutRect.y + layoutRect.height - backgroundHeight;
+      textX = backgroundX + clusterPadding;
+      textY = backgroundY + Math.max(0, backgroundHeight - textBlockHeight - clusterPadding);
+      textAnchor = "start";
     }
-  }
-
-  if (background === "text-block" && clusterFrame === "top-right") {
-    backgroundX = minX;
-    backgroundWidth = Math.min(layoutWidth, textBlockWidth + clusterPadding * 2);
-    backgroundHeight = Math.min(layoutHeight, textBlockHeight + clusterPadding * 2);
-    backgroundY = maxY - backgroundHeight;
-    textX = backgroundX + backgroundWidth / 2;
-    textY = backgroundY + Math.max(0, (backgroundHeight - textBlockHeight) / 2);
-    textAnchor = "middle";
   }
 
   const backgroundRect =
@@ -466,8 +611,11 @@ export function renderClueText(
     : "";
 
   if (mode === "corel") {
-    const ascent = Math.round(currentSize * 0.8 * 10) / 10;
-    const baseY = Math.round((textY + ascent) * 10) / 10;
+    const ascent = currentSize * CLUE_TEXT_ASCENT_RATIO;
+    const descent = currentSize * CLUE_TEXT_DESCENT_RATIO;
+    const visualHeight = ascent + descent;
+    const lineTopOffset = Math.max(0, (lineHeight - visualHeight) / 2);
+    const baseY = Math.round((textY + lineTopOffset + ascent) * 10) / 10;
     const scaleTransform = buildUniformScaleTransform(textX, glyphWidthScale);
     const textLines = lines
       .map((line, idx) => {

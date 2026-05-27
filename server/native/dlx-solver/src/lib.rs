@@ -1256,11 +1256,35 @@ fn remap_slots(slots: &[Slot], ids: &[usize]) -> Vec<Slot> {
   out
 }
 
+fn normalize_grid_char(ch: char) -> char {
+  if ch == '#' {
+    '#'
+  } else if ch.is_alphabetic() {
+    ch
+  } else {
+    '.'
+  }
+}
+
 fn init_grid(rows: &[String]) -> Vec<Vec<char>> {
   rows
     .iter()
-    .map(|r| r.chars().map(|ch| if ch == '#' { '#' } else { '.' }).collect())
+    .map(|r| r.chars().map(normalize_grid_char).collect())
     .collect()
+}
+
+fn slot_matches_fixed_grid(fixed_grid: &[Vec<char>], slot: &Slot, word_chars: &[char]) -> bool {
+  for (i, (r, c)) in slot.cells.iter().enumerate() {
+    let fixed = fixed_grid
+      .get(*r)
+      .and_then(|row| row.get(*c))
+      .copied()
+      .unwrap_or('.');
+    if fixed != '.' && fixed != '#' && fixed != word_chars[i] {
+      return false;
+    }
+  }
+  true
 }
 
 fn merge_grid(base: &mut Vec<Vec<char>>, solved: &[Vec<char>]) {
@@ -1320,6 +1344,7 @@ impl<'a> CspSearch<'a> {
     crosses: Vec<Vec<Cross>>,
     adjacency: Vec<HashSet<usize>>,
     index: WordIndex,
+    fixed_grid: &[Vec<char>],
     seed: u64,
   ) -> Self {
     let mut slot_ids_by_len: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -1334,12 +1359,21 @@ impl<'a> CspSearch<'a> {
         0
       };
       let blocks = (words_len + 63) / 64;
-      let mut bits = vec![u64::MAX; blocks];
-      if blocks > 0 && words_len % 64 != 0 {
-        bits[blocks - 1] = (1u64 << (words_len % 64)) - 1;
+      let mut bits = vec![0u64; blocks];
+      let mut count = 0usize;
+      if slot.len <= dict.max_len {
+        for word_idx in 0..words_len {
+          let word_chars = &dict.chars[slot.len][word_idx];
+          if !slot_matches_fixed_grid(fixed_grid, slot, word_chars) {
+            continue;
+          }
+          let block = word_idx / 64;
+          bits[block] |= 1u64 << (word_idx % 64);
+          count += 1;
+        }
       }
       domains.push(bits);
-      domain_counts.push(words_len);
+      domain_counts.push(count);
     }
 
     let mut word_gid_by_len: Vec<Vec<usize>> = vec![Vec::new(); dict.max_len + 1];
@@ -1997,6 +2031,7 @@ fn run_attempt_csp<'a>(
   next_log_at: &mut u64,
   abort_flag: Option<&AtomicBool>,
 ) -> Option<(Vec<Vec<char>>, i64)> {
+  let fixed_grid = init_grid(raw_rows);
   let index = build_word_index(dict);
   let (crosses, adjacency, _) = build_cross_data(slots);
   let total_slots = slots.len();
@@ -2042,7 +2077,7 @@ fn run_attempt_csp<'a>(
   };
   maybe_report(&state, &mut progress_ctx, 0, total_slots, true, None);
 
-  let mut search = CspSearch::new(slots, dict, options, crosses, adjacency, index, seed);
+  let mut search = CspSearch::new(slots, dict, options, crosses, adjacency, index, &fixed_grid, seed);
   let _ = search.search(&mut state, &mut progress_ctx, abort_flag);
   if options.log_every_ms > 0 {
     *next_log_at = progress_ctx.next_log_at;
@@ -2056,7 +2091,7 @@ fn run_attempt_csp<'a>(
     }
   };
 
-  let mut grid = init_grid(raw_rows);
+  let mut grid = fixed_grid;
   for slot in slots {
     let word_idx = assignment[slot.id];
     let chars = &dict.chars[slot.len][word_idx];
@@ -2245,6 +2280,7 @@ fn run_attempt_dlx<'a>(
   next_log_at: &mut u64,
   abort_flag: Option<&AtomicBool>,
 ) -> Option<Vec<Vec<char>>> {
+  let fixed_grid = init_grid(raw_rows);
   let index = build_word_index(dict);
   let (crosses, adjacency, intersection_cells) = build_cross_data(slots);
   let total_slots = slots.len();
@@ -2306,6 +2342,9 @@ fn run_attempt_dlx<'a>(
     if options.lcv && candidates.len() > 1 {
       let mut scored: Vec<(i32, i64, u32, usize)> = Vec::with_capacity(candidates.len());
       for (i, &idx) in candidates.iter().enumerate() {
+        if !slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]) {
+          continue;
+        }
         let score = score_word(
           slot.id,
           idx,
@@ -2325,14 +2364,20 @@ fn run_attempt_dlx<'a>(
     } else if options.word_priority.is_some() && candidates.len() > 1 {
       let mut scored: Vec<(i64, u32, usize)> = Vec::with_capacity(candidates.len());
       for (i, &idx) in candidates.iter().enumerate() {
+        if !slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]) {
+          continue;
+        }
         let priority = word_priority(options, &word_list[idx]);
         let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
         scored.push((priority, tie, idx));
       }
       scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
       candidates = scored.into_iter().map(|s| s.2).collect();
-    } else if options.shuffle && candidates.len() > 1 {
+    } else {
+      candidates.retain(|&idx| slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]));
+      if options.shuffle && candidates.len() > 1 {
       rng.shuffle(&mut candidates);
+      }
     }
 
     for &word_idx in &candidates {
@@ -2432,7 +2477,7 @@ fn run_attempt_dlx<'a>(
     return None;
   }
 
-  let mut grid = init_grid(raw_rows);
+  let mut grid = fixed_grid;
   for &node_idx in &solution {
     let row_id = matrix.nodes[node_idx].row_id;
     let row = &matrix.rows[row_id];
@@ -2455,6 +2500,7 @@ fn run_attempt_dlx_no_progress(
   attempt_start: Instant,
   abort_flag: Option<&AtomicBool>,
 ) -> Option<Vec<Vec<char>>> {
+  let fixed_grid = init_grid(raw_rows);
   let index = build_word_index(dict);
   let (crosses, _adjacency, intersection_cells) = build_cross_data(slots);
 
@@ -2501,6 +2547,9 @@ fn run_attempt_dlx_no_progress(
     if options.lcv && candidates.len() > 1 {
       let mut scored: Vec<(i32, i64, u32, usize)> = Vec::with_capacity(candidates.len());
       for (i, &idx) in candidates.iter().enumerate() {
+        if !slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]) {
+          continue;
+        }
         let score = score_word(
           slot.id,
           idx,
@@ -2520,14 +2569,20 @@ fn run_attempt_dlx_no_progress(
     } else if options.word_priority.is_some() && candidates.len() > 1 {
       let mut scored: Vec<(i64, u32, usize)> = Vec::with_capacity(candidates.len());
       for (i, &idx) in candidates.iter().enumerate() {
+        if !slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]) {
+          continue;
+        }
         let priority = word_priority(options, &word_list[idx]);
         let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
         scored.push((priority, tie, idx));
       }
       scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
       candidates = scored.into_iter().map(|s| s.2).collect();
-    } else if options.shuffle && candidates.len() > 1 {
+    } else {
+      candidates.retain(|&idx| slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]));
+      if options.shuffle && candidates.len() > 1 {
       rng.shuffle(&mut candidates);
+      }
     }
 
     for &word_idx in &candidates {
@@ -2592,7 +2647,7 @@ fn run_attempt_dlx_no_progress(
     return None;
   }
 
-  let mut grid = init_grid(raw_rows);
+  let mut grid = fixed_grid;
   for &node_idx in &solution {
     let row_id = matrix.nodes[node_idx].row_id;
     let row = &matrix.rows[row_id];

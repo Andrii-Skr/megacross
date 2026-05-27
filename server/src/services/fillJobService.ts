@@ -77,6 +77,15 @@ import {
   type ResolvedTemplate,
 } from "./fillJobTemplateService";
 import {
+  buildSolveRows,
+  buildTemplateSetupMap,
+  findKeywordPlacement,
+  parseTemplateSetupPayload,
+  resolveTemplateSetupForEntry,
+  type FillTemplateKeywordCell,
+  type FillTemplateSetup,
+} from "./fillJobTemplateSetupService";
+import {
   buildReviewTemplate,
   definitionSelectionBucket,
   normalizeDefinitionKey,
@@ -87,6 +96,12 @@ import {
   type ReviewTemplate,
   type ReviewWordSelection,
 } from "./fillJobReviewService";
+import {
+  buildWordImageAbsolutePath,
+  loadWordImagesByIds,
+  loadWordImagesByWordIds,
+  type ReviewWordImageOption,
+} from "./fillWordImageService";
 import {
   applyReviewTemplateOverrides,
   applyTemplateReviewResult,
@@ -150,7 +165,7 @@ export type FillJobUpdate = {
   archiveReady?: boolean;
 };
 
-type FillJobOptions = {
+export type FillJobOptions = {
   engine: "dlx" | "csp";
   shuffle: boolean;
   unique: boolean;
@@ -168,6 +183,7 @@ type FillJobOptions = {
   usageRebalanceMode: UsageRebalanceMode;
   editionHotBan: boolean;
   filterTemplateId?: number | null;
+  templateSetup?: FillTemplateSetup[];
 };
 
 type FinalizeTemplateInput = {
@@ -217,6 +233,7 @@ export type FillMaskCandidate = {
   wordId: string;
   word: string;
   definitions: ReviewDefinitionOption[];
+  availableImages?: ReviewWordImageOption[];
 };
 
 type IssueContext = {
@@ -260,6 +277,7 @@ type FillExecutionContext = {
   cpuParallel: number;
   languageCode: string;
   languageId: number | null;
+  templateSetupByKey: Map<string, FillTemplateSetup>;
 };
 
 type SolveSingleTemplateState = {
@@ -267,6 +285,7 @@ type SolveSingleTemplateState = {
   usedWordsInJob: Set<string>;
   usedWordCountInJob: Map<string, number>;
   usedDefinitionKeys: Set<string>;
+  reviewData?: FillReviewPayload | null;
 };
 
 type SolveSingleTemplateMetrics = {
@@ -321,6 +340,7 @@ const DEFAULT_OPTIONS: FillJobOptions = {
   usageRebalanceMode: "cost",
   editionHotBan: false,
   filterTemplateId: null,
+  templateSetup: [],
 };
 
 // Baseline defaults used specifically for API startFillJob.
@@ -344,6 +364,7 @@ const START_FILL_JOB_DEFAULT_OPTIONS: FillJobOptions = {
   usageRebalanceMode: "cost",
   editionHotBan: false,
   filterTemplateId: null,
+  templateSetup: [],
 };
 
 const ARCHIVE_TTL_MS = 1000 * 60 * 60 * 24 * 30 * 6;
@@ -1162,6 +1183,7 @@ async function loadFillExecutionContext(issueId: bigint, options: FillJobOptions
   const sortedEntries = [...entries].sort((a, b) => compareByComplexity(a.stats, b.stats));
   const entryByKey = new Map(entries.map((entry) => [entry.key, entry]));
   const invalidByKey = new Map(invalid.map((entry) => [entry.key, entry]));
+  const templateSetupByKey = buildTemplateSetupMap(options.templateSetup, new Set(resolved.map((template) => template.key)));
   const templateNeighbors = buildTemplateNeighbors(resolved);
   const cpuParallel = detectCpuParallelism();
   const effectiveParallelRestarts = resolveParallelRestarts(options.restarts, options.parallelRestarts);
@@ -1201,6 +1223,7 @@ async function loadFillExecutionContext(issueId: bigint, options: FillJobOptions
     cpuParallel,
     languageCode,
     languageId,
+    templateSetupByKey,
   };
 }
 
@@ -1212,6 +1235,14 @@ function buildSvg(
   options: {
     style: "default" | "corel";
     svgTypography?: ResolvedFinalizeSvgTypography | null;
+    photoClues?: Array<{
+      clueKey: string;
+      href: string;
+    }>;
+    keyword?: {
+      text: string;
+      cells: FillTemplateKeywordCell[];
+    } | null;
   }
 ): { svg: string; svgRaw: string; usedWords: string } {
   const isTruthyEnv = (value: string | undefined): boolean => {
@@ -1238,7 +1269,9 @@ function buildSvg(
       clueLineHeightScale: typography ? typography.clueLineHeightPct / 100 : undefined,
       fontFaceCss: typography?.fontFaceCss ?? null,
     },
+    photoClues: options.photoClues ?? [],
     type0Features: true,
+    keyword: options.keyword ?? null,
   });
 }
 
@@ -1295,6 +1328,25 @@ function formatFail(info: SolveFailInfo): string {
   return "no-solution";
 }
 
+function findConstraintViolation(
+  templateName: string,
+  solvedRows: string[],
+  constrainedLetters: Map<string, string>,
+): string | null {
+  for (const [cellKey, expectedLetter] of constrainedLetters) {
+    const [rowRaw, colRaw] = cellKey.split(",");
+    const row = Number(rowRaw);
+    const col = Number(colRaw);
+    if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || col < 0) {
+      continue;
+    }
+    const actualLetter = solvedRows[row]?.[col] ?? "";
+    if (actualLetter === expectedLetter) continue;
+    return `Template ${templateName}: solver ignored constrained cell (${row},${col}), expected ${expectedLetter}, got ${actualLetter || "empty"}`;
+  }
+  return null;
+}
+
 async function solveSingleTemplateForReview(
   entry: TemplateEntry,
   context: FillExecutionContext,
@@ -1306,6 +1358,36 @@ async function solveSingleTemplateForReview(
   } = {},
 ): Promise<{ reviewTemplate: ReviewTemplate; wordCounts: Map<string, number> } | { error: string }> {
   let lastFail: SolveFailInfo | null = null;
+  const resolvedSetupResult = resolveTemplateSetupForEntry(
+    entry,
+    context.dict,
+    context.templateSetupByKey.get(entry.key),
+  );
+  if (resolvedSetupResult.errors.length > 0) {
+    return { error: resolvedSetupResult.errors[0] ?? "invalid-template-setup" };
+  }
+  const solveRowsBase = buildSolveRows(entry.grid.data, resolvedSetupResult.resolved.fixedLetters);
+  let currentSolveRows = solveRowsBase;
+  let constrainedLetters = resolvedSetupResult.resolved.fixedLetters;
+  let keywordResult: { text: string; cells: FillTemplateKeywordCell[] } | null = null;
+  if (resolvedSetupResult.resolved.keyword) {
+    const placement = findKeywordPlacement(
+      entry,
+      context.dict,
+      resolvedSetupResult.resolved.fixedLetters,
+      resolvedSetupResult.resolved.keyword,
+      { shuffle: options.shuffle },
+    );
+    if ("error" in placement) {
+      return { error: placement.error };
+    }
+    currentSolveRows = buildSolveRows(entry.grid.data, placement.letters);
+    constrainedLetters = placement.letters;
+    keywordResult = {
+      text: resolvedSetupResult.resolved.keyword,
+      cells: placement.cells,
+    };
+  }
   const onFail = options.explainFail
     ? (info: SolveFailInfo) => {
         lastFail = info;
@@ -1349,8 +1431,8 @@ async function solveSingleTemplateForReview(
     };
     const solvedNative =
       options.engine === "csp"
-        ? await solveCspNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions)
-        : await solveDlxNativeAsync(entry.grid.data, entry.slots, dictForSolve, nativeOptions);
+        ? await solveCspNativeAsync(currentSolveRows, entry.slots, dictForSolve, nativeOptions)
+        : await solveDlxNativeAsync(currentSolveRows, entry.slots, dictForSolve, nativeOptions);
     if (solvedNative === undefined) {
       throw new Error(
         options.engine === "csp"
@@ -1518,7 +1600,7 @@ async function solveSingleTemplateForReview(
     if (strictDeficitLengths.size === 0) {
       const strictDict = filterDictionaryByBlockedWords(context.dict, strictProbeBlockedWords);
       metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.probeAttempted += 1);
-      const probeResult = runDlxProbe(entry.grid.data, entry.slots, strictDict, {
+      const probeResult = runDlxProbe(currentSolveRows, entry.slots, strictDict, {
         label: `${entry.name}:probe`,
         maxNodes: options.maxNodes,
         maxMs: options.maxMs,
@@ -1645,6 +1727,7 @@ async function solveSingleTemplateForReview(
       usedWordCountByWord: state.usedWordCountInJob,
       forbiddenWords: options.unique ? state.usedWordsInJob : undefined,
       repeatPenalty: IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
+      fixedLetters: constrainedLetters,
     });
     metrics.usageCostMetrics.examinedCandidates += polish.examinedCandidates;
     if (polish.improved) {
@@ -1665,6 +1748,11 @@ async function solveSingleTemplateForReview(
     return {
       error: lastFail ? formatFail(lastFail) : "no-solution",
     };
+  }
+
+  const constraintViolation = findConstraintViolation(entry.name, solved, constrainedLetters);
+  if (constraintViolation) {
+    return { error: constraintViolation };
   }
 
   const usedWordsList = entry.slots.map((slot) => slot.cells.map(([row, col]) => solved?.[row]?.[col] ?? "").join(""));
@@ -1696,6 +1784,10 @@ async function solveSingleTemplateForReview(
     langCode: context.dictionaryTemplate.language,
     definitionWhere: context.definitionWhere,
   });
+  const wordImagesByWordId = await loadWordImagesByWordIds(
+    [...selectedWords.values()].map((selection) => selection.wordId),
+  );
+  const previousTemplate = state.reviewData?.templates.find((template) => template.key === entry.key) ?? null;
 
   return {
     reviewTemplate: buildReviewTemplate(
@@ -1705,7 +1797,10 @@ async function solveSingleTemplateForReview(
       context.languageId ?? null,
       selectedWords,
       fallbackDefinitions,
+      wordImagesByWordId,
       state.usedDefinitionKeys,
+      keywordResult,
+      previousTemplate,
     ),
     wordCounts,
   };
@@ -1724,11 +1819,28 @@ function escapeLikeChar(value: string): string {
   return value.replace(/[%_\\]/g, (char) => `\\${char}`);
 }
 
+function computeAspectRatio(width: number, height: number): number {
+  if (!(width > 0) || !(height > 0)) return 0;
+  return width / height;
+}
+
+function matchesPhotoAreaRatio(
+  image: { width: number; height: number },
+  bounds: { minRow: number; minCol: number; maxRow: number; maxCol: number },
+): boolean {
+  const areaWidth = bounds.maxCol - bounds.minCol + 1;
+  const areaHeight = bounds.maxRow - bounds.minRow + 1;
+  const imageRatio = computeAspectRatio(image.width, image.height);
+  const areaRatio = computeAspectRatio(areaWidth, areaHeight);
+  if (!(imageRatio > 0) || !(areaRatio > 0)) return false;
+  return Math.abs(imageRatio - areaRatio) / areaRatio <= 0.08;
+}
+
 async function findWordsByMask(
   mask: string,
   langId: number,
   limit: number
-): Promise<Array<{ wordId: string; word: string; definitions: ReviewDefinitionOption[] }>> {
+): Promise<Array<{ wordId: string; word: string; definitions: ReviewDefinitionOption[]; availableImages: ReviewWordImageOption[] }>> {
   const normalized = normalizeMask(mask);
   if (!normalized) return [];
   if (!/^[\p{L}.]+$/u.test(normalized)) {
@@ -1776,12 +1888,14 @@ async function findWordsByMask(
     list.push({ opredId: String(row.id), text });
     defsByWord.set(row.word_id, list);
   }
+  const wordImagesByWordId = await loadWordImagesByWordIds(ids);
 
   return rows
     .map((row) => ({
       wordId: String(row.id),
       word: normalizeWordKey(row.word ?? ""),
       definitions: defsByWord.get(row.id) ?? [],
+      availableImages: wordImagesByWordId.get(String(row.id)) ?? [],
     }))
     .filter((row) => row.word.length > 0);
 }
@@ -1897,6 +2011,7 @@ function parseFillJobOptions(value: unknown, fallbackDefaults: FillJobOptions = 
     usageRebalanceMode,
     editionHotBan: toBoolean(raw.editionHotBan, defaults.editionHotBan),
     filterTemplateId: toOptionalTemplateId(raw.filterTemplateId, defaults.filterTemplateId ?? null),
+    templateSetup: parseTemplateSetupPayload(raw.templateSetup),
   };
 }
 
@@ -1912,14 +2027,6 @@ function parseDefinitionLengthLimits(value: unknown): DefinitionLengthLimits | n
     maxPerCell,
     maxPerHalfCell: Math.min(maxPerHalfCell, maxPerCell),
   };
-}
-
-function escapeXmlAttr(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }
 
 function sanitizeSvgFontFamily(value: string | null | undefined): string | null {
@@ -2531,7 +2638,13 @@ export async function regenerateFillJobTemplate(jobId: bigint, payloadRaw: unkno
         error: context.invalidByKey.get(templateKey)?.error ?? "Template is not available for regeneration",
       })
     : await (async () => {
-        const result = await solveSingleTemplateForReview(targetEntry, context, options, usageState, solveMetrics);
+        const result = await solveSingleTemplateForReview(
+          targetEntry,
+          context,
+          options,
+          { ...usageState, reviewData: effectiveReview },
+          solveMetrics
+        );
         if ("error" in result) {
           return applyTemplateReviewResult(effectiveReview, templatesState, templateKey, {
             type: "error",
@@ -2607,6 +2720,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
   const review = parseReviewPayload(row.reviewData);
   if (!review) throw new Error("Review data not found for this job");
   const payload = (payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {}) as FinalizePayload;
+  const effectiveReview = applyReviewTemplateOverrides(review, Array.isArray(payload.templates) ? payload.templates : []);
   const definitionLengthLimits = parseDefinitionLengthLimits(payload.definitionLimits);
   const parsedSvgTypography = parseFinalizeSvgTypography(payload.svgTypography);
   const resolvedSvgTypography = await resolveFinalizeSvgTypography(parsedSvgTypography);
@@ -2621,13 +2735,13 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
   const outputRoot = getOutputDir();
   const issueRoot = path.join(
     outputRoot,
-    sanitizeName(review.issue.editionCode),
-    sanitizeName(review.issue.issueLabel)
+    sanitizeName(effectiveReview.issue.editionCode),
+    sanitizeName(effectiveReview.issue.issueLabel)
   );
   const issueDir = path.join(issueRoot, `job-${jobId.toString()}`);
   mkdirSync(issueDir, { recursive: true });
 
-  const templatesState = parseTemplatesPayload(row.templates) ?? review.templates.map((template) => ({
+  const templatesState = parseTemplatesPayload(row.templates) ?? effectiveReview.templates.map((template) => ({
     key: template.key,
     name: template.name,
     status: "pending" as const,
@@ -2644,9 +2758,9 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
   const issueOpredUsage = new Map<bigint, number>();
   const usedDefinitions = new Map<string, { templateName: string; slotId: number }>();
   const usedWordsByTemplate = new Map<string, Map<string, number>>();
-  const templateNameByKey = new Map(review.templates.map((template) => [template.key, template.name]));
+  const templateNameByKey = new Map(effectiveReview.templates.map((template) => [template.key, template.name]));
   const neighborsByTemplate = buildTemplateNeighbors(
-    review.templates.map((template) => ({
+    effectiveReview.templates.map((template) => ({
       key: template.key,
       name: template.name,
       sourceName: template.sourceName,
@@ -2667,7 +2781,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
   });
   await emitCurrentJob(jobId);
 
-  for (const template of review.templates) {
+  for (const template of effectiveReview.templates) {
     const idx = indexByKey.get(template.key);
     if (idx !== undefined) {
       templatesState[idx] = {
@@ -2736,6 +2850,10 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const slotStatesInOrder = template.slots
       .map((slot) => states.get(slot.slotId))
       .filter((item): item is FinalSlotState => Boolean(item));
+    const selectedImageIds = slotStatesInOrder
+      .map((state) => state.imageId)
+      .filter((value): value is bigint => value !== null);
+    const storedImagesById = await loadWordImagesByIds(selectedImageIds);
 
     const definitions = new Map<string, string>();
     for (const state of slotStatesInOrder) {
@@ -2747,14 +2865,68 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     }
 
     const slots = template.slots.map((slot) => convertReviewSlotToSlot(slot));
-    const { svg, svgRaw, usedWords } = buildSvg(template.grid, slots, solvedRows, definitions, {
-      style: review.options.style,
-      svgTypography: resolvedSvgTypography,
-    });
-    const svgAnswers = buildAnswersOnlySvg(template.grid, solvedRows);
-
+    const photoClues: Array<{ clueKey: string; href: string }> = [];
+    const photoErrors: string[] = [];
     const templateDir = path.join(issueDir, sanitizeName(template.name));
     mkdirSync(templateDir, { recursive: true });
+    const photoDir = path.join(templateDir, "assets");
+    mkdirSync(photoDir, { recursive: true });
+    for (const slot of template.slots) {
+      if (!slot.isPhotoDefinition) continue;
+      const state = states.get(slot.slotId);
+      if (!state?.imageId) continue;
+      const image = storedImagesById.get(String(state.imageId));
+      if (!image) {
+        photoErrors.push(`Template ${template.name}: image ${String(state.imageId)} not found for slot ${slot.slotId}`);
+        continue;
+      }
+      if (state.wordId === null || image.wordId !== String(state.wordId)) {
+        photoErrors.push(`Template ${template.name}: image ${image.id} does not belong to slot ${slot.slotId} word`);
+        continue;
+      }
+      if (!slot.photoAreaBounds) {
+        photoErrors.push(`Template ${template.name}: photo area is missing for slot ${slot.slotId}`);
+        continue;
+      }
+      if (!matchesPhotoAreaRatio(image, slot.photoAreaBounds)) {
+        photoErrors.push(`Template ${template.name}: image ${image.id} ratio does not match slot ${slot.slotId}`);
+        continue;
+      }
+      const sourcePath = buildWordImageAbsolutePath(image.storageRelPath);
+      const ext = path.extname(image.fileName) || ".img";
+      const assetName = `slot-${slot.slotId}${ext}`;
+      try {
+        writeFileSync(path.join(photoDir, assetName), readFileSync(sourcePath));
+      } catch {
+        photoErrors.push(`Template ${template.name}: image file is missing for slot ${slot.slotId}`);
+        continue;
+      }
+      if (slot.clueCell) {
+        photoClues.push({
+          clueKey: slot.clueCell.key,
+          href: `assets/${assetName}`,
+        });
+      }
+    }
+    if (photoErrors.length) {
+      finalizeErrors.push(...photoErrors);
+      if (idx !== undefined) {
+        templatesState[idx] = {
+          ...templatesState[idx],
+          status: "error",
+          error: photoErrors[0] ?? "Photo clue validation failed",
+        };
+      }
+      continue;
+    }
+
+    const { svg, svgRaw, usedWords } = buildSvg(template.grid, slots, solvedRows, definitions, {
+      style: effectiveReview.options.style,
+      svgTypography: resolvedSvgTypography,
+      photoClues,
+      keyword: template.keyword ?? null,
+    });
+    const svgAnswers = buildAnswersOnlySvg(template.grid, solvedRows);
     writeFileSync(path.join(templateDir, "crossword.svg"), svg);
     writeFileSync(path.join(templateDir, "crossword-no-text.svg"), svgRaw);
     writeFileSync(path.join(templateDir, "crossword-answers.svg"), svgAnswers);
@@ -2784,13 +2956,13 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
 
   if (options.usageStats && completedTemplates > 0) {
     await persistUsageStatsForIssue(
-      BigInt(review.issue.issueId),
-      review.issue.editionId,
+      BigInt(effectiveReview.issue.issueId),
+      effectiveReview.issue.editionId,
       issueWordUsage,
       issueOpredUsage
     );
     if (options.editionHotBan) {
-      await recomputeEditionHotBanState(review.issue.editionId, prisma);
+      await recomputeEditionHotBanState(effectiveReview.issue.editionId, prisma);
     }
   }
 
@@ -2811,7 +2983,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     totalTemplates,
     outputPath: archivePath,
     outputSize: archiveSize,
-    reviewData: review,
+    reviewData: effectiveReview,
     ...(finalError ? { error: finalError } : {}),
   });
   await emitCurrentJob(jobId);

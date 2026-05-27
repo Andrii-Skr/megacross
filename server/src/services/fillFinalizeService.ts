@@ -11,6 +11,13 @@ type ReviewSlot = {
   wordId: string | null;
   opredId: string | null;
   definition: string;
+  isPhotoDefinition?: boolean;
+  photoAreaBounds?: {
+    minRow: number;
+    minCol: number;
+    maxRow: number;
+    maxCol: number;
+  } | null;
   clueCell?: { key: string; row: number; col: number } | null;
 };
 
@@ -46,6 +53,7 @@ export type FinalizeSlotInput = {
   definition?: string | null;
   wordId?: string | null;
   opredId?: string | null;
+  imageId?: string | null;
 };
 
 export type FinalSlotState = {
@@ -55,6 +63,7 @@ export type FinalSlotState = {
   definition: string;
   wordId: bigint | null;
   opredId: bigint | null;
+  imageId: bigint | null;
 };
 
 function normalizeWordKey(word: string): string {
@@ -155,6 +164,7 @@ export function buildFinalSlotState(
   const definition = normalizeDefinitionText(input?.definition ?? slot.definition);
   const wordId = parseOptionalBigInt(input?.wordId ?? slot.wordId);
   const opredId = parseOptionalBigInt(input?.opredId ?? slot.opredId);
+  const imageId = parseOptionalBigInt(input?.imageId);
   const errors: string[] = [];
 
   if (!rawWord) {
@@ -170,6 +180,9 @@ export function buildFinalSlotState(
   if (!definition) {
     errors.push(`Slot ${slot.slotId}: definition is required`);
   }
+  if (slot.isPhotoDefinition && imageId === null) {
+    errors.push(`Slot ${slot.slotId}: image is required for photo definition`);
+  }
 
   return {
     state: {
@@ -179,6 +192,7 @@ export function buildFinalSlotState(
       definition,
       wordId,
       opredId,
+      imageId,
     },
     errors,
   };

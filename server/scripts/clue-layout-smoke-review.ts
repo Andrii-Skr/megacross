@@ -25,6 +25,7 @@ function makeState(slotId: number, definitionLength: number): FinalSlotState {
     definition: "А".repeat(definitionLength),
     wordId: null,
     opredId: null,
+    imageId: null,
   };
 }
 
@@ -146,7 +147,8 @@ function testReviewPayloadKeepsExpandedAreaCellCount(): void {
     "ru",
     null,
     new Map(),
-    new Map<string, string>([[word, "Определение"]])
+    new Map<string, string>([[word, "Определение"]]),
+    new Map(),
   );
   const group = template.clueGroups.find((item) => item.key === "1,1");
   assert.ok(group);

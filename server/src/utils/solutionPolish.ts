@@ -15,6 +15,7 @@ export type PolishSolutionOptions = {
   usedWordCountByWord?: Map<string, number>;
   forbiddenWords?: Set<string>;
   repeatPenalty?: number;
+  fixedLetters?: Map<string, string>;
 };
 
 export type PolishSolutionResult = {
@@ -70,6 +71,7 @@ export function polishSolvedRowsByCost(options: PolishSolutionOptions): PolishSo
     priorityByWord,
     usedWordCountByWord,
     forbiddenWords,
+    fixedLetters,
   } = options;
   if (!solvedRows.length || !slots.length) {
     return {
@@ -132,8 +134,14 @@ export function polishSolvedRowsByCost(options: PolishSolutionOptions): PolishSo
       if (!currentWord) continue;
 
       let pattern = "";
-      for (const [r, c] of slot.cells) {
+      for (let index = 0; index < slot.cells.length; index += 1) {
+        const [r, c] = slot.cells[index] as [number, number];
         const key = `${r},${c}`;
+        const fixedLetter = fixedLetters?.get(key);
+        if (fixedLetter) {
+          pattern += fixedLetter;
+          continue;
+        }
         pattern += (cellUsageCount.get(key) ?? 0) > 1 ? grid[r]?.[c] ?? "." : ".";
       }
 

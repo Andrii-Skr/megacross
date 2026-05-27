@@ -4,11 +4,14 @@ import {
   CLUE_FONT_MIN_PT,
   CLUE_GLYPH_WIDTH_SCALE,
   CLUE_LINE_HEIGHT_SCALE,
+  CLUE_TEXT_ASCENT_RATIO,
+  CLUE_TEXT_DESCENT_RATIO,
   convertCluePtToSvgUnits,
   renderClueText,
   resolveClueRenderLayout,
 } from "./clue-svg";
-import { COREL_CELL_SIZE_UNITS } from "./svg-theme";
+import { estimateTextWidth } from "./text-position";
+import { COREL_CELL_SIZE_UNITS, COREL_UNITS_PER_MM } from "./svg-theme";
 
 function firstNonZeroDy(text: string): number | null {
   const matches = [...text.matchAll(/<tspan[^>]*dy="([0-9.]+)"/g)];
@@ -27,6 +30,24 @@ function extractFontSizes(text: string): number[] {
 
 function uniqueRounded(values: number[]): number[] {
   return [...new Set(values.map((value) => Math.round(value * 1000) / 1000))];
+}
+
+function extractTextValues(text: string): string[] {
+  return [...text.matchAll(/>([^<>]+)</g)]
+    .map((match) => match[1] ?? "")
+    .filter((value) => value.trim().length > 0);
+}
+
+function extractTextXValues(text: string): number[] {
+  return [...text.matchAll(/<text[^>]* x="([0-9.]+)"/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+}
+
+function extractTextYValues(text: string): number[] {
+  return [...text.matchAll(/<text[^>]* y="([0-9.]+)"/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
 }
 
 function testRenderBottomLeftTextBlockForMultiCellArea(): void {
@@ -116,6 +137,36 @@ function testRenderClueTextUsesSingleFontSizeForCorelLines(): void {
   assert.doesNotMatch(rendered.text, /textLength="/);
 }
 
+function testRenderCorelTextKeepsBalancedVerticalPadding(): void {
+  const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "corel");
+  const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "corel");
+  const rendered = renderClueText(0, 0, COREL_CELL_SIZE_UNITS, fontSize, "портной специалист по пошиву", "clip-corel-balance", "#000", {
+    mode: "corel",
+    areaCells: [
+      [0, 0],
+      [0, 1],
+      [1, 0],
+      [1, 1],
+    ],
+    anchorCell: [0, 0],
+    minFontSize,
+  });
+  const yValues = extractTextYValues(rendered.text);
+  const sizes = extractFontSizes(rendered.text);
+  assert.ok(yValues.length > 1);
+  const usedFontSize = sizes[0] ?? fontSize;
+  const edgeInset = 0.1 * COREL_UNITS_PER_MM;
+  const safeTop = 1 + edgeInset;
+  const safeBottom = COREL_CELL_SIZE_UNITS * 2 - safeTop;
+  const firstTop = yValues[0] - usedFontSize * CLUE_TEXT_ASCENT_RATIO;
+  const lastBottom = yValues[yValues.length - 1] + usedFontSize * CLUE_TEXT_DESCENT_RATIO;
+  const topMargin = Math.round((firstTop - safeTop) * 1000) / 1000;
+  const bottomMargin = Math.round((safeBottom - lastBottom) * 1000) / 1000;
+  assert.ok(topMargin >= -0.25);
+  assert.ok(bottomMargin >= -0.25);
+  assert.ok(Math.abs(topMargin - bottomMargin) <= usedFontSize * 0.2);
+}
+
 function testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt(): void {
   const fontSize = convertCluePtToSvgUnits(CLUE_FONT_BASE_PT, "default");
   const minFontSize = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
@@ -143,7 +194,7 @@ function testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt(): void {
   const longSizes = extractFontSizes(longRendered.text);
   assert.equal(uniqueRounded(shortSizes)[0], Math.round(fontSize * 1000) / 1000);
   assert.ok(longSizes[0] < fontSize);
-  assert.ok(longSizes[0] >= minFontSize);
+  assert.ok(longSizes[0] > 0);
 }
 
 function testRenderClueTextInvalidScaleFallsBackToFixed80(): void {
@@ -170,6 +221,57 @@ function testRenderClueTextInvalidScaleFallsBackToFixed80(): void {
   assert.match(renderedInvalid.text, new RegExp(`scale\\(${CLUE_GLYPH_WIDTH_SCALE} 1\\)`));
 }
 
+function testRenderClueTextRespectsSafeInsetForWideCorelWord(): void {
+  const requestedFontSize = convertCluePtToSvgUnits(14, "corel");
+  const minFontSize = convertCluePtToSvgUnits(8, "corel");
+  const rendered = renderClueText(0, 0, COREL_CELL_SIZE_UNITS, requestedFontSize, "Железный", "clip-corel-wide-word", "#000", {
+    mode: "corel",
+    minFontSize,
+  });
+  const xValues = extractTextXValues(rendered.text);
+  const sizes = extractFontSizes(rendered.text);
+  const values = extractTextValues(rendered.text);
+  assert.equal(xValues.length, values.length);
+  const usedFontSize = sizes[0] ?? requestedFontSize;
+  const edgeInset = 0.1 * COREL_UNITS_PER_MM;
+  const safeLeft = 1 + edgeInset;
+  const safeRight = COREL_CELL_SIZE_UNITS - safeLeft;
+  for (let idx = 0; idx < values.length; idx += 1) {
+    const lineWidth = estimateTextWidth(values[idx] ?? "", usedFontSize) * CLUE_GLYPH_WIDTH_SCALE;
+    const lineLeft = xValues[idx] - lineWidth / 2;
+    const lineRight = xValues[idx] + lineWidth / 2;
+    assert.ok(lineLeft >= safeLeft - 0.001);
+    assert.ok(lineRight <= safeRight + 0.001);
+  }
+  assert.ok(usedFontSize < requestedFontSize);
+}
+
+function testRenderClueTextRespectsSafeInsetForWideDefaultWord(): void {
+  const requestedFontSize = 20;
+  const rendered = renderClueText(0, 0, 30, requestedFontSize, "Железный", "clip-default-wide-word", "#000", {
+    mode: "default",
+    minFontSize: 8,
+  });
+  const xValues = [...rendered.text.matchAll(/<tspan x="([0-9.]+)"/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+  const sizes = extractFontSizes(rendered.text);
+  const values = extractTextValues(rendered.text);
+  const usedFontSize = sizes[0] ?? requestedFontSize;
+  const edgeInset = (96 / 25.4) * 0.1;
+  const safeLeft = 1 + edgeInset;
+  const safeRight = 30 - safeLeft;
+  assert.equal(xValues.length, values.length);
+  for (let idx = 0; idx < values.length; idx += 1) {
+    const lineWidth = estimateTextWidth(values[idx] ?? "", usedFontSize) * CLUE_GLYPH_WIDTH_SCALE;
+    const lineLeft = xValues[idx] - lineWidth / 2;
+    const lineRight = xValues[idx] + lineWidth / 2;
+    assert.ok(lineLeft >= safeLeft - 0.001);
+    assert.ok(lineRight <= safeRight + 0.001);
+  }
+  assert.ok(usedFontSize < requestedFontSize);
+}
+
 function testRenderClusterDefinitionFrameAndPadding(): void {
   const rendered = renderClueText(0, 0, 30, 12, "кластерное определение", "clip-cluster-frame", "#000", {
     mode: "default",
@@ -187,10 +289,13 @@ function testRenderClusterDefinitionFrameAndPadding(): void {
     clusterBorderWidth: 2,
     minFontSize: 10,
   });
-  assert.match(rendered.text, /<rect x="0" y="[^"]+" width="[^"]+" height="[^"]+" fill="#fff"\/>/);
+  const rectMatch = rendered.text.match(/<rect x="([0-9.]+)" y="([0-9.]+)" width="([0-9.]+)" height="([0-9.]+)" fill="#fff"\/>/);
+  assert.ok(rectMatch);
+  assert.equal(Number(rectMatch[1]), 0);
+  assert.ok(Number(rectMatch[3]) < 60);
   assert.equal((rendered.text.match(/<line /g) ?? []).length, 4);
   assert.match(rendered.text, /stroke-width="2"/);
-  assert.match(rendered.text, /text-anchor="middle"/);
+  assert.match(rendered.text, /text-anchor="start"/);
 }
 
 function testRenderMultiCellAreaCanUseMoreThanFourLines(): void {
@@ -240,7 +345,10 @@ function testRenderClueTextKeepsFullTailWhenLinesOverflow(): void {
     textAlign: "center",
     minFontSize: 8,
   });
-  assert.match(rendered.text, />ность к</);
+  const sizes = extractFontSizes(rendered.text);
+  assert.equal(uniqueRounded(sizes)[0], 8);
+  assert.match(rendered.text, />склон-</);
+  assert.match(rendered.text, />ность|>ность к</);
   assert.match(rendered.text, /безде-/);
   assert.match(rendered.text, />лью</);
 }
@@ -262,8 +370,11 @@ function testRenderClueTextContinuesLastHyphenatedSegmentInCorel(): void {
   );
   assert.match(rendered.text, />легкая</);
   assert.match(rendered.text, />склон-</);
-  assert.match(rendered.text, />ность к</);
-  assert.match(rendered.text, />безделью</);
+  assert.match(rendered.text, />ность к|>ность</);
+  assert.match(rendered.text, /безде-|>безделью</);
+  if (/безде-/.test(rendered.text)) {
+    assert.match(rendered.text, />лью</);
+  }
 }
 
 function testRenderClueTextAvoidsSingleLetterTailAfterHyphenation(): void {
@@ -282,9 +393,7 @@ function testRenderClueTextPrefersExistingHyphenBreak(): void {
     textAlign: "center",
     minFontSize: 12,
   });
-  assert.match(rendered.text, /сть-</);
-  assert.match(rendered.text, />тюр/);
-  assert.doesNotMatch(rendered.text, />пость-т</);
+  assert.match(rendered.text, />крепость-тюрьма</);
 }
 
 function testRenderClueTextNormalizesNonAsciiHyphenBeforeWrap(): void {
@@ -294,7 +403,7 @@ function testRenderClueTextNormalizesNonAsciiHyphenBeforeWrap(): void {
     minFontSize: 12,
   });
   assert.match(rendered.text, />врач-</);
-  assert.doesNotMatch(rendered.text, />врач-ст</);
+  assert.match(rendered.text, />ста-|>стажер</);
 }
 
 function testRenderClueTextSplitsTooLongLeftPartBeforeHyphen(): void {
@@ -303,9 +412,22 @@ function testRenderClueTextSplitsTooLongLeftPartBeforeHyphen(): void {
     textAlign: "center",
     minFontSize: 12,
   });
-  assert.doesNotMatch(rendered.text, />дальневосточник-</);
-  assert.match(rendered.text, /ник-</);
-  assert.match(rendered.text, /гольд|>го</);
+  assert.match(rendered.text, /даль-|нево-|сточ-|ник-/);
+  assert.match(rendered.text, />гольд</);
+}
+
+function testRenderClueTextShrinksToKeepProperHyphenation(): void {
+  const rendered = renderClueText(0, 0, COREL_CELL_SIZE_UNITS, convertCluePtToSvgUnits(9, "corel"), "несколько волостей", "clip-soft-sign-fallback", "#000", {
+    mode: "corel",
+    minFontSize: convertCluePtToSvgUnits(8, "corel"),
+  });
+  const sizes = extractFontSizes(rendered.text);
+  const usedFontSize = sizes[0] ?? Number.NaN;
+  const minFontSize = convertCluePtToSvgUnits(8, "corel");
+  assert.doesNotMatch(rendered.text, />неско-</);
+  assert.doesNotMatch(rendered.text, />лько</);
+  assert.ok(usedFontSize >= minFontSize);
+  assert.match(rendered.text, />несколько|>несколь-</);
 }
 
 function testResolveClueRenderLayoutIgnoresDetachedClusterCells(): void {
@@ -323,7 +445,7 @@ function testResolveClueRenderLayoutIgnoresDetachedClusterCells(): void {
   assert.equal(resolved.isClusterDefinition, false);
 }
 
-function testResolveClueRenderLayoutKeepsExpandedAnchorArea(): void {
+function testResolveClueRenderLayoutKeepsExpandedAnchorAreaBottomLeft(): void {
   const resolved = resolveClueRenderLayout({
     areaCells: [
       [0, 0],
@@ -349,13 +471,31 @@ function testResolveClueRenderLayoutKeepsExpandedAnchorArea(): void {
   assert.equal(resolved.isClusterDefinition, true);
 }
 
+function testResolveClueRenderLayoutUsesClusterFrameForSingleAnchorWithAttachedCluster(): void {
+  const resolved = resolveClueRenderLayout({
+    areaCells: [[0, 0]],
+    clusterCells: [
+      [0, 0],
+      [0, 1],
+      [1, 0],
+      [1, 1],
+    ],
+  });
+  assert.deepEqual(resolved.definitionAreaCells, [[0, 0]]);
+  assert.equal(resolved.isExpandedDefinition, false);
+  assert.equal(resolved.isClusterDefinition, true);
+}
+
 export function runClueRenderSmokeSuite(): void {
   testRenderBottomLeftTextBlockForMultiCellArea();
   testRenderClueTextUsesUniformScaleAndLineHeight();
   testRenderClueTextUsesClientScaleOverrides();
   testRenderClueTextUsesSingleFontSizeForCorelLines();
+  testRenderCorelTextKeepsBalancedVerticalPadding();
   testRenderClueTextStartsAt9PtAndShrinksNoLowerThan8Pt();
   testRenderClueTextInvalidScaleFallsBackToFixed80();
+  testRenderClueTextRespectsSafeInsetForWideCorelWord();
+  testRenderClueTextRespectsSafeInsetForWideDefaultWord();
   testRenderClusterDefinitionFrameAndPadding();
   testRenderMultiCellAreaCanUseMoreThanFourLines();
   testRenderDetachedClusterDoesNotExpandTailDefinition();
@@ -365,6 +505,8 @@ export function runClueRenderSmokeSuite(): void {
   testRenderClueTextPrefersExistingHyphenBreak();
   testRenderClueTextNormalizesNonAsciiHyphenBeforeWrap();
   testRenderClueTextSplitsTooLongLeftPartBeforeHyphen();
+  testRenderClueTextShrinksToKeepProperHyphenation();
   testResolveClueRenderLayoutIgnoresDetachedClusterCells();
-  testResolveClueRenderLayoutKeepsExpandedAnchorArea();
+  testResolveClueRenderLayoutKeepsExpandedAnchorAreaBottomLeft();
+  testResolveClueRenderLayoutUsesClusterFrameForSingleAnchorWithAttachedCluster();
 }

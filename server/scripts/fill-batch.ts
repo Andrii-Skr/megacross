@@ -68,21 +68,21 @@ import {
   loadDefinitions,
   type DictionaryFilterTemplate,
 } from "../src/services/dictionary";
+import {
+  buildSolveRows,
+  findKeywordPlacements,
+  type FillTemplateKeywordCell,
+  type FillTemplateSetup,
+  resolveTemplateSetupForEntry,
+} from "../src/services/fillJobTemplateSetupService";
+import type { TemplateEntry } from "../src/services/fillJobTemplateService";
 import { buildCrw }            from "../src/utils/writeCrw";
 import { buildClueEntries } from "../src/utils/clues";
 import { Grid, Slot }    from "../src/types";
 import { buildAnswersOnlySvg } from "./answer-only-svg";
 import { buildCrosswordSvg } from "./crossword-svg";
-import {
-  CELL_STROKE_COLOR,
-  CELL_STROKE_WIDTH,
-  COREL_CELL_SIZE_UNITS,
-  COREL_MIN_SVG_HEIGHT_UNITS,
-  COREL_MIN_SVG_WIDTH_UNITS,
-  COREL_STROKE_WIDTH_UNITS,
-} from "./svg-theme";
+import { CELL_STROKE_COLOR } from "./svg-theme";
 
-const DEFAULT_CELL       = 30;        // px
 const SAMPLE_DIR = "sample";
 const OUT_DIR    = "out";
 const FILL_BATCH_RUN_LOG_FILE = join(OUT_DIR, "fill-batch-runs.log");
@@ -114,6 +114,12 @@ function areSetsEqual(left: Set<string>, right: Set<string>): boolean {
     if (!right.has(item)) return false;
   }
   return true;
+}
+
+function normalizeCliKeyword(value: string | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/g, "").trim();
+  return normalized ? normalized.toUpperCase() : null;
 }
 
 function pad2(value: number): string {
@@ -852,6 +858,76 @@ type BatchEntry = {
   stats: TemplateStats;
 };
 
+function toTemplateEntry(entry: BatchEntry): TemplateEntry {
+  return {
+    key: entry.key,
+    path: entry.path,
+    name: entry.name,
+    sourceName: basename(entry.path),
+    order: entry.order,
+    grid: entry.grid,
+    slots: entry.slots,
+    startNumberBySlotId: new Map<number, number>(),
+    startPositions: [],
+    lenCounts: entry.lenCounts,
+    stats: entry.stats,
+  };
+}
+
+function matchesKeywordTemplateSelector(entry: BatchEntry, selector: string): boolean {
+  const normalized = selector.trim().toLowerCase();
+  if (!normalized) return false;
+  const page = extractTemplateNumber(entry.name);
+  if (page !== null && String(page) === normalized) return true;
+  const candidates = [
+    entry.name,
+    basename(entry.path),
+    basename(entry.path, extname(entry.path)),
+    entry.key,
+  ];
+  return candidates.some((candidate) => candidate.trim().toLowerCase() === normalized);
+}
+
+function resolveKeywordTargetEntry(
+  entries: BatchEntry[],
+  keyword: string | null,
+  selector: string | undefined,
+): BatchEntry | null {
+  if (!keyword) return null;
+  const normalizedSelector = typeof selector === "string" ? selector.trim() : "";
+  if (!normalizedSelector) {
+    if (entries.length === 1) return entries[0] ?? null;
+    throw new Error(
+      `Keyword "${keyword}" requires a target template. Pass --keyword-template <name|number> or limit the run to one *.fsh`
+    );
+  }
+  const matches = entries.filter((entry) => matchesKeywordTemplateSelector(entry, normalizedSelector));
+  if (matches.length === 1) return matches[0] ?? null;
+  if (matches.length > 1) {
+    throw new Error(
+      `Keyword template selector "${selector}" is ambiguous: ${matches.map((entry) => entry.name).join(", ")}`
+    );
+  }
+  throw new Error(`Keyword template selector "${selector}" did not match any loaded template`);
+}
+
+function findConstraintViolation(
+  templateName: string,
+  solvedRows: string[],
+  constrainedLetters: Map<string, string>,
+): string | null {
+  for (const [cellKey, expectedLetter] of constrainedLetters) {
+    const [rowRaw, colRaw] = cellKey.split(",");
+    const row = Number(rowRaw);
+    const col = Number(colRaw);
+    if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || col < 0) continue;
+    const actualLetter = solvedRows[row]?.[col] ?? "";
+    if (actualLetter === expectedLetter) continue;
+    return `Template ${templateName}: solver ignored constrained cell (${row},${col}), expected ${expectedLetter}, got ${actualLetter || "empty"}`;
+  }
+  return null;
+}
+
 function resolveEntryPageNumber(entry: BatchEntry): number {
   const fromName = extractTemplateNumber(entry.name);
   if (fromName !== null) return fromName;
@@ -1296,6 +1372,9 @@ const parsedCli = (() => {
         "template-parallel": { type: "string" },
         sampleSubdir: { type: "string" },
         "sample-subdir": { type: "string" },
+        keyword: { type: "string" },
+        keywordTemplate: { type: "string" },
+        "keyword-template": { type: "string" },
         clueFontMinPt: { type: "string" },
         "clue-font-min-pt": { type: "string" },
       },
@@ -1381,34 +1460,13 @@ const templateParallel =
   Number.isFinite(templateParallelParsed) && templateParallelParsed > 1
     ? Math.floor(templateParallelParsed)
     : 1;
+const keyword = normalizeCliKeyword(typeof values.keyword === "string" ? values.keyword : undefined);
+const keywordTemplateSelector = values.keywordTemplate ?? values["keyword-template"];
 const writeDefsJson = !values["no-defs"] && !values["no-clues"];
 const useCorelStyle = styleName === "corel";
 if (!["default", "corel"].includes(styleName)) {
   console.warn(`Unknown SVG style "${values.style}", using default.`);
 }
-const CELL = useCorelStyle ? COREL_CELL_SIZE_UNITS : DEFAULT_CELL;
-const EMPTY_CELL_FILL = useCorelStyle ? "#FEFEFE" : "#fff";
-const STROKE_WIDTH = useCorelStyle ? COREL_STROKE_WIDTH_UNITS : CELL_STROKE_WIDTH;
-const SVG_PAD = STROKE_WIDTH / 2;
-const GRID_PAD = useCorelStyle ? 0 : SVG_PAD;
-const GRID_OFFSET_X = (useCorelStyle ? -CELL / 2 : 0) + GRID_PAD;
-const GRID_OFFSET_Y = (useCorelStyle ? -Math.round(CELL * 0.034) : 0) + GRID_PAD;
-const WORD_FONT_SIZE = useCorelStyle
-  ? Math.round(CELL * 0.565 * 1000) / 1000
-  : CELL * 0.6;
-const WORD_FONT_WEIGHT_ATTR = useCorelStyle ? ' font-weight="bold"' : "";
-const WORD_BASELINE_ATTR = useCorelStyle ? ' dominant-baseline="alphabetic"' : "";
-const WORD_TEXT_ANCHOR_ATTR = useCorelStyle ? ' text-anchor="start"' : "";
-const WORD_TEXT_Y = useCorelStyle ? CELL * 0.7 : CELL / 2;
-const SVG_WIDTH = useCorelStyle ? COREL_MIN_SVG_WIDTH_UNITS : 0;
-const SVG_HEIGHT = useCorelStyle ? COREL_MIN_SVG_HEIGHT_UNITS : 0;
-const SVG_XML_SPACE = useCorelStyle ? ' xml:space="preserve"' : "";
-const SVG_STYLE_ATTR = useCorelStyle
-  ? ' style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"'
-  : "";
-const SVG_PREAMBLE = useCorelStyle
-  ? '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
-  : "";
 const FONT_FAMILY = useCorelStyle ? "Arial" : "monospace";
 const DEBUG_CLUSTER_FILL = (() => {
   const raw = process.env.CROSS_ENABLE_02_AREA_EXPANSION;
@@ -1517,6 +1575,16 @@ if (!files.length) {
   if (!entries.length) {
     console.log("Нет валидных *.fsh для решения.");
     return;
+  }
+
+  const keywordTargetEntry = resolveKeywordTargetEntry(entries, keyword, keywordTemplateSelector);
+  const keywordSetupByEntryKey = new Map<string, FillTemplateSetup>();
+  if (keywordTargetEntry && keyword) {
+    keywordSetupByEntryKey.set(keywordTargetEntry.key, {
+      templateKey: keywordTargetEntry.key,
+      keyword,
+      fixedSlots: [],
+    });
   }
 
   /* 1. словарь на весь раунд */
@@ -1658,6 +1726,9 @@ if (!files.length) {
   console.log(
     `⚙ engine=${engineLabel} restarts=${restarts} parallel=${parallelLabel} templateParallel=${templateParallel} progress=${progressLabel} lcv=${doLcv ? "on" : "off"} shuffle=${shuffleOpt ? "on" : "off"} unique=${unique ? "on" : "off"} explainFail=${explainFailLabel} usageRebalance=${usageRebalanceReason} editionHotBan=${editionHotBanReason} solverStats=${solverStats ? "on" : "off"}`
   );
+  if (keyword && keywordTargetEntry) {
+    console.log(`🔑 keyword=${keyword} template=${keywordTargetEntry.name}`);
+  }
   if (templateParallel > 1 && unique) {
     console.log("🧪 template parallel mode: experimental under --unique (cross-template word pressure may differ run-to-run)");
   }
@@ -1751,10 +1822,107 @@ if (!files.length) {
     let failInfo: SolveFailInfo | null = null;
     let nativeActive = false;
     const useFailStdout = explainFail && !explainFailLite && nativeAvailable && parallelRestarts > 1;
+    const templateEntry = toTemplateEntry(entry);
+    const resolvedSetupResult = resolveTemplateSetupForEntry(
+      templateEntry,
+      masterDict,
+      keywordSetupByEntryKey.get(entry.key),
+    );
+    if (resolvedSetupResult.errors.length > 0) {
+      console.warn(`  ⚠ ${resolvedSetupResult.errors[0]}`);
+      failedCount += 1;
+      return;
+    }
+    const solveRowsBase = buildSolveRows(grid.data, resolvedSetupResult.resolved.fixedLetters);
+    const keywordPlacementsResult = resolvedSetupResult.resolved.keyword
+      ? findKeywordPlacements(
+        templateEntry,
+        masterDict,
+        resolvedSetupResult.resolved.fixedLetters,
+        resolvedSetupResult.resolved.keyword,
+        128,
+        { shuffle: shuffleOpt === true },
+      )
+      : null;
+    if (keywordPlacementsResult && "error" in keywordPlacementsResult) {
+      console.warn(`  ⚠ ${keywordPlacementsResult.error}`);
+      failedCount += 1;
+      return;
+    }
+    const placementAttempts = keywordPlacementsResult
+      ? keywordPlacementsResult.placements.map((placement) => ({
+          solveRows: buildSolveRows(grid.data, placement.letters),
+          constrainedLetters: placement.letters,
+          keywordResult: {
+            text: resolvedSetupResult.resolved.keyword as string,
+            cells: placement.cells,
+          },
+        }))
+      : [{
+          solveRows: solveRowsBase,
+          constrainedLetters: resolvedSetupResult.resolved.fixedLetters,
+          keywordResult: null as { text: string; cells: FillTemplateKeywordCell[] } | null,
+        }];
+    let currentSolveRows = placementAttempts[0]?.solveRows ?? solveRowsBase;
+    let constrainedLetters = placementAttempts[0]?.constrainedLetters ?? resolvedSetupResult.resolved.fixedLetters;
+    let keywordResult = placementAttempts[0]?.keywordResult ?? null;
+    if (resolvedSetupResult.resolved.keyword && placementAttempts.length > 1) {
+      console.log(`  🔑 placements → ${placementAttempts.length}`);
+    }
+    if (resolvedSetupResult.resolved.keyword && placementAttempts.length === 0) {
+      console.warn(`  ⚠ Template ${name}: keyword ${resolvedSetupResult.resolved.keyword} cannot be embedded into the template`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && !placementAttempts.length) {
+      console.warn(`  ⚠ Template ${name}: no keyword placements available`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && keywordPlacementsResult && "placements" in keywordPlacementsResult && !keywordPlacementsResult.placements.length) {
+      console.warn(`  ⚠ Template ${name}: no keyword placements available`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && placementAttempts[0] === undefined) {
+      console.warn(`  ⚠ Template ${name}: no keyword placements available`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && !placementAttempts[0]) {
+      console.warn(`  ⚠ Template ${name}: no keyword placements available`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && currentSolveRows.length === 0) {
+      console.warn(`  ⚠ Template ${name}: keyword placements produced empty solve rows`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && constrainedLetters.size === 0 && resolvedSetupResult.resolved.keyword) {
+      console.warn(`  ⚠ Template ${name}: keyword placements produced no constrained letters`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && keywordResult === null) {
+      console.warn(`  ⚠ Template ${name}: keyword placement was not initialized`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && keywordResult?.text !== resolvedSetupResult.resolved.keyword) {
+      console.warn(`  ⚠ Template ${name}: keyword placement mismatch`);
+      failedCount += 1;
+      return;
+    }
+    if (resolvedSetupResult.resolved.keyword && keywordResult?.cells.length !== resolvedSetupResult.resolved.keyword.length) {
+      console.warn(`  ⚠ Template ${name}: keyword placement length mismatch`);
+        failedCount += 1;
+        return;
+    }
 
-    try {
-      const logProgress = doProgress;
-      const onProgress = logProgress
+	    try {
+	      const logProgress = doProgress;
+	      const onProgress = logProgress
         ? (info: SolveProgress) => {
           if (nativeActive && useProgressStdout) return;
           if (info.elapsedMs < progressMinMs) return;
@@ -1765,14 +1933,23 @@ if (!files.length) {
           const stats = `rej=I:${info.stats.rejectIntersect} F:${info.stats.rejectForward} Z:${info.stats.zeroPick} bt=${info.stats.backtracks}`;
           console.log(
             `[progress][${info.label ?? "solve"}#${info.attempt}/${info.restarts}] ${sec}s nps=${info.nodesPerSec} nodes=${info.nodes} unfilled=${info.unfilled} depth=${info.depth} ${pick} ${stats}`
-          );
-        }
-        : undefined;
-
-      const solveStartedAt = Date.now();
-      const rebalanceLcvPrioritySlack =
-        !usageRebalance
-          ? 0
+	          );
+	        }
+	        : undefined;
+	      let solved: string[] | null = null;
+	      let solveMs = 0;
+	      let constraintViolation: string | null = null;
+	      for (const [placementIndex, placementAttempt] of placementAttempts.entries()) {
+	        currentSolveRows = placementAttempt.solveRows;
+	        constrainedLetters = placementAttempt.constrainedLetters;
+	        keywordResult = placementAttempt.keywordResult;
+	        failInfo = null;
+	        const solveStartedAt = Date.now();
+	      const shouldEmitPlacementFail =
+	        placementAttempts.length === 1 || placementIndex === placementAttempts.length - 1;
+	      const rebalanceLcvPrioritySlack =
+	        !usageRebalance
+	          ? 0
           : usageRebalanceMode === "aggressive"
             ? AGGRESSIVE_REBALANCE_LCV_PRIORITY_SLACK
             : usageRebalanceMode === "cost"
@@ -1781,7 +1958,7 @@ if (!files.length) {
       const onFail = explainFail && !explainFailLite
         ? (info: SolveFailInfo) => {
             failInfo = info;
-            if (!(nativeActive && useFailStdout)) {
+            if (shouldEmitPlacementFail && !(nativeActive && useFailStdout)) {
               console.warn(`  fail → ${formatFail(info)}`);
             }
           }
@@ -1832,8 +2009,8 @@ if (!files.length) {
         try {
           const nativeSolved =
             solverEngine === "csp"
-              ? await solveCspNativeAsync(grid.data, slots, dictForSolve, nativeOptions)
-              : await solveDlxNativeAsync(grid.data, slots, dictForSolve, nativeOptions);
+              ? await solveCspNativeAsync(currentSolveRows, slots, dictForSolve, nativeOptions)
+              : await solveDlxNativeAsync(currentSolveRows, slots, dictForSolve, nativeOptions);
           if (nativeSolved === undefined) {
             throw new Error(
               solverEngine === "csp"
@@ -1858,9 +2035,9 @@ if (!files.length) {
         }
       };
 
-      let solved: string[] | null = null;
-      const applyEditionHotBan = (baseBlockedWords: Set<string>) => {
-        if (!editionHotBan || !editionHotBannedWords.size) {
+	      solved = null;
+	      const applyEditionHotBan = (baseBlockedWords: Set<string>) => {
+	        if (!editionHotBan || !editionHotBannedWords.size) {
           return {
             blockedWords: baseBlockedWords,
             relaxedWords: new Set<string>(),
@@ -2027,7 +2204,7 @@ if (!files.length) {
               ? await (async () => {
                   const budget = resolveProbeBudget(maxNodes, maxMs);
                   let probeFailInfo: SolveFailInfo | null = null;
-                  const solvedProbe = await solveCspNativeAsync(grid.data, slots, strictDict, {
+                  const solvedProbe = await solveCspNativeAsync(currentSolveRows, slots, strictDict, {
                     engine: "csp",
                     nativeDlx: true,
                     shuffle: false,
@@ -2055,7 +2232,7 @@ if (!files.length) {
                     failInfo: probeFailInfo,
                   };
                 })()
-              : runDlxProbe(grid.data, slots, strictDict, {
+              : runDlxProbe(currentSolveRows, slots, strictDict, {
                   label: `${name}:probe`,
                   maxNodes,
                   maxMs,
@@ -2186,6 +2363,7 @@ if (!files.length) {
           usedWordCountByWord: usedWordCountInBatch,
           forbiddenWords: unique ? usedWordsInBatch : undefined,
           repeatPenalty: IN_BATCH_REPEAT_PRIORITY_MULTIPLIER,
+          fixedLetters: constrainedLetters,
         });
         usageCostMetrics.examinedCandidates += polish.examinedCandidates;
         if (polish.improved) {
@@ -2197,33 +2375,51 @@ if (!files.length) {
             `🧪 cost-polish: passes=${polish.passCount} replacements=${polish.replacements} delta=${polish.totalDeltaCost.toFixed(1)}`
           );
         }
-      }
-      const solveMs = Date.now() - solveStartedAt;
-      solveTotalMs += solveMs;
-      if (!solved) {
-        if (explainFail && !explainFailLite && !failInfo) {
-          failInfo = await waitForNativeFail();
-        }
-        const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
-        const solveSec = (solveMs / 1000).toFixed(2);
-        console.warn(`  ⚠ недостаточно слов (time=${elapsedSec}s solve=${solveSec}s)`);
-        if (explainFail) {
-          if (explainFailLite) {
-            console.warn("  причина → no-solution (lite)");
-          } else if (failInfo) {
-            console.warn(`  причина → ${formatFail(failInfo)}`);
-          }
-        }
-        failedCount += 1;
-        return;
-      }
+	      }
+	      solveMs = Date.now() - solveStartedAt;
+	      solveTotalMs += solveMs;
+	      constraintViolation = solved ? findConstraintViolation(name, solved, constrainedLetters) : null;
+	      if (solved && !constraintViolation) {
+	        break;
+	      }
+	      if (constraintViolation) {
+	        solved = null;
+	      }
+	      if (placementIndex < placementAttempts.length - 1) {
+	        continue;
+	      }
+	      if (!solved) {
+	        if (explainFail && !explainFailLite && !failInfo) {
+	          failInfo = await waitForNativeFail();
+	        }
+	        const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+	        const solveSec = (solveMs / 1000).toFixed(2);
+	        console.warn(`  ⚠ недостаточно слов (time=${elapsedSec}s solve=${solveSec}s)`);
+	        if (constraintViolation) {
+	          console.warn(`  причина → ${constraintViolation}`);
+	        } else if (explainFail) {
+	          if (explainFailLite) {
+	            console.warn("  причина → no-solution (lite)");
+	          } else if (failInfo) {
+	            console.warn(`  причина → ${formatFail(failInfo)}`);
+	          }
+	        }
+	        failedCount += 1;
+	        return;
+	      }
+	    }
+	      if (!solved) {
+	        failedCount += 1;
+	        return;
+	      }
+	      const solvedRows = solved;
 
-      if (unique) {
-        const usedHere = new Set<string>();
-        for (const slot of slots) {
-          const word = slot.cells.map(([r, c]) => solved[r][c]).join("");
-          const normalized = normalizeWordKey(word);
-          if (!normalized) continue;
+	      if (unique) {
+	        const usedHere = new Set<string>();
+	        for (const slot of slots) {
+	          const word = slot.cells.map(([r, c]) => solvedRows[r][c]).join("");
+	          const normalized = normalizeWordKey(word);
+	          if (!normalized) continue;
           usedHere.add(normalized);
           usedWordsInBatch.add(normalized);
           usedWordCountInBatch.set(normalized, (usedWordCountInBatch.get(normalized) ?? 0) + 1);
@@ -2231,17 +2427,17 @@ if (!files.length) {
         solvedWordsByEntry.set(key, usedHere);
       }
 
-      /* 5. SVG */
-      const usedWordsList = slots.map((s) =>
-        s.cells.map(([r, c]) => solved[r][c]).join("")
-      );
-      templateWordCounts.set(key, collectWordCounts(usedWordsList));
+	      /* 5. SVG */
+	      const usedWordsList = slots.map((s) =>
+	        s.cells.map(([r, c]) => solvedRows[r][c]).join("")
+	      );
+	      templateWordCounts.set(key, collectWordCounts(usedWordsList));
       const definitions = await loadDefinitions(usedWordsList, {
         langCode: definitionLangCode,
         ...(definitionWhere ? { definitionWhere } : {}),
       });
-      const clues = buildClueEntries(grid, slots, solved, definitions);
-      const { svg, svgRaw, usedWords } = buildCrosswordSvg(grid, slots, solved, definitions, {
+	      const clues = buildClueEntries(grid, slots, solvedRows, definitions);
+	      const { svg, svgRaw, usedWords } = buildCrosswordSvg(grid, slots, solvedRows, definitions, {
         style: useCorelStyle ? "corel" : "default",
         arrowMode: "batch",
         arrowScale: 0.6,
@@ -2253,8 +2449,9 @@ if (!files.length) {
         },
         type0Features: false,
         cellStrokeColor: CELL_STROKE_COLOR,
+        keyword: keywordResult,
       });
-      const svgAnswers = buildAnswersOnlySvg(grid, solved);
+	      const svgAnswers = buildAnswersOnlySvg(grid, solvedRows);
 
       /* 6. write */
       const dstDir = join(OUT_DIR, name);
@@ -2269,7 +2466,7 @@ if (!files.length) {
       }
 
       if (doCrw) {
-        const crw = buildCrw(grid, slots, solved, {
+	        const crw = buildCrw(grid, slots, solvedRows, {
           dictPath,
           templatePath: templatePath || path,
           lowerCaseWords: true,

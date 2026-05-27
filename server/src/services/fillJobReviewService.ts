@@ -1,6 +1,8 @@
 import { buildClueLayouts } from "../utils/clues";
 import type { SlotStart } from "../utils/grid";
 import { DIRS, type Grid, type Slot } from "../types";
+import type { FillTemplateKeywordCell } from "./fillJobTemplateSetupService";
+import type { ReviewWordImageOption } from "./fillWordImageService";
 
 export type ReviewDefinitionOption = {
   opredId: string | null;
@@ -31,6 +33,14 @@ export type ReviewSlot = {
   definition: string;
   definitionOptions: ReviewDefinitionOption[];
   isPhotoDefinition: boolean;
+  photoAreaBounds: {
+    minRow: number;
+    minCol: number;
+    maxRow: number;
+    maxCol: number;
+  } | null;
+  availableImages: ReviewWordImageOption[];
+  selectedImageId: string | null;
   intersections: ReviewSlotIntersection[];
   clueCell: { key: string; row: number; col: number } | null;
   startNumber: number | null;
@@ -56,6 +66,10 @@ export type ReviewTemplate = {
   slots: ReviewSlot[];
   clueGroups: ReviewClueGroup[];
   startPositions: ReviewStartPosition[];
+  keyword?: {
+    text: string;
+    cells: FillTemplateKeywordCell[];
+  } | null;
 };
 
 export type FillReviewPayload = {
@@ -230,12 +244,32 @@ function buildClueMaps(
   const groupByKey = new Map<string, ReviewClueGroup>();
   const photoCellKeys = new Set<string>();
   const photoBySlot = new Map<number, boolean>();
+  const photoBoundsByKey = new Map<
+    string,
+    {
+      minRow: number;
+      minCol: number;
+      maxRow: number;
+      maxCol: number;
+    }
+  >();
 
   for (const clue of photoClues) {
     const debugAreaCells = clue.clusterCells?.length ? clue.clusterCells : clue.areaCells;
     if (debugAreaCells.length <= 1) continue;
+    let minRow = Number.POSITIVE_INFINITY;
+    let minCol = Number.POSITIVE_INFINITY;
+    let maxRow = Number.NEGATIVE_INFINITY;
+    let maxCol = Number.NEGATIVE_INFINITY;
     for (const [row, col] of debugAreaCells) {
       photoCellKeys.add(`${row},${col}`);
+      minRow = Math.min(minRow, row);
+      minCol = Math.min(minCol, col);
+      maxRow = Math.max(maxRow, row);
+      maxCol = Math.max(maxCol, col);
+    }
+    if (Number.isFinite(minRow) && Number.isFinite(minCol) && Number.isFinite(maxRow) && Number.isFinite(maxCol)) {
+      photoBoundsByKey.set(clue.key, { minRow, minCol, maxRow, maxCol });
     }
   }
 
@@ -271,7 +305,7 @@ function buildClueMaps(
     return a.col - b.col;
   });
 
-  return { clueBySlot: bySlot, clueGroups, photoBySlot };
+  return { clueBySlot: bySlot, clueGroups, photoBySlot, photoBoundsByKey };
 }
 
 function pickPreferredDefinitionOption(
@@ -330,7 +364,13 @@ export function buildReviewTemplate(
   langId: number | null,
   selections: Map<string, ReviewWordSelection>,
   fallbackDefinitions: Map<string, string>,
-  usedDefinitionKeys?: Set<string>
+  wordImagesByWordId: Map<string, ReviewWordImageOption[]>,
+  usedDefinitionKeys?: Set<string>,
+  keyword?: {
+    text: string;
+    cells: FillTemplateKeywordCell[];
+  } | null,
+  previousTemplate?: ReviewTemplate | null,
 ): ReviewTemplate {
   const wordsBySlot = new Map<number, string>();
   entry.slots.forEach((slot) => {
@@ -340,12 +380,13 @@ export function buildReviewTemplate(
 
   const intersectionsBySlot = buildSlotIntersections(entry.slots, wordsBySlot);
   const clueLayoutDefinitions = buildClueLayoutDefinitions(wordsBySlot, selections, fallbackDefinitions);
-  const { clueBySlot, clueGroups, photoBySlot } = buildClueMaps(
+  const { clueBySlot, clueGroups, photoBySlot, photoBoundsByKey } = buildClueMaps(
     entry.grid,
     entry.slots,
     solved,
     clueLayoutDefinitions
   );
+  const previousSlotById = new Map((previousTemplate?.slots ?? []).map((slot) => [slot.slotId, slot]));
 
   const slots: ReviewSlot[] = entry.slots.map((slot) => {
     const word = wordsBySlot.get(slot.id) ?? "";
@@ -404,6 +445,18 @@ export function buildReviewTemplate(
       definition,
       definitionOptions: options,
       isPhotoDefinition: photoBySlot.get(slot.id) === true,
+      photoAreaBounds: (() => {
+        const clue = clueBySlot.get(slot.id);
+        return clue ? (photoBoundsByKey.get(clue.key) ?? null) : null;
+      })(),
+      availableImages: selection ? (wordImagesByWordId.get(String(selection.wordId)) ?? []) : [],
+      selectedImageId: (() => {
+        const previousSelectedImageId = previousSlotById.get(slot.id)?.selectedImageId ?? null;
+        const images = selection ? (wordImagesByWordId.get(String(selection.wordId)) ?? []) : [];
+        return previousSelectedImageId && images.some((image) => image.id === previousSelectedImageId)
+          ? previousSelectedImageId
+          : null;
+      })(),
       intersections: intersectionsBySlot.get(slot.id) ?? [],
       clueCell: clueBySlot.get(slot.id) ?? null,
       startNumber: entry.startNumberBySlotId.get(slot.id) ?? null,
@@ -422,5 +475,6 @@ export function buildReviewTemplate(
     slots,
     clueGroups,
     startPositions: entry.startPositions.map((item) => ({ ...item })),
+    keyword: keyword?.text ? { text: keyword.text, cells: keyword.cells.map((item) => ({ ...item })) } : null,
   };
 }

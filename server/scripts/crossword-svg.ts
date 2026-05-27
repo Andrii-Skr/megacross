@@ -31,7 +31,9 @@ const MM_PER_PT = 25.4 / 72;
 const DEFAULT_CELL = 30;
 const DEFAULT_TYPE0_CELL_MM = 8.5;
 const DEFAULT_TYPE0_NUMBER_FONT_PT = 10;
+const DEFAULT_KEYWORD_MARKER_FONT_PT = 10;
 const DEFAULT_TYPE0_OUTER_STROKE_MM = 2;
+const DEFAULT_KEYWORD_STROKE_MM = 0.75;
 const DEFAULT_TYPE0_OUTER_STROKE_COLOR = "#B2B3B3";
 const DEFAULT_TYPE0_BLOCK_FILL = "#B2B3B3";
 const DEFAULT_TYPE0_NUMBER_TEXT_FILL = "#2B2A29";
@@ -55,6 +57,10 @@ export type BuildCrosswordSvgOptions = {
   debugClusterFill?: boolean;
   debugClusterColor?: string;
   svgTypography?: CrosswordSvgTypography | null;
+  photoClues?: Array<{
+    clueKey: string;
+    href: string;
+  }>;
   type0Features?: boolean;
   type0CellMm?: number;
   type0NumberFontPt?: number;
@@ -63,7 +69,28 @@ export type BuildCrosswordSvgOptions = {
   type0BlockFill?: string;
   type0NumberTextFill?: string;
   cellStrokeColor?: string;
+  keyword?: {
+    text: string;
+    cells: Array<{ row: number; col: number; index: number }>;
+  } | null;
 };
+
+function buildAreaBounds(areaCells: Array<[number, number]>) {
+  let minRow = Number.POSITIVE_INFINITY;
+  let minCol = Number.POSITIVE_INFINITY;
+  let maxRow = Number.NEGATIVE_INFINITY;
+  let maxCol = Number.NEGATIVE_INFINITY;
+  for (const [row, col] of areaCells) {
+    minRow = Math.min(minRow, row);
+    minCol = Math.min(minCol, col);
+    maxRow = Math.max(maxRow, row);
+    maxCol = Math.max(maxCol, col);
+  }
+  if (!Number.isFinite(minRow) || !Number.isFinite(minCol) || !Number.isFinite(maxRow) || !Number.isFinite(maxCol)) {
+    return null;
+  }
+  return { minRow, minCol, maxRow, maxCol };
+}
 
 function escapeXmlAttr(value: string): string {
   return value
@@ -139,6 +166,18 @@ export function buildCrosswordSvg(
   const startNumberAscentRatio = 0.8;
   const startNumberBaselineAttr = ' dominant-baseline="alphabetic"';
   const startNumberByCell = showStartNumbers ? buildStartNumberByCell(slots) : new Map<string, number>();
+  const keywordMarkerFontSize = useCorelStyle
+    ? Math.round(DEFAULT_KEYWORD_MARKER_FONT_PT * MM_PER_PT * COREL_UNITS_PER_MM * 1000) / 1000
+    : Math.max(10, Math.floor(cell * 0.18));
+  const keywordMarkerOffsetX = cell * 0.11;
+  const keywordMarkerOffsetY = cell * 0.14;
+  const keywordMarkerAscentRatio = 0.8;
+  const keywordStrokeWidth = useCorelStyle
+    ? Math.round(DEFAULT_KEYWORD_STROKE_MM * COREL_UNITS_PER_MM * 1000) / 1000
+    : Math.max(2, Math.round(cell * 0.05 * 1000) / 1000);
+  const keywordMarkerByCell = new Map<string, number>(
+    (options.keyword?.cells ?? []).map((cell) => [`${cell.row},${cell.col}`, cell.index + 1] as const)
+  );
 
   const emptyCellFill = useCorelStyle ? "#FEFEFE" : "#fff";
   const svgWidthMin = useCorelStyle ? COREL_MIN_SVG_WIDTH_UNITS : 0;
@@ -156,6 +195,7 @@ export function buildCrosswordSvg(
   const usedWords = slots.map((slot) => slot.cells.map(([r, c]) => solved[r][c]).join("")).join("\n");
   const clueLayouts = buildClueLayouts(grid, slots, solved, definitions);
   const clueTextMap = buildClueTextMap(clueLayouts);
+  const photoClueMap = new Map((options.photoClues ?? []).map((item) => [item.clueKey, item.href] as const));
   const debugClusterCells = new Set<string>();
   if (debugClusterFill) {
     for (const layout of clueLayouts) {
@@ -275,26 +315,40 @@ export function buildCrosswordSvg(
         svgRawParts.push(rect);
 
         if (clueLayout?.text) {
-          const clipId = `clue-${row}-${col}`;
           const { definitionAreaCells, isExpandedDefinition, isClusterDefinition } =
             resolveClueRenderLayout(clueLayout);
-          const clueSvg = renderClueText(x, y, cell, clueFont, clueLayout.text, clipId, CLUE_TEXT_FILL, {
-            mode: clueMode,
-            areaCells: definitionAreaCells,
-            anchorCell: [row, col],
-            textAlign: isExpandedDefinition ? "bottom-left" : "center",
-            background: isExpandedDefinition ? "text-block" : "none",
-            backgroundInset: isExpandedDefinition ? strokeWidth : 0,
-            clusterFrame: isClusterDefinition ? "top-right" : "none",
-            clusterPadding: isClusterDefinition ? clusterDefinitionPadding : 0,
-            clusterBorderWidth: isClusterDefinition ? strokeWidth : 0,
-            minFontSize: clueMinFontSize,
-            glyphWidthScale: clueGlyphWidthScale,
-            lineHeightScale: clueLineHeightScale,
-          });
-          if (clueSvg.defs) clueDefs.push(clueSvg.defs);
-          clueLayer.push(clueSvg.text);
-          clueRawLayer.push(clueSvg.text);
+          const photoHref = photoClueMap.get(clueKey);
+          if (photoHref) {
+            const bounds = buildAreaBounds(definitionAreaCells);
+            if (bounds) {
+              const imageX = gridOffsetX + bounds.minCol * cell + strokeWidth;
+              const imageY = gridOffsetY + bounds.minRow * cell + strokeWidth;
+              const imageWidth = (bounds.maxCol - bounds.minCol + 1) * cell - strokeWidth * 2;
+              const imageHeight = (bounds.maxRow - bounds.minRow + 1) * cell - strokeWidth * 2;
+              const imageTag = `<image href="${escapeXmlAttr(photoHref)}" x="${imageX}" y="${imageY}" width="${imageWidth}" height="${imageHeight}" preserveAspectRatio="xMidYMid meet"/>`;
+              clueLayer.push(imageTag);
+              clueRawLayer.push(imageTag);
+            }
+          } else {
+            const clipId = `clue-${row}-${col}`;
+            const clueSvg = renderClueText(x, y, cell, clueFont, clueLayout.text, clipId, CLUE_TEXT_FILL, {
+              mode: clueMode,
+              areaCells: definitionAreaCells,
+              anchorCell: [row, col],
+              textAlign: isExpandedDefinition ? "bottom-left" : "center",
+              background: isExpandedDefinition ? "text-block" : "none",
+              backgroundInset: isExpandedDefinition ? strokeWidth : 0,
+              clusterFrame: isClusterDefinition ? "top-right" : "none",
+              clusterPadding: isClusterDefinition ? clusterDefinitionPadding : 0,
+              clusterBorderWidth: isClusterDefinition ? strokeWidth : 0,
+              minFontSize: clueMinFontSize,
+              glyphWidthScale: clueGlyphWidthScale,
+              lineHeightScale: clueLineHeightScale,
+            });
+            if (clueSvg.defs) clueDefs.push(clueSvg.defs);
+            clueLayer.push(clueSvg.text);
+            clueRawLayer.push(clueSvg.text);
+          }
         }
 
         const border = `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="none" stroke="${cellStrokeColor}" stroke-width="${strokeWidth}"/>`;
@@ -319,6 +373,17 @@ export function buildCrosswordSvg(
         const numberText = `<text x="${x + startNumberOffsetX}" y="${startNumberBaselineY}" font-size="${startNumberFontSize}" fill="${type0NumberTextFill}" text-anchor="start"${startNumberBaselineAttr}>${startNumber}</text>`;
         svgParts.push(numberText);
         svgRawParts.push(numberText);
+      }
+
+      const keywordMarker = keywordMarkerByCell.get(clueKey);
+      if (keywordMarker !== undefined) {
+        const keywordFrame = `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="none" stroke="${cellStrokeColor}" stroke-width="${keywordStrokeWidth}"/>`;
+        borderLayer.push(keywordFrame);
+        borderRawLayer.push(keywordFrame);
+        const keywordMarkerBaselineY = y + keywordMarkerOffsetY + keywordMarkerFontSize * keywordMarkerAscentRatio;
+        const markerText = `<text x="${x + keywordMarkerOffsetX}" y="${keywordMarkerBaselineY}" font-size="${keywordMarkerFontSize}" font-weight="bold" fill="${type0NumberTextFill}" text-anchor="start"${startNumberBaselineAttr}>${keywordMarker}</text>`;
+        svgParts.push(markerText);
+        svgRawParts.push(markerText);
       }
 
       const wordTextX = useCorelStyle ? resolveCenteredTextStartX(x, cell, ch, wordFontSize) : x + cell / 2;

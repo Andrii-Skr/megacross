@@ -68,16 +68,6 @@ const POS_OFFSETS: Record<number, [number, number]> = {
   9: [1, 1],
 };
 
-function isTruthyEnv(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return false;
-  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
-    return false;
-  }
-  return true;
-}
-
 function is02AreaExpansionEnabled(): boolean {
   return true;
 }

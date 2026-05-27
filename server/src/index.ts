@@ -12,7 +12,9 @@ import {
   regenerateFillJobTemplate,
   startFillJob,
   subscribeFillJob,
+  type FillJobOptions,
 } from "./services/fillJobService";
+import { parseTemplateSetupPayload } from "./services/fillJobTemplateSetupService";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -53,6 +55,7 @@ function parseFillOverrides(input: unknown) {
     usageRebalanceMode?: UsageRebalanceMode;
     editionHotBan?: boolean;
     filterTemplateId?: number;
+    templateSetup?: FillJobOptions["templateSetup"];
   } = {};
   if (raw.engine === "dlx" || raw.engine === "csp") overrides.engine = raw.engine;
   const maxNodes = Number(raw.maxNodes);
@@ -85,6 +88,9 @@ function parseFillOverrides(input: unknown) {
   const filterTemplateId = Number(raw.filterTemplateId);
   if (Number.isFinite(filterTemplateId) && filterTemplateId > 0) {
     overrides.filterTemplateId = Math.floor(filterTemplateId);
+  }
+  if (raw.templateSetup !== undefined) {
+    overrides.templateSetup = parseTemplateSetupPayload(raw.templateSetup);
   }
   return overrides;
 }
@@ -183,7 +189,10 @@ app.post("/api/fill/start", async (req, res) => {
     return;
   }
   try {
-    const overrides = parseFillOverrides(req.body?.options);
+    const overrides = parseFillOverrides({
+      ...(req.body?.options && typeof req.body.options === "object" ? req.body.options : {}),
+      templateSetup: req.body?.templateSetup,
+    });
     const job = await startFillJob(issueId, overrides);
     res.json(job);
   } catch (error) {

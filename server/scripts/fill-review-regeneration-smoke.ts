@@ -51,6 +51,9 @@ function makeReviewTemplate(key: string, name: string, word: string, definition:
         definition,
         definitionOptions: [{ opredId: `${order + 100}`, text: definition }],
         isPhotoDefinition: false,
+        photoAreaBounds: null,
+        availableImages: [],
+        selectedImageId: null,
         intersections: [],
         clueCell: { key: `${key}-0-0`, row: 0, col: 0 },
         startNumber: 1,
@@ -114,6 +117,7 @@ function runBuildReviewPayloadSmoke() {
       ],
     ]),
     new Map([["КОТ", "Кот"]]),
+    new Map(),
     new Set(),
   );
   const payload = buildFillReviewPayload(

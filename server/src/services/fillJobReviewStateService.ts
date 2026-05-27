@@ -19,6 +19,7 @@ export type ReviewSlotOverrideInput = {
   definition?: string | null;
   wordId?: string | null;
   opredId?: string | null;
+  imageId?: string | null;
 };
 
 export type ReviewTemplateOverrideInput = {
@@ -103,6 +104,7 @@ export function applyReviewTemplateOverrides(
               override.definition === undefined ? slot.definition : normalizeDefinitionText(override.definition),
             wordId: normalizeNullableString(override.wordId, slot.wordId),
             opredId: normalizeNullableString(override.opredId, slot.opredId),
+            selectedImageId: normalizeNullableString(override.imageId, slot.selectedImageId),
           };
         }),
       };
