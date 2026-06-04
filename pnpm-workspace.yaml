@@ -1,0 +1,4 @@
+packages:
+  - crossnext
+  - cross/server
+  - packages/*
