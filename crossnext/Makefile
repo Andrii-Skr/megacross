@@ -21,7 +21,8 @@ help:
 	@echo "Deploy: deploy-prod (wraps scripts/deploy-prod.sh)"
 
 ## One-command production deploy helper (wraps scripts/deploy-prod.sh)
-## Env: BRANCH=main MIGRATE=1 SEED=0 PRUNE=0 HEALTH_URL=http://127.0.0.1:3000/api/healthz
+## Env: BRANCH=main MIGRATE=1 SEED=0 PRUNE=0 HEALTH_URL=http://127.0.0.1:3000/api/healthz REPO_ROOT=/path/to/megacross
+## If REPO_ROOT is not a git repo, deploy falls back to syncing crossnext/cross separately.
 deploy-prod:
 	bash ./scripts/deploy-prod.sh
 	@echo "pgAdmin: pgadmin-up, pgadmin-logs, pgadmin-down, pgadmin-open"
