@@ -44,17 +44,6 @@
     "node": ">=20.19.0",
     "pnpm": ">=10.28.0"
   },
-  "pnpm": {
-    "overrides": {
-      "diff": "^4.0.4"
-    },
-    "onlyBuiltDependencies": [
-      "@prisma/client",
-      "@prisma/engines",
-      "esbuild",
-      "prisma"
-    ]
-  },
   "keywords": [],
   "author": "",
   "license": "ISC",

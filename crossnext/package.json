@@ -89,8 +89,8 @@
     "@types/pg": "^8.11.10",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitest/coverage-v8": "^2.1.9",
-    "@vitest/ui": "^2.1.9",
+    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/ui": "^4.1.0",
     "jsdom": "^25.0.1",
     "playwright": "^1.57.0",
     "prisma": "^7.8.0",
@@ -98,7 +98,7 @@
     "tsx": "^4.19.1",
     "tw-animate-css": "^1.3.8",
     "typescript": "^5",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.0"
   },
   "packageManager": "pnpm@11.3.0+sha512.2c403d6594527287672b1f7056343a1f7c3634036a67ffabfcc2b3d7595d843768f8787148d1b57cf7956c90606bbd192857c363af19e96d2d0ec9ec5741d215"
 }
