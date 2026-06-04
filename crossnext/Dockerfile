@@ -16,16 +16,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 FROM base AS deps
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ pkg-config \
   && rm -rf /var/lib/apt/lists/*
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY crossnext/package.json ./package.json
+COPY crossnext/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY crossnext/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY packages/cross-clues /packages/cross-clues
 # Copy Prisma schema (folder-based schema)
-COPY prisma/schema prisma/schema
+COPY crossnext/prisma/schema prisma/schema
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
   pnpm install --frozen-lockfile
 
 # ---- dev: hot-reload image ----
 FROM deps AS dev
 ENV NODE_ENV=development
-COPY . .
+COPY crossnext/. .
+COPY packages/cross-clues /packages/cross-clues
 RUN pnpm prisma generate
 EXPOSE 3000
 CMD ["pnpm","dev"]
@@ -40,7 +44,8 @@ ARG NEXTAUTH_SECRET=builder-secret-placeholder
 ARG NEXTAUTH_URL=http://localhost:3000
 ARG NEXT_PUBLIC_CROSS_API_URL=http://localhost:3001
 ENV NEXTAUTH_SECRET=$NEXTAUTH_SECRET NEXTAUTH_URL=$NEXTAUTH_URL NEXT_PUBLIC_CROSS_API_URL=$NEXT_PUBLIC_CROSS_API_URL
-COPY . .
+COPY crossnext/. .
+COPY packages/cross-clues /packages/cross-clues
 RUN pnpm prisma generate \
   && pnpm build \
   && pnpm prune --prod

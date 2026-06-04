@@ -1,0 +1,14 @@
+.git
+**/.git
+**/node_modules
+**/.pnpm-store
+**/.next
+**/out
+**/coverage
+**/dist
+**/test-results
+var
+crossnext/var
+cross/server/out
+*.log
+**/.DS_Store

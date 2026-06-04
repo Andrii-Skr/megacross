@@ -14,12 +14,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
   && rustc --version \
   && cargo --version \
   && rm -rf /var/lib/apt/lists/*
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY cross/server/package.json ./package.json
+COPY cross/server/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY cross/server/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY packages/cross-clues /packages/cross-clues
 RUN --mount=type=cache,id=cross-pnpm-store,target=/root/.local/share/pnpm/store \
   pnpm install --frozen-lockfile
 
 FROM deps AS native-builder
-COPY . .
+COPY cross/server/. .
+COPY packages/cross-clues /packages/cross-clues
 RUN --mount=type=cache,id=cross-cargo-registry,target=/root/.cargo/registry \
   --mount=type=cache,id=cross-cargo-git,target=/root/.cargo/git \
   pnpm exec napi build --release --cwd native/dlx-solver \
@@ -28,7 +32,8 @@ RUN --mount=type=cache,id=cross-cargo-registry,target=/root/.cargo/registry \
 FROM base AS runner
 ENV NODE_ENV=production PORT=3001
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY cross/server/. .
+COPY packages/cross-clues /packages/cross-clues
 COPY --from=native-builder /app/native/dlx-solver/dlx_solver.node /app/native/dlx-solver/dlx_solver.node
 RUN DATABASE_URL=postgresql://prisma:prisma@localhost:5432/prisma?schema=public pnpm prisma generate \
   && chmod +x /app/entrypoint.sh \
