@@ -1,0 +1,16 @@
+node_modules
+# Keep environment variables out of version control
+*.env
+*.DS_Store
+*.patch
+**/out/*
+**/sample/*
+server/generated/
+
+# Rust / native build artifacts
+**/target/
+**/*.node
+**/*.dylib
+**/*.so
+**/*.dll
+server/bak/test_26.02

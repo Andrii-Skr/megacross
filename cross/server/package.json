@@ -1,0 +1,76 @@
+{
+  "name": "cross",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "start": "pnpm exec tsx src/index.ts",
+    "fsh": "tsx scripts/fsh.ts",
+    "length-stats": "tsx scripts/length-stats.ts",
+    "fill-crw": "tsx scripts/fill-crw.ts",
+    "fill-export": "tsx scripts/fill-export.ts",
+    "fill-batch": "tsx scripts/fill-batch.ts",
+    "fill-batch-rebalance-loop": "tsx scripts/fill-batch-rebalance-loop.ts",
+    "test:usage-rebalance-smoke": "tsx scripts/usage-rebalance-smoke.ts",
+    "test:rebalance-cascade-smoke": "tsx scripts/rebalance-cascade-smoke.ts",
+    "test:edition-usage-snapshot-smoke": "tsx scripts/edition-usage-snapshot-smoke.ts",
+    "test:cost-soft-rebalance-smoke": "tsx scripts/cost-soft-rebalance-smoke.ts",
+    "test:cost-hard-first-rebalance-smoke": "tsx scripts/cost-hard-first-rebalance-smoke.ts",
+    "test:edition-hot-ban-smoke": "tsx scripts/edition-hot-ban-smoke.ts",
+    "test:solution-polish-smoke": "tsx scripts/solution-polish-smoke.ts",
+    "test:fill-review-regeneration-smoke": "tsx scripts/fill-review-regeneration-smoke.ts",
+    "test:solver-priority-slack-smoke": "tsx scripts/solver-priority-slack-smoke.ts",
+    "test:solver-csp-smoke": "tsx scripts/solver-csp-smoke.ts",
+    "test:solver-csp-parity-smoke": "tsx scripts/solver-csp-parity-smoke.ts",
+    "test:solver-csp-perf-smoke": "tsx scripts/solver-csp-perf-smoke.ts",
+    "test:clue-direction-compat-smoke": "tsx scripts/clue-direction-compat-smoke.ts",
+    "test:clue-layout-smoke": "tsx scripts/clue-layout-smoke.ts",
+    "test:clue-layout-snapshot": "tsx scripts/clue-layout-snapshot.ts",
+    "dev": "pnpm run fill-batch -- --native-dlx -s -u --style corel --lcv --restarts 4 --max-nodes 2000000 --parallel 2 -p --no-defs --explain-fail",
+    "lint": "biome check . --max-diagnostics none",
+    "lint:fix": "biome check --write --unsafe . --max-diagnostics none",
+    "format": "biome format .",
+    "format:fix": "biome format --write .",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:push": "prisma db push",
+    "prisma:pull": "prisma db pull",
+    "prisma:seed": "prisma db seed",
+    "prisma:studio": "BROWSER=none prisma studio"
+  },
+  "pnpm": {
+    "overrides": {
+      "diff": "^4.0.4"
+    },
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@swc/core",
+      "prisma"
+    ]
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@biomejs/biome": "2.3.11",
+    "@napi-rs/cli": "^3.5.1",
+    "@types/archiver": "^6.0.2",
+    "@types/node": "^24.0.12",
+    "prisma": "^7.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@megacross/cross-clues": "file:../../packages/cross-clues",
+    "@prisma/adapter-pg": "^7.0.0",
+    "@prisma/client": "^7.0.0",
+    "@types/express": "^5.0.3",
+    "archiver": "^7.0.1",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "hyphen": "^1.14.1"
+  },
+  "packageManager": "pnpm@10.28.1+sha512.7d7dbbca9e99447b7c3bf7a73286afaaf6be99251eb9498baefa7d406892f67b879adb3a1d7e687fc4ccc1a388c7175fbaae567a26ab44d1067b54fcb0d6a316"
+}

@@ -1,0 +1,2612 @@
+{
+  "generatedAt": "2026-04-27T12:57:18.821Z",
+  "templateCount": 241,
+  "skippedCount": 17,
+  "hash": "e4cd269849551c6d",
+  "templates": [
+    {
+      "file": "sample/01/10.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 9,
+      "entries": [
+        "1,10|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "10,8|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "18,12|a16|c0|t1",
+        "3,10|a1|c100|t1",
+        "5,10|a1|c100|t1",
+        "5,11|a1|c100|t1",
+        "7,10|a1|c100|t1",
+        "7,11|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/104.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,9|a1|c14|t1",
+        "8,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/105.fsh",
+      "slotCount": 75,
+      "layoutCount": 75,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "1,4|a20|c0|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/108.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,1|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/109.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,12|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/11.fsh",
+      "slotCount": 55,
+      "layoutCount": 55,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "0,3|a16|c0|t1",
+        "11,11|a1|c100|t1",
+        "14,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/111.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,1|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/116.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/117.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "12,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/121_америк.fsh",
+      "slotCount": 50,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/01/122.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "19,9|a1|c14|t1",
+        "2,4|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/123-1.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "10,7|a16|c0|t1",
+        "19,11|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/123.fsh",
+      "slotCount": 76,
+      "layoutCount": 76,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "10,9|a16|c0|t1",
+        "19,11|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/124.fsh",
+      "slotCount": 62,
+      "layoutCount": 62,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/125.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/128.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "19,11|a1|c14|t1",
+        "6,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/129.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 3,
+      "entries": [
+        "11,9|a20|c0|t1",
+        "18,10|a1|c14|t1",
+        "18,11|a1|c14|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/132.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/133.fsh",
+      "slotCount": 83,
+      "layoutCount": 83,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "14,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/136.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 5,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "11,0|a1|c100|t1",
+        "11,5|a1|c100|t1",
+        "13,10|a1|c100|t1",
+        "14,10|a1|c100|t1",
+        "21,10|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/137.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 3,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "19,9|a16|c0|t1",
+        "6,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/139.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,1|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/14-15_с вын.fsh",
+      "slotCount": 89,
+      "layoutCount": 89,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/01/142.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/143.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "0,12|a20|c0|t1",
+        "19,10|a1|c14|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/146.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,1|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/147.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "6,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/148_кроссворд.fsh",
+      "slotCount": 63,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/01/150.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/151.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "8,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/152.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 11,
+      "entries": [
+        "1,10|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "10,8|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "18,12|a16|c0|t1",
+        "3,10|a1|c100|t1",
+        "5,10|a1|c100|t1",
+        "5,11|a1|c100|t1",
+        "7,10|a1|c100|t1",
+        "7,11|a1|c100|t1",
+        "8,11|a1|c100|t1",
+        "8,12|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/153-1.fsh",
+      "slotCount": 61,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 7,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "10,7|a1|c100|t1",
+        "11,11|a1|c100|t1",
+        "11,6|a1|c100|t1",
+        "11,7|a1|c100|t1",
+        "13,5|a1|c100|t1",
+        "18,5|a1|c100|t1",
+        "9,7|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/153.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "11,11|a1|c100|t1",
+        "11,12|a1|c100|t1",
+        "11,6|a1|c100|t1",
+        "11,7|a1|c100|t1",
+        "13,5|a1|c100|t1",
+        "18,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/16.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,9|a1|c14|t1",
+        "3,1|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/17.fsh",
+      "slotCount": 77,
+      "layoutCount": 77,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "10,7|a16|c0|t1",
+        "19,10|a1|c14|t1",
+        "19,11|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/20.fsh",
+      "slotCount": 56,
+      "layoutCount": 56,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,2|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/21.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,12|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/22.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/23.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/25_елки.fsh",
+      "slotCount": 114,
+      "layoutCount": 114,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/01/26.fsh",
+      "slotCount": 55,
+      "layoutCount": 55,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "11,1|a1|c100|t1",
+        "11,3|a1|c100|t1",
+        "15,10|a1|c100|t1",
+        "17,10|a1|c100|t1",
+        "19,10|a1|c100|t1",
+        "21,10|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/27.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,7|a1|c100|t1",
+        "10,8|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "18,6|a16|c0|t1",
+        "6,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/28.fsh",
+      "slotCount": 75,
+      "layoutCount": 75,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/29.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,9|a1|c14|t1",
+        "4,6|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/3.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "8,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/31_кроссворд.fsh",
+      "slotCount": 56,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/01/32.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/33.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/34.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,0|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/35.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/38.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/39.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,12|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/4.fsh",
+      "slotCount": 75,
+      "layoutCount": 75,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "10,8|a16|c0|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/42.fsh",
+      "slotCount": 75,
+      "layoutCount": 75,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,11|a1|c14|t1",
+        "8,10|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/43.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "0,9|a16|c0|t1",
+        "19,11|a1|c14|t1",
+        "19,12|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/46.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 9,
+      "entries": [
+        "0,12|a16|c0|t1",
+        "11,1|a1|c100|t1",
+        "11,3|a1|c100|t1",
+        "11,8|a1|c100|t1",
+        "12,10|a1|c100|t1",
+        "13,10|a1|c100|t1",
+        "19,10|a1|c100|t1",
+        "19,11|a1|c100|t1",
+        "21,10|a1|c100|t1",
+        "21,11|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/47.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 4,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "18,0|a16|c0|t1",
+        "5,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/48.fsh",
+      "slotCount": 64,
+      "layoutCount": 64,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,7|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/49.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/5.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "11,6|a16|c0|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/51_итальянский.fsh",
+      "slotCount": 60,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/01/52.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/53.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,8|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/54.fsh",
+      "slotCount": 76,
+      "layoutCount": 76,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,3|a16|c0|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/55.fsh",
+      "slotCount": 76,
+      "layoutCount": 76,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "11,6|a16|c0|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/58.fsh",
+      "slotCount": 83,
+      "layoutCount": 83,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "18,0|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/59.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/6.fsh",
+      "slotCount": 63,
+      "layoutCount": 63,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "11,7|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/60.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/61.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "21,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/62.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "11,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/63.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,15|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/66-1.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/67.fsh",
+      "slotCount": 77,
+      "layoutCount": 77,
+      "expandedCount": 1,
+      "clusterCount": 5,
+      "entries": [
+        "10,9|a16|c0|t1",
+        "16,11|a1|c14|t1",
+        "17,11|a1|c14|t1",
+        "18,10|a1|c14|t1",
+        "18,11|a1|c14|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/68.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 11,
+      "entries": [
+        "0,12|a16|c0|t1",
+        "11,1|a1|c100|t1",
+        "11,3|a1|c100|t1",
+        "11,8|a1|c100|t1",
+        "12,10|a1|c100|t1",
+        "13,10|a1|c100|t1",
+        "15,10|a1|c100|t1",
+        "15,11|a1|c100|t1",
+        "17,10|a1|c100|t1",
+        "19,10|a1|c100|t1",
+        "20,10|a1|c100|t1",
+        "20,11|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/69-1.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 4,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "18,0|a16|c0|t1",
+        "5,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/69.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 4,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "18,0|a16|c0|t1",
+        "5,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/7.fsh",
+      "slotCount": 62,
+      "layoutCount": 62,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "18,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/72.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "18,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/73.fsh",
+      "slotCount": 83,
+      "layoutCount": 83,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "7,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/74.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "6,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/75.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/77.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,1|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/8.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "12,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/80-81_с вын.fsh",
+      "slotCount": 88,
+      "layoutCount": 88,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/01/82.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,4|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/83-1.fsh",
+      "slotCount": 62,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "18,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/83.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "18,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/86.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "8,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/87.fsh",
+      "slotCount": 77,
+      "layoutCount": 77,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "19,12|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/01/88.fsh",
+      "slotCount": 55,
+      "layoutCount": 55,
+      "expandedCount": 1,
+      "clusterCount": 7,
+      "entries": [
+        "0,10|a1|c100|t1",
+        "10,1|a1|c100|t1",
+        "10,3|a1|c100|t1",
+        "10,4|a1|c100|t1",
+        "21,9|a16|c0|t1",
+        "7,10|a1|c100|t1",
+        "7,11|a1|c100|t1",
+        "8,10|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/89-1.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 3,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "11,11|a1|c100|t1",
+        "13,5|a1|c100|t1",
+        "17,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/89.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 3,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "11,11|a1|c100|t1",
+        "13,5|a1|c100|t1",
+        "17,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/01/9.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "8,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/90.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "12,9|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/01/91.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/02/01_н.fsh",
+      "slotCount": 27,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/03.fsh",
+      "slotCount": 33,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/04.fsh",
+      "slotCount": 62,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/05.fsh",
+      "slotCount": 58,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/07_опр.fsh",
+      "slotCount": 52,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/08_н.fsh",
+      "slotCount": 47,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/09_н.fsh",
+      "slotCount": 56,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/11_самод.fsh",
+      "slotCount": 43,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/12_ф.fsh",
+      "slotCount": 58,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/13_ф.fsh",
+      "slotCount": 54,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/15_самод_ц.fsh",
+      "slotCount": 46,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/16_н.fsh",
+      "slotCount": 51,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/17_н.fsh",
+      "slotCount": 49,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/18.fsh",
+      "slotCount": 58,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/19.fsh",
+      "slotCount": 56,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/20_самод.fsh",
+      "slotCount": 43,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/21_о.fsh",
+      "slotCount": 40,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/22.fsh",
+      "slotCount": 57,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/23_анти.fsh",
+      "slotCount": 44,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/24.fsh",
+      "slotCount": 56,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/25.fsh",
+      "slotCount": 52,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/26_н.fsh",
+      "slotCount": 57,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/27_н.fsh",
+      "slotCount": 50,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/29.fsh",
+      "slotCount": 52,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/30.fsh",
+      "slotCount": 59,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/32.fsh",
+      "slotCount": 55,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/33_с б.fsh",
+      "slotCount": 52,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/34-35.fsh",
+      "slotCount": 121,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/36_ф.fsh",
+      "slotCount": 51,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/37_ф.fsh",
+      "slotCount": 58,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/38.fsh",
+      "slotCount": 58,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/40_н.fsh",
+      "slotCount": 51,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/41_н.fsh",
+      "slotCount": 59,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/42.fsh",
+      "slotCount": 65,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/43.fsh",
+      "slotCount": 62,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/44.fsh",
+      "slotCount": 51,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/45_анти.fsh",
+      "slotCount": 43,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/46_самод.fsh",
+      "slotCount": 40,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/47_о.fsh",
+      "slotCount": 43,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/48_н.fsh",
+      "slotCount": 57,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/49_н.fsh",
+      "slotCount": 48,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/50_ф.fsh",
+      "slotCount": 56,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/51_ф.fsh",
+      "slotCount": 54,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/53_самод.fsh",
+      "slotCount": 46,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/54.fsh",
+      "slotCount": 51,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/55.fsh",
+      "slotCount": 58,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/57_опр.fsh",
+      "slotCount": 62,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/59_самод_ц.fsh",
+      "slotCount": 44,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/60_н.fsh",
+      "slotCount": 54,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/61_н.fsh",
+      "slotCount": 54,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/62.fsh",
+      "slotCount": 52,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/02/63.fsh",
+      "slotCount": 60,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/10.fsh",
+      "slotCount": 55,
+      "layoutCount": 55,
+      "expandedCount": 1,
+      "clusterCount": 5,
+      "entries": [
+        "0,12|a16|c0|t1",
+        "11,1|a1|c100|t1",
+        "11,3|a1|c100|t1",
+        "17,10|a1|c100|t1",
+        "19,10|a1|c100|t1",
+        "21,10|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/104.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "10,9|a20|c0|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/105.fsh",
+      "slotCount": 83,
+      "layoutCount": 81,
+      "expandedCount": 0,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/108.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,9|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/109.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "6,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/11.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,11|a1|c100|t1",
+        "10,13|a1|c100|t1",
+        "10,15|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "18,0|a16|c0|t1",
+        "6,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/111.fsh",
+      "slotCount": 64,
+      "layoutCount": 63,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,4|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/116.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "7,9|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/117.fsh",
+      "slotCount": 87,
+      "layoutCount": 87,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/121_американский.fsh",
+      "slotCount": 55,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/122.fsh",
+      "slotCount": 77,
+      "layoutCount": 77,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/123-1.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "8,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/123.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "8,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/124.fsh",
+      "slotCount": 65,
+      "layoutCount": 65,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "11,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/125.fsh",
+      "slotCount": 63,
+      "layoutCount": 62,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,0|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/128.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "8,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/129.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,11|a1|c14|t1",
+        "3,3|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/132.fsh",
+      "slotCount": 83,
+      "layoutCount": 83,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "7,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/133.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "11,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/136.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 9,
+      "entries": [
+        "1,10|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "10,8|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "17,7|a16|c0|t1",
+        "3,10|a1|c100|t1",
+        "5,10|a1|c100|t1",
+        "6,10|a1|c100|t1",
+        "6,11|a1|c100|t1",
+        "7,11|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/137.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 3,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "11,9|a1|c100|t1",
+        "12,5|a1|c100|t1",
+        "17,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/139.fsh",
+      "slotCount": 62,
+      "layoutCount": 62,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/14-15_с вын.fsh",
+      "slotCount": 93,
+      "layoutCount": 93,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/142.fsh",
+      "slotCount": 83,
+      "layoutCount": 83,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "3,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/143.fsh",
+      "slotCount": 77,
+      "layoutCount": 77,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "9,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/146.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "7,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/147.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/148_кроссворд.fsh",
+      "slotCount": 56,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/150.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "9,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/151.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "8,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/152.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 12,
+      "entries": [
+        "0,12|a16|c0|t1",
+        "10,7|a1|c100|t1",
+        "11,0|a1|c100|t1",
+        "11,2|a1|c100|t1",
+        "11,7|a1|c100|t1",
+        "14,10|a1|c100|t1",
+        "16,10|a1|c100|t1",
+        "18,10|a1|c100|t1",
+        "18,11|a1|c100|t1",
+        "20,10|a1|c100|t1",
+        "20,11|a1|c100|t1",
+        "8,7|a1|c100|t1",
+        "9,7|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/153.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "10,8|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "21,3|a16|c0|t1",
+        "6,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/16.fsh",
+      "slotCount": 79,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "0,3|a16|c0|t1",
+        "19,10|a1|c14|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/17.fsh",
+      "slotCount": 76,
+      "layoutCount": 76,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "1,4|a20|c0|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/20.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "6,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/21.fsh",
+      "slotCount": 56,
+      "layoutCount": 56,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/22.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,11|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/23.fsh",
+      "slotCount": 82,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/25_елки.fsh",
+      "slotCount": 114,
+      "layoutCount": 114,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/26.fsh",
+      "slotCount": 56,
+      "layoutCount": 56,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "0,6|a16|c0|t1",
+        "11,11|a1|c100|t1",
+        "15,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/27.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "0,10|a1|c100|t1",
+        "0,11|a1|c100|t1",
+        "10,0|a1|c100|t1",
+        "10,10|a1|c100|t1",
+        "10,2|a1|c100|t1",
+        "19,9|a16|c0|t1",
+        "9,10|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/28.fsh",
+      "slotCount": 84,
+      "layoutCount": 84,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "9,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/29.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "12,6|a20|c0|t1",
+        "19,11|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/3.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "4,3|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/31_кроссворд.fsh",
+      "slotCount": 59,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/32.fsh",
+      "slotCount": 85,
+      "layoutCount": 84,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/33.fsh",
+      "slotCount": 82,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,9|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/34.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "6,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/35.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "4,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/38.fsh",
+      "slotCount": 83,
+      "layoutCount": 83,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "11,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/39.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "8,10|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/4.fsh",
+      "slotCount": 76,
+      "layoutCount": 76,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,3|a16|c0|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/42.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "19,9|a1|c14|t1",
+        "6,10|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/43.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "9,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/46.fsh",
+      "slotCount": 58,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 7,
+      "entries": [
+        "11,1|a1|c100|t1",
+        "11,3|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "12,10|a1|c100|t1",
+        "17,10|a1|c100|t1",
+        "19,10|a1|c100|t1",
+        "21,10|a1|c100|t1",
+        "7,10|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/47.fsh",
+      "slotCount": 55,
+      "layoutCount": 55,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "1,5|a1|c100|t1",
+        "10,7|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "17,10|a20|c0|t1",
+        "3,5|a1|c100|t1",
+        "9,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/48.fsh",
+      "slotCount": 62,
+      "layoutCount": 62,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "8,4|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/49.fsh",
+      "slotCount": 65,
+      "layoutCount": 65,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/5.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "12,9|a16|c0|t1",
+        "19,11|a1|c14|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/51_итальянский.fsh",
+      "slotCount": 59,
+      "layoutCount": 0,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/52.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,4|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/53.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "7,10|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/54.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 2,
+      "entries": [
+        "10,8|a20|c0|t1",
+        "18,10|a1|c14|t1",
+        "19,10|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/55.fsh",
+      "slotCount": 79,
+      "layoutCount": 79,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,11|a1|c14|t1",
+        "7,5|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/58.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "13,8|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/59.fsh",
+      "slotCount": 78,
+      "layoutCount": 78,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "12,8|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/6.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "7,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/60.fsh",
+      "slotCount": 65,
+      "layoutCount": 64,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,8|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/61.fsh",
+      "slotCount": 62,
+      "layoutCount": 62,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "18,0|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/62.fsh",
+      "slotCount": 85,
+      "layoutCount": 85,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,7|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/63.fsh",
+      "slotCount": 86,
+      "layoutCount": 85,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/66.fsh",
+      "slotCount": 81,
+      "layoutCount": 81,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "0,12|a16|c0|t1",
+        "19,12|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/67.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 3,
+      "entries": [
+        "0,9|a16|c0|t1",
+        "18,10|a1|c14|t1",
+        "19,10|a1|c14|t1",
+        "19,12|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/68-1.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 3,
+      "entries": [
+        "11,11|a1|c100|t1",
+        "11,6|a1|c100|t1",
+        "15,5|a1|c100|t1",
+        "3,1|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/68.fsh",
+      "slotCount": 59,
+      "layoutCount": 59,
+      "expandedCount": 1,
+      "clusterCount": 4,
+      "entries": [
+        "11,11|a1|c100|t1",
+        "11,6|a1|c100|t1",
+        "12,5|a1|c100|t1",
+        "17,5|a1|c100|t1",
+        "3,1|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/69.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 9,
+      "entries": [
+        "1,10|a1|c100|t1",
+        "10,5|a1|c100|t1",
+        "10,7|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "18,12|a16|c0|t1",
+        "3,10|a1|c100|t1",
+        "5,10|a1|c100|t1",
+        "6,10|a1|c100|t1",
+        "6,11|a1|c100|t1",
+        "7,10|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/7.fsh",
+      "slotCount": 58,
+      "layoutCount": 58,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "4,0|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/72.fsh",
+      "slotCount": 85,
+      "layoutCount": 85,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "10,9|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/73.fsh",
+      "slotCount": 83,
+      "layoutCount": 82,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/74.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "5,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/75.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/77.fsh",
+      "slotCount": 63,
+      "layoutCount": 63,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,7|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/8.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "11,8|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/80-81_с вын.fsh",
+      "slotCount": 92,
+      "layoutCount": 92,
+      "expandedCount": 0,
+      "clusterCount": 0,
+      "entries": []
+    },
+    {
+      "file": "sample/11/82.fsh",
+      "slotCount": 61,
+      "layoutCount": 61,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "3,0|a16|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/83.fsh",
+      "slotCount": 63,
+      "layoutCount": 63,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,4|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/86.fsh",
+      "slotCount": 77,
+      "layoutCount": 77,
+      "expandedCount": 1,
+      "clusterCount": 1,
+      "entries": [
+        "19,10|a1|c14|t1",
+        "9,9|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/87.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 4,
+      "entries": [
+        "10,8|a16|c0|t1",
+        "18,10|a1|c14|t1",
+        "18,11|a1|c14|t1",
+        "19,10|a1|c14|t1",
+        "19,9|a1|c14|t1"
+      ]
+    },
+    {
+      "file": "sample/11/88.fsh",
+      "slotCount": 57,
+      "layoutCount": 57,
+      "expandedCount": 1,
+      "clusterCount": 7,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,11|a1|c100|t1",
+        "10,13|a1|c100|t1",
+        "10,15|a1|c100|t1",
+        "10,5|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "18,4|a20|c0|t1",
+        "6,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/89.fsh",
+      "slotCount": 60,
+      "layoutCount": 60,
+      "expandedCount": 1,
+      "clusterCount": 6,
+      "entries": [
+        "0,5|a1|c100|t1",
+        "10,6|a1|c100|t1",
+        "10,8|a1|c100|t1",
+        "10,9|a1|c100|t1",
+        "11,9|a1|c100|t1",
+        "19,3|a16|c0|t1",
+        "6,5|a1|c100|t1"
+      ]
+    },
+    {
+      "file": "sample/11/9.fsh",
+      "slotCount": 80,
+      "layoutCount": 80,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,12|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/90.fsh",
+      "slotCount": 83,
+      "layoutCount": 83,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,6|a20|c0|t1"
+      ]
+    },
+    {
+      "file": "sample/11/91.fsh",
+      "slotCount": 85,
+      "layoutCount": 85,
+      "expandedCount": 1,
+      "clusterCount": 0,
+      "entries": [
+        "0,3|a16|c0|t1"
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "file": "sample/01/107_соты.fsh",
+      "error": "unsupported template type '9' in marker '9=E'"
+    },
+    {
+      "file": "sample/01/126_волшебные соты.fsh",
+      "error": "unsupported template type '9' in marker '9??'"
+    },
+    {
+      "file": "sample/01/127_круговой.fsh",
+      "error": "unsupported template type 'F' in marker 'F?D'"
+    },
+    {
+      "file": "sample/01/37_английский.fsh",
+      "error": "unexpected byte 0x3 at 12"
+    },
+    {
+      "file": "sample/01/93_чайнворд.fsh",
+      "error": "unsupported template type '3' in marker '3C='"
+    },
+    {
+      "file": "sample/02/10_соти.fsh",
+      "error": "unsupported template type '9' in marker '9;?'"
+    },
+    {
+      "file": "sample/02/14_числ.fsh",
+      "error": "solve failed"
+    },
+    {
+      "file": "sample/02/28_фил.fsh",
+      "error": "solve failed"
+    },
+    {
+      "file": "sample/02/31_соти.fsh",
+      "error": "unsupported template type '9' in marker '9;?'"
+    },
+    {
+      "file": "sample/02/39_фил.fsh",
+      "error": "solve failed"
+    },
+    {
+      "file": "sample/02/52_соти.fsh",
+      "error": "unsupported template type '9' in marker '9;?'"
+    },
+    {
+      "file": "sample/02/58_числ.fsh",
+      "error": "solve failed"
+    },
+    {
+      "file": "sample/11/107_соты.fsh",
+      "error": "unsupported template type '9' in marker '9=E'"
+    },
+    {
+      "file": "sample/11/126_волшебные соты.fsh",
+      "error": "unsupported template type '9' in marker '9??'"
+    },
+    {
+      "file": "sample/11/127_круговой.fsh",
+      "error": "unsupported template type 'F' in marker 'F?D'"
+    },
+    {
+      "file": "sample/11/37_английский.fsh",
+      "error": "unexpected byte 0x3 at 15"
+    },
+    {
+      "file": "sample/11/93_чайнворд.fsh",
+      "error": "unsupported template type '3' in marker '3C='"
+    }
+  ]
+}
