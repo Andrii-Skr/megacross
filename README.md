@@ -4,7 +4,6 @@ This repository is a staging monorepo that preserves history from:
 
 - `cross`
 - `crossnext`
-- `words`
 
 It also hosts shared workspace packages under `packages/`.
 
