@@ -40,13 +40,18 @@
     "prisma:seed": "prisma db seed",
     "prisma:studio": "BROWSER=none prisma studio"
   },
+  "engines": {
+    "node": ">=20.19.0",
+    "pnpm": ">=10.28.0"
+  },
   "pnpm": {
     "overrides": {
       "diff": "^4.0.4"
     },
     "onlyBuiltDependencies": [
       "@prisma/client",
-      "@swc/core",
+      "@prisma/engines",
+      "esbuild",
       "prisma"
     ]
   },
@@ -58,14 +63,14 @@
     "@napi-rs/cli": "^3.5.1",
     "@types/archiver": "^6.0.2",
     "@types/node": "^24.0.12",
-    "prisma": "^7.0.0",
+    "prisma": "^7.8.0",
     "tsx": "^4.20.6",
     "typescript": "^5.8.3"
   },
   "dependencies": {
     "@megacross/cross-clues": "file:../../packages/cross-clues",
     "@prisma/adapter-pg": "^7.0.0",
-    "@prisma/client": "^7.0.0",
+    "@prisma/client": "^7.8.0",
     "@types/express": "^5.0.3",
     "archiver": "^7.0.1",
     "dotenv": "^17.2.3",
