@@ -549,7 +549,7 @@ function extractPreviewArrowBounds(body: string): { minX: number; minY: number; 
 async function loadPreviewArrowAssets(): Promise<Record<number, PreviewArrowAsset>> {
   if (previewArrowAssetsPromise) return previewArrowAssetsPromise;
   previewArrowAssetsPromise = (async () => {
-    const baseDir = path.join(process.cwd(), "..", "cross", "server", "src", "arrows");
+    const baseDir = await resolvePreviewArrowBaseDir();
     const entries = await Promise.all(
       Object.entries(PREVIEW_ARROW_FILES).map(async ([rawCode, fileName]) => {
         const code = Number(rawCode);
@@ -605,6 +605,24 @@ async function loadPreviewArrowAssets(): Promise<Record<number, PreviewArrowAsse
     return Object.fromEntries(entries);
   })();
   return previewArrowAssetsPromise;
+}
+
+async function resolvePreviewArrowBaseDir(): Promise<string> {
+  const candidates = [
+    path.join(process.cwd(), "cross-arrows"),
+    path.join(process.cwd(), "..", "cross", "server", "src", "arrows"),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const stats = await stat(path.join(candidate, "01.svg"));
+      if (stats.isFile()) return candidate;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(`Preview arrow assets not found. Checked: ${candidates.join(", ")}`);
 }
 
 function buildPreviewArrowMarkupForCell(

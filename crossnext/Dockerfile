@@ -65,6 +65,7 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/prisma.config.ts ./prisma.config.ts
+COPY --chown=node:node cross/server/src/arrows ./cross-arrows
 # entrypoint for running migrations/seed on start
 COPY --from=builder --chown=node:node /app/entrypoint.sh ./entrypoint.sh
 COPY --from=builder --chown=node:node /app/sanitize-router-state-header.cjs ./sanitize-router-state-header.cjs
