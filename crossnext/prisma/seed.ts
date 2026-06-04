@@ -1,0 +1,313 @@
+import fs from "node:fs";
+import path from "node:path";
+import { PendingStatus, type Prisma, Role } from "@prisma/client";
+import { hash } from "bcrypt";
+import { z } from "zod";
+import { prisma } from "../lib/db";
+import { normalizeWordTextForLang } from "../lib/word-normalize";
+
+// ADMIN_* требуем только во время сидирования
+const seedEnvSchema = z.object({
+  ADMIN_LOGIN: z.string().min(1).default("admin"),
+  ADMIN_PASSWORD: z.string().min(8),
+  ADMIN_EMAIL: z.string().email().optional(),
+});
+
+// Try to populate ADMIN_PASSWORD from secret files if not provided via env
+(() => {
+  if (process.env.ADMIN_PASSWORD?.trim()) return;
+  const candidates = [
+    process.env.ADMIN_PASSWORD_FILE,
+    "/run/secrets/admin_password",
+    path.join(process.cwd(), "secrets/admin_password"),
+  ].filter(Boolean) as string[];
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) {
+        const val = fs.readFileSync(p, "utf8").trim();
+        if (val) {
+          process.env.ADMIN_PASSWORD = val;
+          break;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+})();
+
+const seedEnv = seedEnvSchema.parse({
+  ADMIN_LOGIN: process.env.ADMIN_LOGIN,
+  ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,
+  ADMIN_EMAIL: process.env.ADMIN_EMAIL,
+});
+
+async function ensureRole(code: Role) {
+  const row = await prisma.roleDb.upsert({
+    where: { code },
+    update: {},
+    create: { code },
+  });
+  return row.id;
+}
+
+async function seedAdmin() {
+  const emailFromEnv = seedEnv.ADMIN_EMAIL;
+
+  const existingByEmail = emailFromEnv ? await prisma.user.findUnique({ where: { email: emailFromEnv } }) : null;
+
+  const existingByLogin = await prisma.user.findFirst({
+    where: { name: seedEnv.ADMIN_LOGIN },
+  });
+  if (existingByEmail || existingByLogin) {
+    console.log("Admin user exists");
+    return existingByEmail || (existingByLogin as NonNullable<typeof existingByLogin>);
+  }
+
+  const passwordHash = await hash(seedEnv.ADMIN_PASSWORD, 12);
+  const adminRoleId = await ensureRole(Role.ADMIN);
+  const data: Parameters<typeof prisma.user.create>[0]["data"] = {
+    name: seedEnv.ADMIN_LOGIN,
+    passwordHash,
+    role: {
+      connect: { id: adminRoleId },
+    },
+  };
+  if (emailFromEnv) data.email = emailFromEnv;
+  const user = await prisma.user.create({ data });
+  console.log("Admin user created", {
+    login: seedEnv.ADMIN_LOGIN,
+    email: emailFromEnv,
+  });
+  return user;
+}
+
+async function seedPermissions() {
+  // Ensure permissions exist and descriptions are up to date
+  const defs = [
+    { code: "admin:access", description: "Allow access to admin UI" },
+    { code: "pending:review", description: "Review and moderate pending items" },
+    { code: "dictionary:write", description: "Create, update, delete words and definitions" },
+    { code: "tags:admin", description: "Access tag management in admin UI" },
+    { code: "tags:write", description: "Create, update, delete tags" },
+  ] as const;
+
+  const codeToId = new Map<string, number>();
+  for (const d of defs) {
+    const row = await prisma.permission.upsert({
+      where: { code: d.code },
+      update: { description: d.description },
+      create: { code: d.code, description: d.description },
+      select: { id: true },
+    });
+    codeToId.set(d.code, row.id);
+  }
+
+  // Assign permissions to roles
+  const assign = async (role: Role, codes: string[]) => {
+    const roleId = await ensureRole(role);
+    const permissionIds = codes.map((code) => codeToId.get(code)).filter((id): id is number => typeof id === "number");
+    if (!permissionIds.length) return;
+    await prisma.rolePermission.createMany({
+      data: permissionIds.map((permissionId) => ({ roleId, permissionId })),
+      skipDuplicates: true,
+    });
+  };
+
+  await assign(Role.ADMIN, ["admin:access", "pending:review", "dictionary:write", "tags:admin", "tags:write"]);
+  await assign("CHIEF_EDITOR_PLUS" as Role, [
+    "admin:access",
+    "pending:review",
+    "dictionary:write",
+    "tags:admin",
+    "tags:write",
+  ]);
+  await assign("CHIEF_EDITOR" as Role, [
+    "admin:access",
+    "pending:review",
+    "dictionary:write",
+    "tags:admin",
+    "tags:write",
+  ]);
+  await assign("EDITOR" as Role, ["dictionary:write", "tags:write"]);
+  await assign(Role.MANAGER, ["pending:review"]);
+  await assign(Role.USER, []);
+
+  console.log("Seeded permissions and role mappings");
+}
+
+async function upsertLanguage(code: string, name: string, wordReplaceMap?: Prisma.InputJsonValue) {
+  const existing = await prisma.language.findUnique({
+    where: { code },
+    select: { id: true, code: true, wordReplaceMap: true },
+  });
+  if (existing) {
+    if (wordReplaceMap !== undefined && existing.wordReplaceMap == null) {
+      return prisma.language.update({
+        where: { id: existing.id },
+        data: { wordReplaceMap },
+        select: { id: true, code: true, wordReplaceMap: true },
+      });
+    }
+    return existing;
+  }
+  return prisma.language.create({
+    data: { code, name, wordReplaceMap, updatedAt: new Date() },
+    select: { id: true, code: true, wordReplaceMap: true },
+  });
+}
+
+async function getOrCreateWord(
+  word_text: string,
+  langId: number,
+  langCode: string,
+  wordReplaceMap?: Prisma.JsonValue | null,
+) {
+  const existing = await prisma.word_v.findFirst({
+    where: { langId, word_text },
+  });
+  if (existing) return { id: existing.id };
+  return prisma.word_v.create({
+    data: {
+      word_text,
+      word_text_norm: normalizeWordTextForLang(word_text, langCode, wordReplaceMap),
+      length: word_text.length,
+      korny: "",
+      langId,
+    },
+    select: { id: true },
+  });
+}
+
+async function ensureOpred(word_id: bigint, text_opr: string, langId: number) {
+  const existing = await prisma.opred_v.findFirst({
+    where: { word_id, text_opr, langId },
+  });
+  if (existing) return existing;
+  return prisma.opred_v.create({
+    data: { word_id, text_opr, length: text_opr.length, textUpdatedAt: new Date(), langId },
+  });
+}
+
+async function seedDictionary() {
+  const ruReplaceMap = { "\u0451": "\u0435", "\u0439": "\u0438" };
+  const ru = await upsertLanguage("ru", "Русский", ruReplaceMap);
+  const en = await upsertLanguage("en", "English");
+
+  const wordRu = await getOrCreateWord("пример", ru.id, ru.code, ru.wordReplaceMap);
+  await ensureOpred(wordRu.id, "образец, пример", ru.id);
+  await ensureOpred(wordRu.id, "пример использования", ru.id);
+
+  const wordEn = await getOrCreateWord("example", en.id, en.code, en.wordReplaceMap);
+  await ensureOpred(wordEn.id, "an instance illustrating a rule", en.id);
+
+  return { ru, en, wordRuId: wordRu.id, wordEnId: wordEn.id };
+}
+
+async function seedTags() {
+  const names = ["общие", "пример", "важное", "grammar", "usage"];
+  for (const name of names) {
+    const exists = await prisma.tag.findFirst({ where: { name } });
+    if (!exists) {
+      await prisma.tag.create({ data: { name } });
+    }
+  }
+  console.log("Seeded tags:", names);
+}
+
+async function seedPending(ruId: number, enId: number, existingWordId: bigint) {
+  // Pending new word (no targetWordId)
+  const alreadyP1 = await prisma.pendingWords.findFirst({
+    where: { note: "seed: новая запись" },
+  });
+  const p1 = alreadyP1
+    ? { id: alreadyP1.id }
+    : await prisma.pendingWords.create({
+        data: {
+          word_text: "новинка",
+          length: "новинка".length,
+          langId: ruId,
+          note: "seed: новая запись",
+          descriptions: {
+            create: [
+              { description: "что-то новое", note: "кратко" },
+              { description: "новое понятие", note: "дополнение" },
+            ],
+          },
+        },
+        select: { id: true },
+      });
+
+  // Pending to existing word
+  const alreadyP2 = await prisma.pendingWords.findFirst({
+    where: { note: "seed: к существующему слову" },
+  });
+  const p2 = alreadyP2
+    ? { id: alreadyP2.id }
+    : await prisma.pendingWords.create({
+        data: {
+          word_text: "пример",
+          length: "пример".length,
+          langId: ruId,
+          note: "seed: к существующему слову",
+          targetWordId: existingWordId,
+          descriptions: {
+            create: [{ description: "ещё одно определение", note: "seed" }],
+          },
+        },
+        select: { id: true },
+      });
+
+  // Another pending in English
+  const alreadyP3 = await prisma.pendingWords.findFirst({
+    where: { note: "seed: english pending" },
+  });
+  const p3 = alreadyP3
+    ? { id: alreadyP3.id }
+    : await prisma.pendingWords.create({
+        data: {
+          word_text: "proposal",
+          length: "proposal".length,
+          langId: enId,
+          note: "seed: english pending",
+          descriptions: {
+            create: [{ description: "a suggested plan or idea", note: "seed" }],
+          },
+        },
+        select: { id: true },
+      });
+
+  // One rejected example
+  const alreadyRejected = await prisma.pendingWords.findFirst({
+    where: { note: "seed: rejected sample" },
+  });
+  if (!alreadyRejected) {
+    await prisma.pendingWords.create({
+      data: {
+        word_text: "отклонённое",
+        length: "отклонённое".length,
+        langId: ruId,
+        note: "seed: rejected sample",
+        status: PendingStatus.REJECTED,
+        descriptions: {
+          create: [{ description: "будет отклонено", note: "seed" }],
+        },
+      },
+    });
+  }
+
+  console.log("Seeded pending words:", { p1: p1.id, p2: p2.id, p3: p3.id });
+}
+
+async function main() {
+  await seedAdmin();
+  await seedPermissions();
+  const { ru, en, wordRuId } = await seedDictionary();
+  await seedTags();
+  await seedPending(ru.id, en.id, wordRuId);
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

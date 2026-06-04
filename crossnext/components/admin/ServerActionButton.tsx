@@ -1,0 +1,79 @@
+"use client";
+
+import { useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
+import type { ReactNode } from "react";
+import { useTransition } from "react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { getActionErrorMeta } from "@/lib/action-error";
+
+type ButtonProps = React.ComponentProps<typeof Button>;
+
+type Props = {
+  id: string;
+  action: (formData: FormData) => Promise<void>;
+  labelKey: string; // i18n key for button label
+  successKey: string; // i18n key for success toast
+  showLabel?: boolean;
+  ariaLabelKey?: string;
+} & Pick<ButtonProps, "variant" | "size" | "className">;
+
+export function ServerActionButton({
+  id,
+  action,
+  labelKey,
+  successKey,
+  variant,
+  size,
+  className,
+  onSuccess,
+  leftIcon,
+  showLabel = true,
+  ariaLabelKey,
+}: Props & { onSuccess?: () => void; leftIcon?: ReactNode }) {
+  const t = useTranslations();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const [pending, startTransition] = useTransition();
+  const shouldRenderLabel = showLabel || !leftIcon;
+
+  const handleClick = () => {
+    startTransition(async () => {
+      const fd = new FormData();
+      fd.set("id", id);
+      try {
+        await action(fd);
+        toast.success(t(successKey as never));
+        onSuccess?.();
+      } catch (err: unknown) {
+        const { code, status } = getActionErrorMeta(err);
+        if (code === "FORBIDDEN" || status === 403) {
+          toast.error(t("forbidden"));
+        } else {
+          toast.error(t("saveError"));
+        }
+      } finally {
+        // Invalidate dictionary lists so they refetch across pages
+        queryClient.invalidateQueries({ queryKey: ["dictionary"] });
+        router.refresh();
+      }
+    });
+  };
+
+  return (
+    <Button
+      onClick={handleClick}
+      disabled={pending}
+      variant={variant}
+      size={size}
+      className={className}
+      aria-label={!showLabel ? t((ariaLabelKey ?? labelKey) as never) : undefined}
+    >
+      {leftIcon}
+      {leftIcon && shouldRenderLabel ? " " : null}
+      {shouldRenderLabel ? t(labelKey as never) : null}
+    </Button>
+  );
+}

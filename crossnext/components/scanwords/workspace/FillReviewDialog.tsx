@@ -1,0 +1,2437 @@
+"use client";
+
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  CircleAlert,
+  CircleCheckBig,
+  CirclePlus,
+  Image,
+  Loader2,
+  SquarePen,
+} from "lucide-react";
+import NextImage from "next/image";
+import { useTranslations } from "next-intl";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Virtuoso } from "react-virtuoso";
+import { toast } from "sonner";
+import { type AddDefinitionCreatedPayload, AddDefinitionModal } from "@/components/dictionary/AddDefinitionModal";
+import { EditDefinitionModal } from "@/components/dictionary/EditDefinitionModal";
+import { type NewWordCreatedPayload, NewWordModal } from "@/components/dictionary/NewWordModal";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { getActionErrorMeta } from "@/lib/action-error";
+import { cn } from "@/lib/utils";
+import type {
+  FillDefinitionLimits,
+  FillFinalizePayload,
+  FillMaskCandidate,
+  FillPhotoAreaBounds,
+  FillReviewDefinitionOption,
+  FillReviewPayload,
+  FillReviewSlot,
+  FillReviewTemplate,
+  TemplateSetupPayload,
+  WordImageOption,
+} from "./model";
+import {
+  buildFinalizePayload,
+  buildInitialTemplateState,
+  buildPersistedRows,
+  buildSlotFixedLetters,
+  buildSlotIntersectionMask,
+  type EditableReviewSlotState as EditableSlot,
+  mapPersistedRowsByTemplate,
+  mergeTemplateStateWithDraft,
+  mergeTemplateStateWithTemplateSetup,
+  normalizeDefinitionKey,
+  normalizeDefinitionOptions,
+  normalizePersistedRows,
+  normalizeWordInput,
+  type PersistedReviewRow,
+  resolveSelectedImageId,
+  wordMatchesFixedLetters,
+} from "./reviewDraftState";
+
+type WordOption = {
+  value: string;
+  word: string;
+  wordId: string | null;
+  definitions: FillReviewDefinitionOption[];
+  availableImages: WordImageOption[];
+};
+
+type DefinitionExistingOption = {
+  id: string;
+  text: string;
+  lang?: "ru" | "uk" | "en";
+};
+
+type WordCreateTarget = {
+  templateKey: string;
+  slotId: number;
+  language: string;
+  length: number;
+  fixedLetters: Array<{ index: number; letter: string }>;
+};
+
+type DefinitionCreateTarget = {
+  templateKey: string;
+  slotId: number;
+  wordId: string;
+  word: string;
+  language: string;
+  existing: DefinitionExistingOption[];
+  openAnchor: { x: number; y: number };
+};
+
+type DefinitionEditTarget = {
+  templateKey: string;
+  slotId: number;
+  wordId: string;
+  opredId: string;
+  definition: string;
+};
+
+type FillReviewDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  reviewJobId: string | null;
+  reviewData: FillReviewPayload | null;
+  definitionLimits: FillDefinitionLimits;
+  templateSetup: TemplateSetupPayload | null;
+  loading: boolean;
+  finalizing: boolean;
+  error: string | null;
+  onFinalize: (payload: FillFinalizePayload) => Promise<void>;
+  onRequestCandidates: (params: {
+    templateKey: string;
+    slotId: number;
+    mask: string;
+    limit?: number;
+  }) => Promise<FillMaskCandidate[]>;
+};
+
+type ReviewListTab = "byTemplate" | "all";
+type ReviewListSortField = "word" | "definition";
+type ReviewListSortDirection = "asc" | "desc";
+
+type FlatReviewRow = {
+  template: FillReviewTemplate;
+  slot: FillReviewSlot;
+  row: EditableSlot;
+};
+
+const ALL_TAB_ERRORS_LIMIT = 80;
+
+const PENDING_DEFAULT_DEFINITION_DIFFICULTY = 3;
+
+function keyForRow(templateKey: string, slotId: number): string {
+  return `${templateKey}:${slotId}`;
+}
+
+function keyForWordOption(wordId: string | null, word: string): string {
+  return `${wordId ?? "new"}:${normalizeWordInput(word)}`;
+}
+
+function toSupportedLanguage(value: string): "ru" | "uk" | "en" | undefined {
+  if (value === "ru" || value === "uk" || value === "en") return value;
+  return undefined;
+}
+
+function normalizeDefinitionDifficulty(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value as number)) return null;
+  return Math.trunc(value as number);
+}
+
+type PersistedReviewDraft = {
+  version: 2;
+  rows: PersistedReviewRow[];
+};
+
+const REVIEW_DRAFT_STORAGE_PREFIX = "scanwords:fillReviewDraft:";
+const REVIEW_DRAFT_API_PATH = "/api/scanwords/fill-review-draft";
+const REVIEW_DRAFT_SAVE_DEBOUNCE_MS = 700;
+
+function buildReviewDraftStorageKey(reviewJobId: string): string {
+  return `${REVIEW_DRAFT_STORAGE_PREFIX}${reviewJobId}`;
+}
+
+function readPersistedReviewDraft(storageKey: string): Map<string, Map<number, PersistedReviewRow>> | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(storageKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      window.localStorage.removeItem(storageKey);
+      return null;
+    }
+    const payload = parsed as { version?: unknown; rows?: unknown };
+    if (payload.version !== 2 || !Array.isArray(payload.rows)) {
+      window.localStorage.removeItem(storageKey);
+      return null;
+    }
+    return mapPersistedRowsByTemplate(normalizePersistedRows(payload.rows));
+  } catch {
+    window.localStorage.removeItem(storageKey);
+    return null;
+  }
+}
+
+async function loadServerReviewDraft(
+  reviewJobId: string,
+): Promise<{ available: boolean; rows: Map<string, Map<number, PersistedReviewRow>> }> {
+  try {
+    const res = await fetch(`${REVIEW_DRAFT_API_PATH}?jobId=${encodeURIComponent(reviewJobId)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return { available: false, rows: new Map() };
+    }
+    const data = (await res.json()) as { available?: unknown; rows?: unknown };
+    const available = data?.available !== false;
+    if (!available) return { available: false, rows: new Map() };
+    const rows = normalizePersistedRows(data?.rows);
+    return { available: true, rows: mapPersistedRowsByTemplate(rows) };
+  } catch {
+    return { available: false, rows: new Map() };
+  }
+}
+
+async function saveServerReviewDraft(reviewJobId: string, rows: PersistedReviewRow[]): Promise<boolean> {
+  try {
+    const res = await fetch(REVIEW_DRAFT_API_PATH, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jobId: reviewJobId,
+        rows,
+      }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { available?: unknown };
+    return data?.available !== false;
+  } catch {
+    return false;
+  }
+}
+
+async function deleteServerReviewDraft(reviewJobId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${REVIEW_DRAFT_API_PATH}?jobId=${encodeURIComponent(reviewJobId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { available?: unknown };
+    return data?.available !== false;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupLegacyReviewDraftStorage() {
+  if (typeof window === "undefined") return;
+  const keys: string[] = [];
+  for (let i = 0; i < window.localStorage.length; i += 1) {
+    const key = window.localStorage.key(i);
+    if (!key || !key.startsWith(REVIEW_DRAFT_STORAGE_PREFIX)) continue;
+    keys.push(key);
+  }
+  for (const key of keys) {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      window.localStorage.removeItem(key);
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object") {
+        window.localStorage.removeItem(key);
+        continue;
+      }
+      const payload = parsed as { version?: unknown; rows?: unknown };
+      if (payload.version !== 2 || !Array.isArray(payload.rows)) {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
+function buildWordOptions(row: EditableSlot, candidates: FillMaskCandidate[]): WordOption[] {
+  const byKey = new Map<string, WordOption>();
+  const add = (
+    wordId: string | null,
+    word: string,
+    definitions: FillReviewDefinitionOption[],
+    availableImages: WordImageOption[],
+  ) => {
+    const normalizedWord = normalizeWordInput(word);
+    if (!normalizedWord) return;
+    const value = keyForWordOption(wordId, normalizedWord);
+    if (byKey.has(value)) return;
+    byKey.set(value, {
+      value,
+      word: normalizedWord,
+      wordId,
+      definitions: normalizeDefinitionOptions(definitions),
+      availableImages,
+    });
+  };
+
+  add(row.wordId, row.word, row.definitionOptions, row.availableImages);
+  for (const candidate of candidates) {
+    add(candidate.wordId ?? null, candidate.word, candidate.definitions ?? [], candidate.availableImages ?? []);
+  }
+
+  return [...byKey.values()];
+}
+
+function buildPhotoAreaSize(bounds: FillPhotoAreaBounds | null | undefined): { width: number; height: number } | null {
+  if (!bounds) return null;
+  const width = bounds.maxCol - bounds.minCol + 1;
+  const height = bounds.maxRow - bounds.minRow + 1;
+  if (!(width > 0) || !(height > 0)) return null;
+  return { width, height };
+}
+
+function pickDefaultImageId(images: WordImageOption[], preferredImageId?: string | null): string | null {
+  return resolveSelectedImageId(images, preferredImageId);
+}
+
+function buildDefinitionClueGroups(template: FillReviewTemplate) {
+  const byKey = new Map<
+    string,
+    {
+      key: string;
+      row: number;
+      col: number;
+      slotIds: number[];
+      areaCellCount: number;
+    }
+  >();
+  for (const group of template.clueGroups ?? []) {
+    const normalizedAreaCellCount = Number.isFinite(group.areaCellCount)
+      ? Math.max(1, Math.trunc(group.areaCellCount ?? 1))
+      : 1;
+    byKey.set(group.key, {
+      key: group.key,
+      row: group.row,
+      col: group.col,
+      slotIds: [...group.slotIds],
+      areaCellCount: normalizedAreaCellCount,
+    });
+  }
+  for (const slot of template.slots) {
+    const clue = slot.clueCell;
+    if (!clue) continue;
+    const group = byKey.get(clue.key) ?? {
+      key: clue.key,
+      row: clue.row,
+      col: clue.col,
+      slotIds: [],
+      areaCellCount: 1,
+    };
+    if (!group.areaCellCount || group.areaCellCount < 1) {
+      group.areaCellCount = 1;
+    }
+    if (!group.slotIds.includes(slot.slotId)) {
+      group.slotIds.push(slot.slotId);
+    }
+    byKey.set(clue.key, group);
+  }
+  return [...byKey.values()].map((group) => ({
+    ...group,
+    slotIds: [...group.slotIds].sort((a, b) => a - b),
+  }));
+}
+
+function extractTemplateNumber(value: string): number | null {
+  const match = value.trim().match(/^(\d{1,6})(?=\D|$)/u);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
+
+function resolveTemplatePageNumber(template: FillReviewTemplate): number {
+  const fromName = extractTemplateNumber(template.name);
+  if (fromName !== null) return fromName;
+  const fromSource = extractTemplateNumber(template.sourceName);
+  if (fromSource !== null) return fromSource;
+  return template.order + 1;
+}
+
+function resolveSpreadIndex(page: number): number {
+  return Math.floor((page - 1) / 2);
+}
+
+function buildTemplateNeighborMap(templates: FillReviewTemplate[]): Map<string, Set<string>> {
+  const spreadByKey = new Map<string, number>();
+  const keysBySpread = new Map<number, string[]>();
+
+  for (const template of templates) {
+    const spread = resolveSpreadIndex(resolveTemplatePageNumber(template));
+    spreadByKey.set(template.key, spread);
+    const list = keysBySpread.get(spread) ?? [];
+    list.push(template.key);
+    keysBySpread.set(spread, list);
+  }
+
+  const neighbors = new Map<string, Set<string>>();
+  for (const template of templates) {
+    const spread = spreadByKey.get(template.key);
+    if (spread === undefined) continue;
+    const set = new Set<string>();
+    for (const candidateSpread of [spread - 1, spread, spread + 1]) {
+      const keys = keysBySpread.get(candidateSpread);
+      if (!keys) continue;
+      for (const key of keys) {
+        if (key !== template.key) set.add(key);
+      }
+    }
+    neighbors.set(template.key, set);
+  }
+  return neighbors;
+}
+
+export function FillReviewDialog({
+  open,
+  onOpenChange,
+  reviewJobId,
+  reviewData,
+  definitionLimits,
+  templateSetup,
+  loading,
+  finalizing,
+  error,
+  onFinalize,
+  onRequestCandidates,
+}: FillReviewDialogProps) {
+  const t = useTranslations();
+  const [reviewTab, setReviewTab] = useState<ReviewListTab>("byTemplate");
+  const [allRowsSortField, setAllRowsSortField] = useState<ReviewListSortField>("word");
+  const [allRowsSortDirection, setAllRowsSortDirection] = useState<ReviewListSortDirection>("asc");
+  const [allRowsSearchQuery, setAllRowsSearchQuery] = useState("");
+  const [allRowsShowDuplicatesOnly, setAllRowsShowDuplicatesOnly] = useState(false);
+  const [allRowsShowErrorsOnly, setAllRowsShowErrorsOnly] = useState(false);
+  const [allRowsShowPhotoOnly, setAllRowsShowPhotoOnly] = useState(false);
+  const [dialogScrollParent, setDialogScrollParent] = useState<HTMLElement | null>(null);
+  const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
+  const [slotsByTemplate, setSlotsByTemplate] = useState<Record<string, EditableSlot[]>>({});
+  const [candidateMap, setCandidateMap] = useState<Record<string, FillMaskCandidate[]>>({});
+  const [candidateLoadingKey, setCandidateLoadingKey] = useState<string | null>(null);
+  const [wordCreateTarget, setWordCreateTarget] = useState<WordCreateTarget | null>(null);
+  const [definitionCreateTarget, setDefinitionCreateTarget] = useState<DefinitionCreateTarget | null>(null);
+  const [definitionEditTarget, setDefinitionEditTarget] = useState<DefinitionEditTarget | null>(null);
+  const [finalizeConfirmationOpen, setFinalizeConfirmationOpen] = useState(false);
+  const [finalizeConfirmationInput, setFinalizeConfirmationInput] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [imageBusyRowKey, setImageBusyRowKey] = useState<string | null>(null);
+  const [imageErrorByRowKey, setImageErrorByRowKey] = useState<Record<string, string | null>>({});
+  const draftStorageKey = useMemo(() => (reviewJobId ? buildReviewDraftStorageKey(reviewJobId) : null), [reviewJobId]);
+  const draftStorageDisabledRef = useRef(false);
+  const draftRemoteEnabledRef = useRef(false);
+  const draftPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const moderationCreatedRef = useRef<{
+    newWords: Set<string>;
+    newDefinitions: Set<string>;
+  }>({
+    newWords: new Set<string>(),
+    newDefinitions: new Set<string>(),
+  });
+
+  const templates = useMemo(() => {
+    if (!reviewData?.templates) return [];
+    return [...reviewData.templates].sort((a, b) => {
+      if (a.order !== b.order) return a.order - b.order;
+      return a.name.localeCompare(b.name, "ru");
+    });
+  }, [reviewData?.templates]);
+  const finalizeConfirmKeyword = t("scanwordsReviewFinalizeConfirmKeyword");
+  const finalizeConfirmationMatched =
+    finalizeConfirmationInput.trim().toLocaleUpperCase() === finalizeConfirmKeyword.trim().toLocaleUpperCase();
+  const templateNeighbors = useMemo(() => buildTemplateNeighborMap(templates), [templates]);
+
+  useEffect(() => {
+    let active = true;
+    if (!templates.length) {
+      setSelectedTemplateKey(null);
+      setSlotsByTemplate({});
+      setCandidateMap({});
+      moderationCreatedRef.current.newWords.clear();
+      moderationCreatedRef.current.newDefinitions.clear();
+      setDraftHydrated(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setDraftHydrated(false);
+    const hydrate = async () => {
+      draftStorageDisabledRef.current = false;
+      draftRemoteEnabledRef.current = false;
+      cleanupLegacyReviewDraftStorage();
+      const persistedLocalDraft = draftStorageKey ? readPersistedReviewDraft(draftStorageKey) : null;
+      let persistedServerDraft: Map<string, Map<number, PersistedReviewRow>> | null = null;
+
+      if (reviewJobId) {
+        const remoteDraft = await loadServerReviewDraft(reviewJobId);
+        if (!active) return;
+        draftRemoteEnabledRef.current = remoteDraft.available;
+        persistedServerDraft = remoteDraft.rows;
+      }
+
+      const persistedDraft =
+        draftRemoteEnabledRef.current && persistedServerDraft != null ? persistedServerDraft : persistedLocalDraft;
+
+      const initial: Record<string, EditableSlot[]> = {};
+      for (const template of templates) {
+        const initialRows = mergeTemplateStateWithTemplateSetup(
+          template.key,
+          buildInitialTemplateState(template),
+          templateSetup,
+        );
+        initial[template.key] = mergeTemplateStateWithDraft(initialRows, persistedDraft?.get(template.key));
+      }
+      const hydrateImageRequests: Array<Promise<void>> = [];
+      for (const template of templates) {
+        const serverSlotById = new Map(template.slots.map((slot) => [slot.slotId, slot]));
+        for (const row of initial[template.key] ?? []) {
+          const serverSlot = serverSlotById.get(row.slotId);
+          if (!row.wordId) continue;
+          const needsImages =
+            row.wordId !== (serverSlot?.wordId ?? null) ||
+            (row.selectedImageId != null && !row.availableImages.some((image) => image.id === row.selectedImageId));
+          if (!needsImages) continue;
+          const wordId = row.wordId;
+          hydrateImageRequests.push(
+            (async () => {
+              try {
+                const response = await fetch(`/api/dictionary/word/${encodeURIComponent(wordId)}/images`, {
+                  method: "GET",
+                  cache: "no-store",
+                });
+                const payload = (await response.json().catch(() => ({}))) as { images?: WordImageOption[] };
+                if (!response.ok || !Array.isArray(payload.images)) return;
+                row.availableImages = payload.images;
+                row.selectedImageId = pickDefaultImageId(payload.images, row.selectedImageId);
+              } catch {
+                // Keep draft word/definition even if image metadata fails to hydrate.
+              }
+            })(),
+          );
+        }
+      }
+      if (hydrateImageRequests.length > 0) {
+        await Promise.all(hydrateImageRequests);
+      }
+      if (!active) return;
+
+      setSlotsByTemplate(initial);
+      setCandidateMap({});
+      moderationCreatedRef.current.newWords.clear();
+      moderationCreatedRef.current.newDefinitions.clear();
+      setSelectedTemplateKey((prev) => (prev && initial[prev] ? prev : (templates[0]?.key ?? null)));
+      setDraftHydrated(true);
+    };
+
+    void hydrate();
+    return () => {
+      active = false;
+      if (draftPersistTimeoutRef.current) {
+        clearTimeout(draftPersistTimeoutRef.current);
+        draftPersistTimeoutRef.current = null;
+      }
+    };
+  }, [draftStorageKey, reviewJobId, templateSetup, templates]);
+
+  useEffect(() => {
+    if (!draftHydrated) return;
+    if (!templates.length) return;
+    if (!Object.keys(slotsByTemplate).length) return;
+    if (typeof window === "undefined") return;
+    const rows = buildPersistedRows(templates, slotsByTemplate);
+
+    const persistLocally = () => {
+      if (!draftStorageKey) return;
+      if (draftStorageDisabledRef.current) return;
+      if (rows.length === 0) {
+        window.localStorage.removeItem(draftStorageKey);
+        return;
+      }
+      const payload: PersistedReviewDraft = {
+        version: 2,
+        rows,
+      };
+      try {
+        window.localStorage.setItem(draftStorageKey, JSON.stringify(payload));
+      } catch {
+        cleanupLegacyReviewDraftStorage();
+        try {
+          window.localStorage.setItem(draftStorageKey, JSON.stringify(payload));
+        } catch {
+          draftStorageDisabledRef.current = true;
+        }
+      }
+    };
+
+    if (draftPersistTimeoutRef.current) {
+      clearTimeout(draftPersistTimeoutRef.current);
+      draftPersistTimeoutRef.current = null;
+    }
+
+    draftPersistTimeoutRef.current = setTimeout(() => {
+      void (async () => {
+        if (reviewJobId && draftRemoteEnabledRef.current) {
+          if (rows.length === 0) {
+            const cleared = await deleteServerReviewDraft(reviewJobId);
+            if (cleared) {
+              if (draftStorageKey) window.localStorage.removeItem(draftStorageKey);
+              return;
+            }
+          } else {
+            const saved = await saveServerReviewDraft(reviewJobId, rows);
+            if (saved) {
+              if (draftStorageKey) window.localStorage.removeItem(draftStorageKey);
+              return;
+            }
+          }
+          draftRemoteEnabledRef.current = false;
+        }
+        persistLocally();
+      })();
+    }, REVIEW_DRAFT_SAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (draftPersistTimeoutRef.current) {
+        clearTimeout(draftPersistTimeoutRef.current);
+        draftPersistTimeoutRef.current = null;
+      }
+    };
+  }, [draftHydrated, draftStorageKey, reviewJobId, slotsByTemplate, templates]);
+
+  useEffect(() => {
+    if (open) return;
+    setWordCreateTarget(null);
+    setDefinitionCreateTarget(null);
+    setDefinitionEditTarget(null);
+    setFinalizeConfirmationOpen(false);
+    setFinalizeConfirmationInput("");
+  }, [open]);
+
+  const templateByKey = useMemo(() => {
+    const map = new Map<string, FillReviewTemplate>();
+    for (const template of templates) map.set(template.key, template);
+    return map;
+  }, [templates]);
+
+  const selectedTemplate = selectedTemplateKey ? (templateByKey.get(selectedTemplateKey) ?? null) : null;
+  const selectedSlots = selectedTemplate ? (slotsByTemplate[selectedTemplate.key] ?? []) : [];
+  const wordCreateConstraint = useMemo(
+    () =>
+      wordCreateTarget
+        ? {
+            length: wordCreateTarget.length,
+            fixedLetters: wordCreateTarget.fixedLetters,
+          }
+        : undefined,
+    [wordCreateTarget],
+  );
+
+  const updateSlot = useCallback(
+    (templateKey: string, slotId: number, updater: (slot: EditableSlot) => EditableSlot) => {
+      setSlotsByTemplate((prev) => {
+        const rows = prev[templateKey];
+        if (!rows) return prev;
+        const nextRows = rows.map((row) => (row.slotId === slotId ? updater(row) : row));
+        return {
+          ...prev,
+          [templateKey]: nextRows,
+        };
+      });
+    },
+    [],
+  );
+
+  const setRowImageError = useCallback((rowKey: string, message: string | null) => {
+    setImageErrorByRowKey((prev) => {
+      if ((prev[rowKey] ?? null) === message) return prev;
+      return {
+        ...prev,
+        [rowKey]: message,
+      };
+    });
+  }, []);
+
+  const refreshWordImages = useCallback(async (wordId: string): Promise<WordImageOption[]> => {
+    const response = await fetch(`/api/dictionary/word/${encodeURIComponent(wordId)}/images`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      images?: WordImageOption[];
+      message?: string;
+    };
+    if (!response.ok) {
+      throw new Error(payload.message || `HTTP ${response.status}`);
+    }
+    return Array.isArray(payload.images) ? payload.images : [];
+  }, []);
+
+  const buildMask = useCallback(
+    (template: FillReviewTemplate, slot: FillReviewSlot): string => {
+      const currentSlots = slotsByTemplate[template.key] ?? [];
+      const byId = new Map(currentSlots.map((item) => [item.slotId, item]));
+      return buildSlotIntersectionMask(slot, byId);
+    },
+    [slotsByTemplate],
+  );
+
+  const buildFixedLetters = useCallback(
+    (template: FillReviewTemplate, slot: FillReviewSlot) => {
+      const currentSlots = slotsByTemplate[template.key] ?? [];
+      const byId = new Map(currentSlots.map((item) => [item.slotId, item]));
+      return buildSlotFixedLetters(slot, byId);
+    },
+    [slotsByTemplate],
+  );
+
+  const validation = useMemo(() => {
+    const maxPerCell = Math.max(1, Math.trunc(definitionLimits.maxPerCell));
+    const maxPerHalfCell = Math.max(1, Math.trunc(definitionLimits.maxPerHalfCell));
+    const messages: string[] = [];
+    const rowMessages = new Map<string, string[]>();
+    const templateMessages = new Map<string, string[]>();
+    const templateByKey = new Map(templates.map((template) => [template.key, template]));
+    const wordsByTemplate = new Map<string, Map<string, number[]>>();
+    const definitionOwner = new Map<string, { templateKey: string; templateName: string; slotId: number }>();
+    const unique = new Set<string>();
+    const push = (message: string, rows: Array<{ templateKey: string; slotId: number }> = [], templateKey?: string) => {
+      if (!unique.has(message)) {
+        unique.add(message);
+        messages.push(message);
+      }
+      const targetTemplateKey = templateKey ?? rows[0]?.templateKey;
+      if (targetTemplateKey) {
+        const list = templateMessages.get(targetTemplateKey) ?? [];
+        if (!list.includes(message)) list.push(message);
+        templateMessages.set(targetTemplateKey, list);
+      }
+      for (const row of rows) {
+        const key = keyForRow(row.templateKey, row.slotId);
+        const list = rowMessages.get(key) ?? [];
+        if (!list.includes(message)) list.push(message);
+        rowMessages.set(key, list);
+      }
+    };
+
+    for (const template of templates) {
+      const editableRows = slotsByTemplate[template.key] ?? [];
+      const rowById = new Map(editableRows.map((row) => [row.slotId, row]));
+      const definitionByWord = new Map<string, string>();
+      const slotIdsByWord = new Map<string, number[]>();
+      const slotByDefinition = new Map<string, number>();
+      for (const slot of template.slots) {
+        const current = rowById.get(slot.slotId);
+        if (!current) continue;
+        const word = normalizeWordInput(current.word);
+        const definition = (current.definition ?? "").trim();
+        const rowRef = [{ templateKey: template.key, slotId: slot.slotId }];
+
+        if (!word) {
+          push(`${template.name}: слот ${slot.slotId} — слово пустое`, rowRef, template.key);
+          continue;
+        }
+        if (!/^\p{L}+$/u.test(word)) {
+          push(`${template.name}: слот ${slot.slotId} — в слове только буквы`, rowRef, template.key);
+        }
+        if (word.length !== slot.len) {
+          push(`${template.name}: слот ${slot.slotId} — длина слова должна быть ${slot.len}`, rowRef, template.key);
+        }
+        if (!definition) {
+          push(`${template.name}: слот ${slot.slotId} — определение пустое`, rowRef, template.key);
+        }
+        if (slot.isPhotoDefinition) {
+          const resolvedImageId = resolveSelectedImageId(current.availableImages, current.selectedImageId);
+          if (!current.wordId) {
+            push(
+              `${template.name}: слот ${slot.slotId} — для фото-кластера нужно существующее слово словаря`,
+              rowRef,
+              template.key,
+            );
+          } else if (!resolvedImageId) {
+            push(
+              `${template.name}: слот ${slot.slotId} — для фото-кластера нужно выбрать картинку`,
+              rowRef,
+              template.key,
+            );
+          }
+        }
+
+        const mask = buildMask(template, slot);
+        if (word.length === slot.len && mask.length === slot.len) {
+          for (let i = 0; i < mask.length; i += 1) {
+            const fixed = mask[i];
+            if (fixed !== "." && fixed !== word[i]) {
+              push(`${template.name}: слот ${slot.slotId} не подходит по маске пересечений`, rowRef, template.key);
+              break;
+            }
+          }
+        }
+
+        const existingDefinition = definitionByWord.get(word);
+        if (existingDefinition === undefined) {
+          definitionByWord.set(word, definition);
+        } else if (existingDefinition !== definition) {
+          push(`${template.name}: слово ${word} имеет разные определения`, rowRef, template.key);
+        }
+
+        const sameWordSlots = slotIdsByWord.get(word) ?? [];
+        sameWordSlots.push(slot.slotId);
+        slotIdsByWord.set(word, sameWordSlots);
+        if (sameWordSlots.length > 1) {
+          push(`${template.name}: слово ${word} повторяется в шаблоне`, rowRef, template.key);
+        }
+
+        if (definition) {
+          const definitionKey = normalizeDefinitionKey(definition);
+          const sameDefinitionSlot = slotByDefinition.get(definitionKey);
+          if (sameDefinitionSlot !== undefined && sameDefinitionSlot !== slot.slotId) {
+            push(
+              `${template.name}: слот ${slot.slotId} — определение дублирует слот ${sameDefinitionSlot}`,
+              rowRef,
+              template.key,
+            );
+          } else {
+            slotByDefinition.set(definitionKey, slot.slotId);
+          }
+
+          const existingDefinitionOwner = definitionOwner.get(definitionKey);
+          if (existingDefinitionOwner && existingDefinitionOwner.templateKey !== template.key) {
+            const refs = [
+              { templateKey: template.key, slotId: slot.slotId },
+              { templateKey: existingDefinitionOwner.templateKey, slotId: existingDefinitionOwner.slotId },
+            ];
+            const message = `${template.name}: слот ${slot.slotId} — определение повторяет шаблон ${existingDefinitionOwner.templateName} (слот ${existingDefinitionOwner.slotId})`;
+            push(message, refs, template.key);
+            push(message, refs, existingDefinitionOwner.templateKey);
+          } else if (!existingDefinitionOwner) {
+            definitionOwner.set(definitionKey, {
+              templateKey: template.key,
+              templateName: template.name,
+              slotId: slot.slotId,
+            });
+          }
+        }
+      }
+      wordsByTemplate.set(template.key, slotIdsByWord);
+
+      const clueGroups = buildDefinitionClueGroups(template);
+      for (const group of clueGroups) {
+        const defs = group.slotIds
+          .map((slotId) => {
+            const row = rowById.get(slotId);
+            return {
+              slotId,
+              length: (row?.definition ?? "").trim().length,
+            };
+          })
+          .filter((item) => item.length > 0);
+        if (!defs.length) continue;
+
+        if (group.slotIds.length > 1) {
+          for (const def of defs) {
+            if (def.length > maxPerHalfCell) {
+              push(
+                `${template.name}: слот ${def.slotId} — максимум ${maxPerHalfCell} символов (общая клетка ${group.key})`,
+                [{ templateKey: template.key, slotId: def.slotId }],
+                template.key,
+              );
+            }
+          }
+          const sum = defs.reduce((acc, item) => acc + item.length, 0);
+          if (sum > maxPerCell) {
+            push(
+              `${template.name}: сумма определений для клетки ${group.key} больше ${maxPerCell}`,
+              defs.map((item) => ({ templateKey: template.key, slotId: item.slotId })),
+              template.key,
+            );
+          }
+        } else {
+          const areaCellCount = Math.max(1, Math.trunc(group.areaCellCount ?? 1));
+          const maxLen = maxPerCell * areaCellCount;
+          for (const def of defs) {
+            if (def.length > maxLen) {
+              push(
+                `${template.name}: слот ${def.slotId} — определение больше ${maxLen} символов`,
+                [{ templateKey: template.key, slotId: def.slotId }],
+                template.key,
+              );
+            }
+          }
+        }
+      }
+    }
+
+    for (const template of templates) {
+      const words = wordsByTemplate.get(template.key);
+      if (!words) continue;
+      const neighborKeys = templateNeighbors.get(template.key);
+      if (!neighborKeys) continue;
+      for (const neighborKey of neighborKeys) {
+        if (template.key >= neighborKey) continue;
+        const neighborTemplate = templateByKey.get(neighborKey);
+        const neighborWords = wordsByTemplate.get(neighborKey);
+        if (!neighborTemplate || !neighborWords) continue;
+
+        for (const [word, slotIds] of words) {
+          const neighborSlotIds = neighborWords.get(word);
+          if (!neighborSlotIds || !neighborSlotIds.length) continue;
+          const refs = [
+            ...slotIds.map((slotId) => ({ templateKey: template.key, slotId })),
+            ...neighborSlotIds.map((slotId) => ({ templateKey: neighborKey, slotId })),
+          ];
+          const message = `${template.name} и ${neighborTemplate.name}: слово ${word} повторяется в соседних шаблонах`;
+          push(message, refs, template.key);
+          push(message, refs, neighborKey);
+        }
+      }
+    }
+
+    return {
+      messages,
+      rowMessages,
+      templateMessages,
+    };
+  }, [
+    buildMask,
+    definitionLimits.maxPerCell,
+    definitionLimits.maxPerHalfCell,
+    slotsByTemplate,
+    templateNeighbors,
+    templates,
+  ]);
+
+  const validationMessagesForCurrentView = useMemo(() => {
+    if (reviewTab === "all") return validation.messages;
+    if (!selectedTemplate) return validation.messages;
+    return validation.templateMessages.get(selectedTemplate.key) ?? [];
+  }, [reviewTab, selectedTemplate, validation.messages, validation.templateMessages]);
+  const visibleValidationMessages = useMemo(() => {
+    if (reviewTab !== "all") return validationMessagesForCurrentView;
+    return validationMessagesForCurrentView.slice(0, ALL_TAB_ERRORS_LIMIT);
+  }, [reviewTab, validationMessagesForCurrentView]);
+  const hiddenValidationMessagesCount = Math.max(
+    0,
+    validationMessagesForCurrentView.length - visibleValidationMessages.length,
+  );
+  const selectedTemplateHasErrors = selectedTemplate
+    ? (validation.templateMessages.get(selectedTemplate.key)?.length ?? 0) > 0
+    : false;
+  const selectedSlotById = useMemo(() => {
+    const byId = new Map<number, EditableSlot>();
+    for (const row of selectedSlots) byId.set(row.slotId, row);
+    return byId;
+  }, [selectedSlots]);
+  const selectedTemplateSlots = useMemo(() => {
+    if (!selectedTemplate) return [];
+    const ordered = [...selectedTemplate.slots];
+    const orderBySlotId = new Map<number, number>(ordered.map((slot, index) => [slot.slotId, index]));
+    ordered.sort((a, b) => {
+      const keyA = keyForRow(selectedTemplate.key, a.slotId);
+      const keyB = keyForRow(selectedTemplate.key, b.slotId);
+      const errorsA = validation.rowMessages.get(keyA)?.length ?? 0;
+      const errorsB = validation.rowMessages.get(keyB)?.length ?? 0;
+      const hasErrorsA = errorsA > 0 ? 1 : 0;
+      const hasErrorsB = errorsB > 0 ? 1 : 0;
+      if (hasErrorsA !== hasErrorsB) return hasErrorsB - hasErrorsA;
+      if (errorsA !== errorsB) return errorsB - errorsA;
+      return (orderBySlotId.get(a.slotId) ?? 0) - (orderBySlotId.get(b.slotId) ?? 0);
+    });
+    return ordered;
+  }, [selectedTemplate, validation.rowMessages]);
+  const allTemplateRows = useMemo(() => {
+    const rows: FlatReviewRow[] = [];
+    for (const template of templates) {
+      const editableRows = slotsByTemplate[template.key] ?? [];
+      const rowBySlotId = new Map(editableRows.map((row) => [row.slotId, row]));
+      for (const slot of template.slots) {
+        const row = rowBySlotId.get(slot.slotId);
+        if (!row) continue;
+        rows.push({ template, slot, row });
+      }
+    }
+
+    const direction = allRowsSortDirection === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const aWord = normalizeWordInput(a.row.word);
+      const bWord = normalizeWordInput(b.row.word);
+      const aDefinition = (a.row.definition ?? "").trim();
+      const bDefinition = (b.row.definition ?? "").trim();
+
+      const primaryA = allRowsSortField === "word" ? aWord : aDefinition;
+      const primaryB = allRowsSortField === "word" ? bWord : bDefinition;
+      const primaryCmp = primaryA.localeCompare(primaryB, "ru", { sensitivity: "base" });
+      if (primaryCmp !== 0) return primaryCmp * direction;
+
+      const secondaryA = allRowsSortField === "word" ? aDefinition : aWord;
+      const secondaryB = allRowsSortField === "word" ? bDefinition : bWord;
+      const secondaryCmp = secondaryA.localeCompare(secondaryB, "ru", { sensitivity: "base" });
+      if (secondaryCmp !== 0) return secondaryCmp * direction;
+
+      if (a.template.order !== b.template.order) return a.template.order - b.template.order;
+      return a.slot.slotId - b.slot.slotId;
+    });
+
+    return rows;
+  }, [allRowsSortDirection, allRowsSortField, slotsByTemplate, templates]);
+  const allRowsDuplicateIndex = useMemo(() => {
+    const wordCounts = new Map<string, number>();
+    const definitionCounts = new Map<string, number>();
+    for (const item of allTemplateRows) {
+      const word = normalizeWordInput(item.row.word);
+      const definitionKey = normalizeDefinitionKey((item.row.definition ?? "").trim());
+      if (word) wordCounts.set(word, (wordCounts.get(word) ?? 0) + 1);
+      if (definitionKey) definitionCounts.set(definitionKey, (definitionCounts.get(definitionKey) ?? 0) + 1);
+    }
+
+    const seenWords = new Set<string>();
+    const seenDefinitions = new Set<string>();
+    const duplicateRowKeys = new Set<string>();
+    const duplicateFamilyRowKeys = new Set<string>();
+    for (const item of allTemplateRows) {
+      const rowKey = keyForRow(item.template.key, item.slot.slotId);
+      const word = normalizeWordInput(item.row.word);
+      const definitionKey = normalizeDefinitionKey((item.row.definition ?? "").trim());
+      const hasWordFamily = Boolean(word) && (wordCounts.get(word) ?? 0) > 1;
+      const hasDefinitionFamily = Boolean(definitionKey) && (definitionCounts.get(definitionKey) ?? 0) > 1;
+      const duplicateByWord = Boolean(word) && seenWords.has(word);
+      const duplicateByDefinition = Boolean(definitionKey) && seenDefinitions.has(definitionKey);
+      if (hasWordFamily || hasDefinitionFamily) duplicateFamilyRowKeys.add(rowKey);
+      if (duplicateByWord || duplicateByDefinition) duplicateRowKeys.add(rowKey);
+      if (word) seenWords.add(word);
+      if (definitionKey) seenDefinitions.add(definitionKey);
+    }
+    return {
+      rowKeys: duplicateRowKeys,
+      familyRowKeys: duplicateFamilyRowKeys,
+    };
+  }, [allTemplateRows]);
+  const allRowsErrorRowKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const [rowKey, messages] of validation.rowMessages.entries()) {
+      if ((messages?.length ?? 0) > 0) keys.add(rowKey);
+    }
+    return keys;
+  }, [validation.rowMessages]);
+  const filteredAllTemplateRows = useMemo(() => {
+    const normalizedQuery = allRowsSearchQuery.trim().toLocaleLowerCase();
+    return allTemplateRows.filter((item) => {
+      const rowKey = keyForRow(item.template.key, item.slot.slotId);
+      const word = normalizeWordInput(item.row.word);
+      const definition = (item.row.definition ?? "").trim();
+      if (allRowsShowDuplicatesOnly && !allRowsDuplicateIndex.familyRowKeys.has(rowKey)) return false;
+      if (allRowsShowErrorsOnly && !allRowsErrorRowKeys.has(rowKey)) return false;
+      if (allRowsShowPhotoOnly && !item.slot.isPhotoDefinition) return false;
+      if (!normalizedQuery) return true;
+      return (
+        word.toLocaleLowerCase().includes(normalizedQuery) || definition.toLocaleLowerCase().includes(normalizedQuery)
+      );
+    });
+  }, [
+    allRowsDuplicateIndex,
+    allRowsErrorRowKeys,
+    allRowsSearchQuery,
+    allRowsShowDuplicatesOnly,
+    allRowsShowErrorsOnly,
+    allRowsShowPhotoOnly,
+    allTemplateRows,
+  ]);
+  const duplicateRowsCount = allRowsDuplicateIndex.rowKeys.size;
+  const errorRowsCount = allRowsErrorRowKeys.size;
+  const photoRowsCount = useMemo(
+    () => allTemplateRows.reduce((acc, item) => (item.slot.isPhotoDefinition ? acc + 1 : acc), 0),
+    [allTemplateRows],
+  );
+  const handleReviewTabChange = useCallback((tab: ReviewListTab) => {
+    setReviewTab(tab);
+  }, []);
+  const toggleAllRowsSort = useCallback(
+    (field: ReviewListSortField) => {
+      if (allRowsSortField === field) {
+        setAllRowsSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+        return;
+      }
+      setAllRowsSortField(field);
+      setAllRowsSortDirection("asc");
+    },
+    [allRowsSortField],
+  );
+  const definitionUsageCountByKey = useMemo(() => {
+    const usage = new Map<string, number>();
+    for (const rows of Object.values(slotsByTemplate)) {
+      for (const row of rows) {
+        const text = (row.definition ?? "").trim();
+        if (!text) continue;
+        const key = normalizeDefinitionKey(text);
+        usage.set(key, (usage.get(key) ?? 0) + 1);
+      }
+    }
+    return usage;
+  }, [slotsByTemplate]);
+  const draftLoading = Boolean(reviewData) && templates.length > 0 && !draftHydrated;
+  const reviewLoading = loading || draftLoading;
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!open) {
+      setDialogScrollParent(null);
+      return;
+    }
+    let rafId = 0;
+    let attempts = 0;
+    const resolveScrollParent = () => {
+      const nextParent = document.getElementById("fill-review-dialog-content");
+      if (nextParent) {
+        setDialogScrollParent(nextParent);
+        return;
+      }
+      if (attempts >= 10) {
+        setDialogScrollParent(null);
+        return;
+      }
+      attempts += 1;
+      rafId = window.requestAnimationFrame(resolveScrollParent);
+    };
+    resolveScrollParent();
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [open]);
+
+  const requestCandidates = useCallback(
+    async (template: FillReviewTemplate, slot: FillReviewSlot) => {
+      const key = keyForRow(template.key, slot.slotId);
+      try {
+        setCandidateLoadingKey(key);
+        const mask = buildMask(template, slot);
+        const candidates = await onRequestCandidates({
+          templateKey: template.key,
+          slotId: slot.slotId,
+          mask,
+          limit: 120,
+        });
+        setCandidateMap((prev) => ({ ...prev, [key]: candidates }));
+      } catch (err) {
+        const { status } = getActionErrorMeta(err);
+        toast.error(status === 403 ? t("forbidden") : t("scanwordsReviewCandidatesError"));
+      } finally {
+        setCandidateLoadingKey(null);
+      }
+    },
+    [buildMask, onRequestCandidates, t],
+  );
+
+  const replaceRowImages = useCallback(
+    (templateKey: string, slotId: number, images: WordImageOption[], preferredImageId?: string | null) => {
+      updateSlot(templateKey, slotId, (slot) => ({
+        ...slot,
+        availableImages: images,
+        selectedImageId: pickDefaultImageId(images, preferredImageId ?? slot.selectedImageId),
+      }));
+    },
+    [updateSlot],
+  );
+
+  const handleUploadRowImage = useCallback(
+    async (template: FillReviewTemplate, slot: FillReviewSlot, row: EditableSlot, file: File) => {
+      if (!row.wordId) return;
+      const rowKey = keyForRow(template.key, slot.slotId);
+      const photoAreaSize = buildPhotoAreaSize(slot.photoAreaBounds);
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      if (photoAreaSize) {
+        formData.append("targetWidth", String(photoAreaSize.width));
+        formData.append("targetHeight", String(photoAreaSize.height));
+      }
+
+      setImageBusyRowKey(rowKey);
+      setRowImageError(rowKey, null);
+      try {
+        const response = await fetch(`/api/dictionary/word/${encodeURIComponent(row.wordId)}/images`, {
+          method: "POST",
+          body: formData,
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          image?: WordImageOption;
+          message?: string;
+          errorCode?: string;
+        };
+        if (!response.ok) {
+          throw new Error(payload.message || `HTTP ${response.status}`);
+        }
+        const images = await refreshWordImages(row.wordId);
+        replaceRowImages(template.key, slot.slotId, images, payload.image?.id ?? null);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t("scanwordsReviewImageUploadError");
+        setRowImageError(rowKey, message);
+        toast.error(message);
+      } finally {
+        setImageBusyRowKey(null);
+      }
+    },
+    [refreshWordImages, replaceRowImages, setRowImageError, t],
+  );
+
+  const handleDeleteRowImage = useCallback(
+    async (template: FillReviewTemplate, slot: FillReviewSlot, row: EditableSlot, imageId: string) => {
+      if (!row.wordId) return;
+      const rowKey = keyForRow(template.key, slot.slotId);
+      setImageBusyRowKey(rowKey);
+      setRowImageError(rowKey, null);
+      try {
+        const response = await fetch(
+          `/api/dictionary/word/${encodeURIComponent(row.wordId)}/images/${encodeURIComponent(imageId)}`,
+          { method: "DELETE" },
+        );
+        const payload = (await response.json().catch(() => ({}))) as { message?: string };
+        if (!response.ok) {
+          throw new Error(payload.message || `HTTP ${response.status}`);
+        }
+        const images = await refreshWordImages(row.wordId);
+        replaceRowImages(
+          template.key,
+          slot.slotId,
+          images,
+          row.selectedImageId === imageId ? null : row.selectedImageId,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t("scanwordsReviewImageDeleteError");
+        setRowImageError(rowKey, message);
+        toast.error(message);
+      } finally {
+        setImageBusyRowKey(null);
+      }
+    },
+    [refreshWordImages, replaceRowImages, setRowImageError, t],
+  );
+
+  const applyNewWord = useCallback(
+    (target: WordCreateTarget, payload: NewWordCreatedPayload) => {
+      const normalizedWord = normalizeWordInput(payload.word);
+      if (!wordMatchesFixedLetters(normalizedWord, target.fixedLetters)) {
+        toast.error(t("scanwordsReviewValidationError"));
+        return;
+      }
+      const nextOptions = payload.definitions
+        .map((item) => ({
+          text: item.text.trim(),
+          difficulty: normalizeDefinitionDifficulty(item.difficulty),
+        }))
+        .filter((item) => item.text.length > 0)
+        .map((item) => ({ opredId: null, text: item.text, difficulty: item.difficulty }));
+      const firstDefinition = nextOptions[0]?.text ?? "";
+
+      for (const definition of nextOptions) {
+        moderationCreatedRef.current.newWords.add(`${target.language}:${normalizedWord}:${definition.text}`);
+      }
+
+      updateSlot(target.templateKey, target.slotId, (slot) => ({
+        ...slot,
+        word: normalizedWord,
+        wordId: null,
+        definition: firstDefinition || slot.definition,
+        opredId: null,
+        definitionOptions: nextOptions.length > 0 ? nextOptions : slot.definitionOptions,
+        availableImages: [],
+        selectedImageId: null,
+      }));
+    },
+    [t, updateSlot],
+  );
+
+  const applyAddedDefinitions = useCallback(
+    (target: DefinitionCreateTarget, payload: AddDefinitionCreatedPayload) => {
+      const appended = payload.definitions
+        .map((item) => ({
+          text: item.text.trim(),
+          difficulty: normalizeDefinitionDifficulty(item.difficulty),
+        }))
+        .filter((item) => item.text.length > 0);
+      if (!appended.length) return;
+
+      for (const definition of appended) {
+        moderationCreatedRef.current.newDefinitions.add(`${target.wordId}:${definition.text}`);
+      }
+
+      updateSlot(target.templateKey, target.slotId, (slot) => {
+        const nextOptions = [...slot.definitionOptions];
+        for (const definition of appended) {
+          if (!nextOptions.some((option) => option.text === definition.text)) {
+            nextOptions.push({ opredId: null, text: definition.text, difficulty: definition.difficulty });
+          }
+        }
+        return {
+          ...slot,
+          definition: appended[0]?.text ?? slot.definition,
+          opredId: null,
+          definitionOptions: nextOptions,
+        };
+      });
+    },
+    [updateSlot],
+  );
+
+  const applyEditedDefinition = useCallback(
+    (target: DefinitionEditTarget, text: string) => {
+      const nextDefinition = text.trim();
+      if (!nextDefinition) return;
+      moderationCreatedRef.current.newDefinitions.add(`${target.wordId}:${nextDefinition}`);
+      updateSlot(target.templateKey, target.slotId, (slot) => {
+        const nextOptions = [...slot.definitionOptions];
+        const baseOption =
+          nextOptions.find((option) => option.opredId === target.opredId) ??
+          nextOptions.find((option) => option.text === target.definition);
+        const nextDifficulty = baseOption?.difficulty ?? null;
+        if (!nextOptions.some((option) => option.text === nextDefinition)) {
+          nextOptions.push({ opredId: null, text: nextDefinition, difficulty: nextDifficulty });
+        }
+        return {
+          ...slot,
+          definition: nextDefinition,
+          opredId: null,
+          definitionOptions: nextOptions,
+        };
+      });
+    },
+    [updateSlot],
+  );
+
+  const sendModerationCards = useCallback(async () => {
+    if (!reviewData) return;
+    const requests: Array<Promise<Response>> = [];
+    const newWordKeys = new Set<string>();
+    const newDefKeys = new Set<string>();
+
+    for (const template of reviewData.templates) {
+      const rows = slotsByTemplate[template.key] ?? [];
+      for (const row of rows) {
+        const word = normalizeWordInput(row.word);
+        const definition = (row.definition ?? "").trim();
+        if (!word || !definition) continue;
+        const selectedDefinitionOption =
+          row.definitionOptions.find((option) => option.text === definition && option.opredId === row.opredId) ??
+          row.definitionOptions.find((option) => option.text === definition);
+        const definitionDifficulty = Number.isFinite(selectedDefinitionOption?.difficulty as number)
+          ? Math.trunc(selectedDefinitionOption?.difficulty as number)
+          : PENDING_DEFAULT_DEFINITION_DIFFICULTY;
+        const definitionPayload = { definition, difficulty: definitionDifficulty };
+
+        if (!row.wordId) {
+          const key = `${template.language}:${word}:${definition}`;
+          if (moderationCreatedRef.current.newWords.has(key)) continue;
+          if (newWordKeys.has(key)) continue;
+          newWordKeys.add(key);
+          requests.push(
+            fetch("/api/pending/create-new", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                word,
+                language: template.language,
+                definitions: [definitionPayload],
+              }),
+            }),
+          );
+          continue;
+        }
+
+        const knownDefinition = row.definitionOptions.some((option) => option.text === definition);
+        if (!knownDefinition) {
+          const key = `${row.wordId}:${definition}`;
+          if (moderationCreatedRef.current.newDefinitions.has(key)) continue;
+          if (newDefKeys.has(key)) continue;
+          newDefKeys.add(key);
+          requests.push(
+            fetch("/api/pending/create", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                wordId: row.wordId,
+                language: template.language,
+                definitions: [definitionPayload],
+              }),
+            }),
+          );
+        }
+      }
+    }
+
+    if (!requests.length) return;
+    const results = await Promise.allSettled(requests);
+    const failed = results.filter((result) => result.status === "rejected");
+    const badResponses = await Promise.all(
+      results
+        .filter((result): result is PromiseFulfilledResult<Response> => result.status === "fulfilled")
+        .map(async (result) => {
+          if (result.value.ok) return null;
+          return result.value.status;
+        }),
+    );
+    const failedCount = failed.length + badResponses.filter((value) => value != null).length;
+    if (failedCount > 0) {
+      toast.error(t("scanwordsReviewModerationWarn", { count: failedCount }));
+    }
+  }, [reviewData, slotsByTemplate, t]);
+
+  const handleFinalizeConfirmationOpenChange = useCallback((nextOpen: boolean) => {
+    setFinalizeConfirmationOpen(nextOpen);
+    if (!nextOpen) {
+      setFinalizeConfirmationInput("");
+    }
+  }, []);
+
+  const runFinalize = useCallback(async () => {
+    if (!reviewData) return;
+    const payload = buildFinalizePayload(reviewData, slotsByTemplate, definitionLimits);
+
+    setSubmitting(true);
+    try {
+      if (draftPersistTimeoutRef.current) {
+        clearTimeout(draftPersistTimeoutRef.current);
+        draftPersistTimeoutRef.current = null;
+      }
+      await sendModerationCards();
+      await onFinalize(payload);
+      if (reviewJobId) {
+        await deleteServerReviewDraft(reviewJobId);
+      }
+      if (draftStorageKey && typeof window !== "undefined") {
+        window.localStorage.removeItem(draftStorageKey);
+      }
+      toast.success(t("scanwordsReviewFinalizeSuccess"));
+    } catch {
+      // error toast is handled by hook
+    } finally {
+      setSubmitting(false);
+    }
+  }, [definitionLimits, onFinalize, reviewData, sendModerationCards, slotsByTemplate, draftStorageKey, reviewJobId, t]);
+
+  const handleFinalize = useCallback(async () => {
+    if (!reviewData) return;
+    if (validation.messages.length > 0) {
+      const firstTemplateWithErrors = templates.find(
+        (template) => (validation.templateMessages.get(template.key)?.length ?? 0) > 0,
+      );
+      if (firstTemplateWithErrors?.key && firstTemplateWithErrors.key !== selectedTemplateKey) {
+        setSelectedTemplateKey(firstTemplateWithErrors.key);
+      }
+      handleFinalizeConfirmationOpenChange(true);
+      return;
+    }
+    await runFinalize();
+  }, [
+    handleFinalizeConfirmationOpenChange,
+    reviewData,
+    runFinalize,
+    selectedTemplateKey,
+    templates,
+    validation.messages.length,
+    validation.templateMessages,
+  ]);
+
+  const handleFinalizeWithWarnings = useCallback(async () => {
+    if (!finalizeConfirmationMatched) return;
+    handleFinalizeConfirmationOpenChange(false);
+    await runFinalize();
+  }, [finalizeConfirmationMatched, handleFinalizeConfirmationOpenChange, runFinalize]);
+  const finalizeDisabled = reviewLoading || !reviewData || finalizing || submitting;
+  const finalizeLabel = finalizing || submitting ? t("loading") : t("scanwordsReviewFinalize");
+
+  const renderFinalizeButton = useCallback(
+    () => (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            onClick={() => void handleFinalize()}
+            disabled={finalizeDisabled}
+            aria-label={t("scanwordsReviewFinalize")}
+          >
+            {finalizeLabel}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t("scanwordsReviewFinalize")}</TooltipContent>
+      </Tooltip>
+    ),
+    [finalizeDisabled, finalizeLabel, handleFinalize, t],
+  );
+
+  const renderReviewRow = ({
+    template,
+    slot,
+    row,
+    showTemplateName,
+    highlightDuplicate = false,
+  }: {
+    template: FillReviewTemplate;
+    slot: FillReviewSlot;
+    row: EditableSlot;
+    showTemplateName: boolean;
+    highlightDuplicate?: boolean;
+  }) => {
+    const rowKey = keyForRow(template.key, slot.slotId);
+    const isCandidateLoading = candidateLoadingKey === rowKey;
+    const rowHasError = (validation.rowMessages.get(rowKey)?.length ?? 0) > 0;
+    const rowHighlightClass = rowHasError
+      ? "bg-destructive/15 [box-shadow:inset_4px_0_0_hsl(var(--destructive))]"
+      : highlightDuplicate
+        ? "bg-orange-500/10"
+        : "";
+    const rowMetaClass = rowHasError ? "text-[11px] font-medium text-destructive" : "text-[11px] text-muted-foreground";
+    const candidates = candidateMap[rowKey] ?? [];
+    const wordOptions = buildWordOptions(row, candidates);
+    const currentWordValue = keyForWordOption(row.wordId, row.word);
+    const selectedWordValue = wordOptions.some((option) => option.value === currentWordValue) ? currentWordValue : "";
+    const selectedWordOption = wordOptions.find((option) => option.value === selectedWordValue) ?? null;
+    const currentDefinition = (row.definition ?? "").trim();
+    const currentDefinitionKey = normalizeDefinitionKey(currentDefinition);
+    const filteredDefinitionOptions = row.definitionOptions.filter((option) => {
+      const text = (option.text ?? "").trim();
+      if (!text) return false;
+      const key = normalizeDefinitionKey(text);
+      const isCurrent = text === currentDefinition;
+      if (isCurrent) return true;
+      const totalUsed = definitionUsageCountByKey.get(key) ?? 0;
+      const usedByCurrentRow = key === currentDefinitionKey && currentDefinition.length > 0 ? 1 : 0;
+      return totalUsed - usedByCurrentRow <= 0;
+    });
+    const selectedDefIndex = filteredDefinitionOptions.findIndex(
+      (option) => option.text === row.definition && option.opredId === row.opredId,
+    );
+    const selectedDefIndexByText =
+      selectedDefIndex >= 0
+        ? selectedDefIndex
+        : filteredDefinitionOptions.findIndex((option) => option.text === row.definition);
+    const intersectionIndexes = new Set(slot.intersections.map((item) => item.index));
+    const fixedLetters = buildFixedLetters(template, slot);
+    const templateLang = toSupportedLanguage(template.language);
+    const resolvedSelectedImageId = resolveSelectedImageId(row.availableImages, row.selectedImageId);
+    const selectedImage = row.availableImages.find((image) => image.id === resolvedSelectedImageId) ?? null;
+    const photoAreaSize = buildPhotoAreaSize(slot.photoAreaBounds);
+    const imageError = imageErrorByRowKey[rowKey] ?? null;
+    const imageBusy = imageBusyRowKey === rowKey;
+    const fileInputId = `${rowKey}-image-upload`;
+
+    return (
+      <tr key={rowKey} className={rowHighlightClass}>
+        <td className={cn("align-top px-2 py-2", showTemplateName && "w-[280px] min-w-[280px]")}>
+          <div className="grid gap-2">
+            {showTemplateName && (
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span>{t("scanwordsReviewWordTemplate", { name: template.sourceName ?? template.name })}</span>
+                {rowHasError && (
+                  <Badge variant="destructive" size="sm" className="px-1.5 text-[10px]">
+                    {t("scanwordsTemplateError")}
+                  </Badge>
+                )}
+                {highlightDuplicate && (
+                  <Badge
+                    variant="outline"
+                    size="sm"
+                    className="border-orange-400/70 bg-orange-500/10 px-1.5 text-[10px] text-orange-500"
+                  >
+                    {t("scanwordsReviewDuplicateBadge")}
+                  </Badge>
+                )}
+              </div>
+            )}
+            <div className={rowMetaClass}>
+              #{slot.slotId} · {slot.dir} · {slot.r}:{slot.c} · {t("scanwordsReviewLength", { count: slot.len })}
+            </div>
+            <div className="flex items-center gap-2">
+              <Select
+                value={selectedWordValue ?? ""}
+                disabled={isCandidateLoading || finalizing || submitting}
+                onOpenChange={(isOpen) => {
+                  if (!isOpen) return;
+                  if (isCandidateLoading) return;
+                  void requestCandidates(template, slot);
+                }}
+                onValueChange={(value) => {
+                  if (!value) return;
+                  const selectedOption = wordOptions.find((option) => option.value === value);
+                  if (!selectedOption) return;
+                  if (!wordMatchesFixedLetters(selectedOption.word, fixedLetters)) return;
+                  updateSlot(template.key, slot.slotId, (prev) => {
+                    const nextDefinitions = selectedOption.definitions;
+                    const selectedDefinition =
+                      nextDefinitions.find(
+                        (option) => option.text === prev.definition && option.opredId === prev.opredId,
+                      ) ??
+                      nextDefinitions.find((option) => option.text === prev.definition) ??
+                      nextDefinitions[0];
+                    return {
+                      ...prev,
+                      word: selectedOption.word,
+                      wordId: selectedOption.wordId,
+                      definition: selectedDefinition?.text ?? "",
+                      opredId: selectedDefinition?.opredId ?? null,
+                      definitionOptions: nextDefinitions,
+                      availableImages: selectedOption.availableImages,
+                      selectedImageId: pickDefaultImageId(selectedOption.availableImages),
+                    };
+                  });
+                }}
+              >
+                <SelectTrigger
+                  className={cn(
+                    "h-8 w-full px-2 text-sm",
+                    rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
+                  )}
+                >
+                  {isCandidateLoading ? (
+                    <span className="inline-flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      <span>{t("loading")}</span>
+                    </span>
+                  ) : selectedWordOption ? (
+                    <span className="inline-flex font-sans text-[12px] tracking-[0.12em]">
+                      {Array.from({ length: slot.len }, (_, index) => {
+                        const letter = selectedWordOption.word[index] ?? ".";
+                        const cell = slot.cells[index];
+                        const letterKey = `${selectedWordOption.value}:${cell?.[0] ?? slot.r}:${cell?.[1] ?? slot.c}`;
+                        return (
+                          <span
+                            key={letterKey}
+                            className={
+                              intersectionIndexes.has(index)
+                                ? "font-bold text-blue-600 dark:text-blue-400"
+                                : "font-normal"
+                            }
+                          >
+                            {letter}
+                          </span>
+                        );
+                      })}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">{t("scanwordsReviewSelectCandidate")}</span>
+                  )}
+                </SelectTrigger>
+                <SelectContent>
+                  {isCandidateLoading && (
+                    <SelectItem value={`${rowKey}:loading`} disabled>
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                        <span>{t("loading")}</span>
+                      </span>
+                    </SelectItem>
+                  )}
+                  {wordOptions.map((option) => (
+                    <SelectItem
+                      key={option.value}
+                      value={option.value}
+                      disabled={!wordMatchesFixedLetters(option.word, fixedLetters)}
+                    >
+                      <span className="inline-flex font-sans text-[12px] tracking-[0.12em]">
+                        {Array.from({ length: slot.len }, (_, index) => {
+                          const letter = option.word[index] ?? ".";
+                          const cell = slot.cells[index];
+                          const letterKey = `${option.value}:${cell?.[0] ?? slot.r}:${cell?.[1] ?? slot.c}`;
+                          return (
+                            <span
+                              key={letterKey}
+                              className={
+                                intersectionIndexes.has(index)
+                                  ? "font-bold text-blue-600 dark:text-blue-400"
+                                  : "font-normal"
+                              }
+                            >
+                              {letter}
+                            </span>
+                          );
+                        })}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="size-8 shrink-0"
+                    onClick={() => {
+                      const mask = buildMask(template, slot);
+                      const fixedLetters = Array.from(mask)
+                        .map((letter, index) => {
+                          if (letter === ".") return null;
+                          return { index, letter };
+                        })
+                        .filter((item): item is { index: number; letter: string } => item != null);
+                      setWordCreateTarget({
+                        templateKey: template.key,
+                        slotId: slot.slotId,
+                        language: template.language,
+                        length: slot.len,
+                        fixedLetters,
+                      });
+                    }}
+                    aria-label={t("new")}
+                  >
+                    <CirclePlus className="size-4" aria-hidden />
+                    <span className="sr-only">{t("new")}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("new")}</TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+        </td>
+        <td className="align-top px-2 py-2">
+          <div className="grid gap-2">
+            {showTemplateName && (
+              <div aria-hidden className="invisible flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span>{t("scanwordsReviewWordTemplate", { name: template.sourceName ?? template.name })}</span>
+                {rowHasError && (
+                  <Badge variant="destructive" size="sm" className="px-1.5 text-[10px]">
+                    {t("scanwordsTemplateError")}
+                  </Badge>
+                )}
+                {highlightDuplicate && (
+                  <Badge
+                    variant="outline"
+                    size="sm"
+                    className="border-orange-400/70 bg-orange-500/10 px-1.5 text-[10px] text-orange-500"
+                  >
+                    {t("scanwordsReviewDuplicateBadge")}
+                  </Badge>
+                )}
+              </div>
+            )}
+            <div className={cn("flex items-center gap-2", rowMetaClass)}>
+              <span>{t("scanwordsReviewDefinitionLen", { count: row.definition.trim().length })}</span>
+              {slot.isPhotoDefinition && (
+                <span
+                  className="inline-flex items-center rounded border border-sky-500/40 bg-sky-500/10 p-0.5 text-sky-700 dark:text-sky-300"
+                  role="img"
+                  title={t("scanwordsReviewPhotoDefinition")}
+                  aria-label={t("scanwordsReviewPhotoDefinition")}
+                >
+                  <Image className="size-3" aria-hidden />
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Select
+                value={selectedDefIndexByText >= 0 ? String(selectedDefIndexByText) : ""}
+                disabled={isCandidateLoading || finalizing || submitting}
+                onValueChange={(value) => {
+                  if (!value) return;
+                  const index = Number.parseInt(value, 10);
+                  if (!Number.isFinite(index) || index < 0) return;
+                  const option = filteredDefinitionOptions[index];
+                  if (!option) return;
+                  updateSlot(template.key, slot.slotId, (prev) => ({
+                    ...prev,
+                    definition: option.text,
+                    opredId: option.opredId,
+                  }));
+                }}
+              >
+                <SelectTrigger
+                  className={cn(
+                    "h-auto min-h-8 w-full items-start px-2 py-1 text-sm",
+                    rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
+                  )}
+                >
+                  {isCandidateLoading ? (
+                    <span className="inline-flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      <span>{t("loading")}</span>
+                    </span>
+                  ) : (
+                    <span
+                      className={cn(
+                        "block max-h-14 w-full overflow-y-auto whitespace-normal pr-1 text-left leading-snug",
+                        row.definition ? "" : "text-muted-foreground",
+                      )}
+                    >
+                      {row.definition || t("definition")}
+                    </span>
+                  )}
+                </SelectTrigger>
+                <SelectContent>
+                  {isCandidateLoading && (
+                    <SelectItem value={`${rowKey}:definition-loading`} disabled>
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                        <span>{t("loading")}</span>
+                      </span>
+                    </SelectItem>
+                  )}
+                  {filteredDefinitionOptions.length === 0 && (
+                    <SelectItem value={`${rowKey}:definition-empty`} disabled>
+                      {t("noData")}
+                    </SelectItem>
+                  )}
+                  {filteredDefinitionOptions.map((option, index) => {
+                    const definitionLength = option.text.trim().length;
+                    return (
+                      <SelectItem key={`${option.opredId ?? "custom"}:${option.text}`} value={String(index)}>
+                        <div className="flex w-full items-center gap-2 pr-1">
+                          <span className="min-w-0 flex-1 truncate leading-snug">{option.text}</span>
+                          <div className="ml-auto flex items-center gap-1">
+                            <Badge
+                              variant="secondary"
+                              size="sm"
+                              className="px-1.5 text-[10px] font-normal"
+                              title={t("scanwordsReviewDefinitionLen", { count: definitionLength })}
+                            >
+                              {t("scanwordsReviewLength", { count: definitionLength })}
+                            </Badge>
+                            {Number.isFinite(option.difficulty as number) && (
+                              <Badge variant="outline" size="sm" className="px-1.5 text-[10px] font-normal">
+                                {`${t("difficultyFilterLabel")} ${option.difficulty}`}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="size-8 shrink-0"
+                    onClick={(event) => {
+                      if (!row.wordId) return;
+                      const buttonRect = event.currentTarget.getBoundingClientRect();
+                      const existing = row.definitionOptions.map((option, index) => ({
+                        id: option.opredId ?? `custom-${slot.slotId}-${index}`,
+                        text: option.text,
+                        ...(templateLang ? { lang: templateLang } : {}),
+                      }));
+                      setDefinitionCreateTarget({
+                        templateKey: template.key,
+                        slotId: slot.slotId,
+                        wordId: row.wordId,
+                        word: row.word,
+                        language: template.language,
+                        existing,
+                        openAnchor: {
+                          x: buttonRect.left,
+                          y: buttonRect.top,
+                        },
+                      });
+                    }}
+                    disabled={!row.wordId}
+                    aria-label={t("addDefinition")}
+                  >
+                    <CirclePlus className="size-4" aria-hidden />
+                    <span className="sr-only">{t("addDefinition")}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("addDefinition")}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="size-8 shrink-0"
+                    onClick={() => {
+                      if (!row.opredId || !row.wordId) return;
+                      setDefinitionEditTarget({
+                        templateKey: template.key,
+                        slotId: slot.slotId,
+                        wordId: row.wordId,
+                        opredId: row.opredId,
+                        definition: row.definition,
+                      });
+                    }}
+                    disabled={!row.opredId || !row.wordId}
+                    aria-label={t("editDefinition")}
+                  >
+                    <SquarePen className="size-4" aria-hidden />
+                    <span className="sr-only">{t("editDefinition")}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t("editDefinition")}</TooltipContent>
+              </Tooltip>
+            </div>
+            {slot.isPhotoDefinition && (
+              <div className="rounded-md border border-sky-500/25 bg-sky-500/5 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs text-muted-foreground">
+                    {photoAreaSize
+                      ? t("scanwordsReviewImageArea", {
+                          width: photoAreaSize.width,
+                          height: photoAreaSize.height,
+                        })
+                      : t("scanwordsReviewImageAreaUnknown")}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id={fileInputId}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      disabled={!row.wordId || imageBusy || finalizing || submitting}
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        event.currentTarget.value = "";
+                        if (!file) return;
+                        void handleUploadRowImage(template, slot, row, file);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!row.wordId || imageBusy || finalizing || submitting}
+                      onClick={() => {
+                        const input = document.getElementById(fileInputId) as HTMLInputElement | null;
+                        input?.click();
+                      }}
+                    >
+                      {imageBusy ? t("loading") : t("scanwordsReviewImageUpload")}
+                    </Button>
+                  </div>
+                </div>
+                {!row.wordId && (
+                  <div className="mt-2 text-xs text-muted-foreground">{t("scanwordsReviewImageWordRequired")}</div>
+                )}
+                {selectedImage && (
+                  <div className="mt-3 grid gap-2">
+                    <div className="overflow-hidden rounded border bg-background">
+                      <NextImage
+                        src={selectedImage.url}
+                        alt={selectedImage.fileName}
+                        width={selectedImage.width}
+                        height={selectedImage.height}
+                        className="h-32 w-full object-contain"
+                        unoptimized
+                      />
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("scanwordsReviewImageMeta", {
+                        width: selectedImage.width,
+                        height: selectedImage.height,
+                      })}
+                    </div>
+                  </div>
+                )}
+                {row.availableImages.length > 0 && (
+                  <div className="mt-3 grid gap-2">
+                    <div className="text-xs font-medium">{t("scanwordsReviewImageChoose")}</div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {row.availableImages.map((image) => {
+                        const active = resolvedSelectedImageId === image.id;
+                        return (
+                          <div
+                            key={image.id}
+                            className={cn(
+                              "grid gap-2 rounded border p-2",
+                              active ? "border-sky-500 bg-sky-500/10" : "border-border",
+                            )}
+                          >
+                            <button
+                              type="button"
+                              className="overflow-hidden rounded border bg-background"
+                              onClick={() =>
+                                updateSlot(template.key, slot.slotId, (prev) => ({
+                                  ...prev,
+                                  selectedImageId: image.id,
+                                }))
+                              }
+                              disabled={imageBusy || finalizing || submitting}
+                            >
+                              <NextImage
+                                src={image.url}
+                                alt={image.fileName}
+                                width={image.width}
+                                height={image.height}
+                                className="h-24 w-full object-contain"
+                                unoptimized
+                              />
+                            </button>
+                            <div className="flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                className={cn(
+                                  "text-left text-xs",
+                                  active ? "font-medium text-foreground" : "text-muted-foreground",
+                                )}
+                                onClick={() =>
+                                  updateSlot(template.key, slot.slotId, (prev) => ({
+                                    ...prev,
+                                    selectedImageId: image.id,
+                                  }))
+                                }
+                                disabled={imageBusy || finalizing || submitting}
+                              >
+                                {image.fileName}
+                              </button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-destructive"
+                                onClick={() => void handleDeleteRowImage(template, slot, row, image.id)}
+                                disabled={imageBusy || finalizing || submitting}
+                              >
+                                {t("delete")}
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {imageError && <div className="mt-2 text-xs text-destructive">{imageError}</div>}
+              </div>
+            )}
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
+  return (
+    <TooltipProvider>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent
+          className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[1240px]"
+          aria-describedby={undefined}
+          id="fill-review-dialog-content"
+        >
+          <DialogHeader>
+            <DialogTitle>{t("scanwordsReviewTitle")}</DialogTitle>
+            <div className="flex items-start justify-between gap-3">
+              <DialogDescription className="flex-1">{t("scanwordsReviewDescription")}</DialogDescription>
+              <div className="shrink-0">{renderFinalizeButton()}</div>
+            </div>
+          </DialogHeader>
+
+          <div className="pr-1">
+            {reviewLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+                <span>{t("loading")}</span>
+              </div>
+            )}
+            {!reviewLoading && !reviewData && <div className="text-sm text-muted-foreground">{t("noData")}</div>}
+            {!reviewLoading && reviewData && (
+              <div className="grid gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="inline-flex items-center rounded-md border p-0.5">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={reviewTab === "byTemplate" ? "secondary" : "ghost"}
+                          className="h-7 px-2 text-xs"
+                          onClick={() => handleReviewTabChange("byTemplate")}
+                        >
+                          {t("scanwordsReviewTabByTemplate")}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t("scanwordsReviewTabByTemplate")}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={reviewTab === "all" ? "secondary" : "ghost"}
+                          className="h-7 px-2 text-xs"
+                          onClick={() => handleReviewTabChange("all")}
+                        >
+                          {t("scanwordsReviewTabAll")}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t("scanwordsReviewTabAll")}</TooltipContent>
+                    </Tooltip>
+                  </div>
+
+                  {reviewTab === "all" && (
+                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                      <Input
+                        value={allRowsSearchQuery}
+                        onChange={(event) => setAllRowsSearchQuery(event.target.value)}
+                        placeholder={t("scanwordsReviewSearchPlaceholder")}
+                        aria-label={t("scanwordsReviewSearchAria")}
+                        className="h-8 min-w-[220px] sm:w-[300px]"
+                        disabled={reviewLoading || finalizing || submitting}
+                      />
+                      <label
+                        htmlFor="scanwords-review-show-duplicates-only"
+                        className="inline-flex items-center gap-2 text-xs text-muted-foreground"
+                      >
+                        <Checkbox
+                          id="scanwords-review-show-duplicates-only"
+                          checked={allRowsShowDuplicatesOnly}
+                          onChange={(event) => setAllRowsShowDuplicatesOnly(event.target.checked)}
+                          disabled={reviewLoading || finalizing || submitting}
+                          aria-label={t("scanwordsReviewShowDuplicatesOnlyAria")}
+                        />
+                        <span>{t("scanwordsReviewShowDuplicatesOnly", { count: duplicateRowsCount })}</span>
+                      </label>
+                      <label
+                        htmlFor="scanwords-review-show-errors-only"
+                        className="inline-flex items-center gap-2 text-xs text-muted-foreground"
+                      >
+                        <Checkbox
+                          id="scanwords-review-show-errors-only"
+                          checked={allRowsShowErrorsOnly}
+                          onChange={(event) => setAllRowsShowErrorsOnly(event.target.checked)}
+                          disabled={reviewLoading || finalizing || submitting}
+                          aria-label={t("scanwordsReviewShowErrorsOnlyAria")}
+                        />
+                        <span>{t("scanwordsReviewShowErrorsOnly", { count: errorRowsCount })}</span>
+                      </label>
+                      <label
+                        htmlFor="scanwords-review-show-photo-only"
+                        className="inline-flex items-center gap-2 text-xs text-muted-foreground"
+                      >
+                        <Checkbox
+                          id="scanwords-review-show-photo-only"
+                          checked={allRowsShowPhotoOnly}
+                          onChange={(event) => setAllRowsShowPhotoOnly(event.target.checked)}
+                          disabled={reviewLoading || finalizing || submitting}
+                          aria-label={t("scanwordsReviewShowPhotoOnlyAria")}
+                        />
+                        <span>{t("scanwordsReviewShowPhotoOnly", { count: photoRowsCount })}</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                {reviewTab === "byTemplate" && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{t("scanwordsReviewTemplate")}</span>
+                    <Select
+                      value={selectedTemplate?.key ?? ""}
+                      onValueChange={(value) => setSelectedTemplateKey(value)}
+                      disabled={reviewLoading || finalizing || submitting}
+                    >
+                      <SelectTrigger className="h-8 min-w-[220px] max-w-[420px] px-2 text-sm">
+                        {selectedTemplate ? (
+                          <span className="inline-flex w-full items-center gap-2">
+                            {selectedTemplateHasErrors ? (
+                              <CircleAlert className="size-4 shrink-0 text-amber-600" aria-hidden />
+                            ) : (
+                              <CircleCheckBig className="size-4 shrink-0 text-emerald-500" aria-hidden />
+                            )}
+                            <span className="truncate">{selectedTemplate.sourceName ?? selectedTemplate.name}</span>
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">{t("scanwordsReviewTemplate")}</span>
+                        )}
+                      </SelectTrigger>
+                      <SelectContent>
+                        {templates.map((template) => {
+                          const hasErrors = (validation.templateMessages.get(template.key)?.length ?? 0) > 0;
+                          return (
+                            <SelectItem key={template.key} value={template.key}>
+                              <span className="inline-flex w-full items-center gap-2">
+                                {hasErrors ? (
+                                  <CircleAlert className="size-4 shrink-0 text-amber-600" aria-hidden />
+                                ) : (
+                                  <CircleCheckBig className="size-4 shrink-0 text-emerald-500" aria-hidden />
+                                )}
+                                <span className="truncate">{template.sourceName ?? template.name}</span>
+                              </span>
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                {error && (
+                  <div className="rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                    {error}
+                  </div>
+                )}
+                {visibleValidationMessages.length > 0 && (
+                  <div className="rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                    <div className="font-medium">{t("scanwordsReviewErrorsTitle")}</div>
+                    <ul className="mt-1 grid gap-1">
+                      {visibleValidationMessages.map((message) => (
+                        <li key={message}>{message}</li>
+                      ))}
+                    </ul>
+                    {hiddenValidationMessagesCount > 0 && (
+                      <div className="mt-1 text-[11px] text-destructive/80">
+                        {t("scanwordsReviewErrorsMore", { count: hiddenValidationMessagesCount })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {reviewTab === "byTemplate" && selectedTemplate && (
+                  <div className="overflow-x-auto rounded border">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/40 text-left">
+                        <tr>
+                          <th className="px-2 py-2 font-medium">{t("word")}</th>
+                          <th className="px-2 py-2 font-medium">{t("definition")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedTemplateSlots.map((slot) => {
+                          const row = selectedSlotById.get(slot.slotId);
+                          if (!row) return null;
+                          return renderReviewRow({
+                            template: selectedTemplate,
+                            slot,
+                            row,
+                            showTemplateName: false,
+                          });
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {reviewTab === "all" && (
+                  <div className="overflow-x-auto rounded border">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/40 text-left">
+                        <tr>
+                          <th className="w-[280px] min-w-[280px] px-2 py-2 font-medium">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  className="h-auto gap-1 p-0 text-xs font-medium hover:bg-transparent hover:text-foreground"
+                                  onClick={() => toggleAllRowsSort("word")}
+                                  disabled={reviewLoading || finalizing || submitting}
+                                >
+                                  <span>{t("word")}</span>
+                                  {allRowsSortField === "word" ? (
+                                    allRowsSortDirection === "asc" ? (
+                                      <ArrowUp className="size-3" aria-hidden />
+                                    ) : (
+                                      <ArrowDown className="size-3" aria-hidden />
+                                    )
+                                  ) : (
+                                    <ArrowUpDown className="size-3 opacity-60" aria-hidden />
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>{t("word")}</TooltipContent>
+                            </Tooltip>
+                          </th>
+                          <th className="px-2 py-2 font-medium">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  className="h-auto gap-1 p-0 text-xs font-medium hover:bg-transparent hover:text-foreground"
+                                  onClick={() => toggleAllRowsSort("definition")}
+                                  disabled={reviewLoading || finalizing || submitting}
+                                >
+                                  <span>{t("definition")}</span>
+                                  {allRowsSortField === "definition" ? (
+                                    allRowsSortDirection === "asc" ? (
+                                      <ArrowUp className="size-3" aria-hidden />
+                                    ) : (
+                                      <ArrowDown className="size-3" aria-hidden />
+                                    )
+                                  ) : (
+                                    <ArrowUpDown className="size-3 opacity-60" aria-hidden />
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>{t("definition")}</TooltipContent>
+                            </Tooltip>
+                          </th>
+                        </tr>
+                      </thead>
+                    </table>
+                    {filteredAllTemplateRows.length === 0 ? (
+                      <div className="px-2 py-4 text-xs text-muted-foreground">{t("noData")}</div>
+                    ) : (
+                      <Virtuoso
+                        data={filteredAllTemplateRows}
+                        initialItemCount={Math.min(filteredAllTemplateRows.length, 120)}
+                        customScrollParent={dialogScrollParent ?? undefined}
+                        style={dialogScrollParent ? undefined : { height: "70dvh" }}
+                        computeItemKey={(index, item) =>
+                          item ? keyForRow(item.template.key, item.slot.slotId) : `missing-row:${index}`
+                        }
+                        itemContent={(_, item) => {
+                          if (!item) return null;
+                          const rowKey = keyForRow(item.template.key, item.slot.slotId);
+                          return (
+                            <table className="w-full text-xs">
+                              <tbody>
+                                {renderReviewRow({
+                                  template: item.template,
+                                  slot: item.slot,
+                                  row: item.row,
+                                  showTemplateName: true,
+                                  highlightDuplicate: allRowsDuplicateIndex.rowKeys.has(rowKey),
+                                })}
+                              </tbody>
+                            </table>
+                          );
+                        }}
+                      />
+                    )}
+                  </div>
+                )}
+                {reviewTab === "all" && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span>
+                      {t("scanwordsReviewRowsShown", {
+                        shown: filteredAllTemplateRows.length,
+                        total: allTemplateRows.length,
+                      })}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <NewWordModal
+            open={wordCreateTarget != null}
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) setWordCreateTarget(null);
+            }}
+            languageOverride={wordCreateTarget?.language}
+            wordConstraint={wordCreateConstraint}
+            onCreated={(payload) => {
+              if (!wordCreateTarget) return;
+              applyNewWord(wordCreateTarget, payload);
+            }}
+          />
+          <AddDefinitionModal
+            wordId={definitionCreateTarget?.wordId ?? ""}
+            open={definitionCreateTarget != null}
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) setDefinitionCreateTarget(null);
+            }}
+            wordText={definitionCreateTarget?.word}
+            existing={definitionCreateTarget?.existing}
+            languageOverride={definitionCreateTarget?.language}
+            openAnchor={definitionCreateTarget?.openAnchor}
+            onCreated={(payload) => {
+              if (!definitionCreateTarget) return;
+              applyAddedDefinitions(definitionCreateTarget, payload);
+            }}
+          />
+          <EditDefinitionModal
+            open={definitionEditTarget != null}
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) setDefinitionEditTarget(null);
+            }}
+            defId={definitionEditTarget?.opredId ?? ""}
+            initialValue={definitionEditTarget?.definition ?? ""}
+            pendingOnly
+            onSaved={({ pendingCreated, text }) => {
+              if (pendingCreated && definitionEditTarget) {
+                applyEditedDefinition(definitionEditTarget, text);
+                toast.success(t("definitionChangeQueued"));
+              }
+              setDefinitionEditTarget(null);
+            }}
+          />
+
+          <DialogFooter>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => onOpenChange(false)}
+                  disabled={finalizing || submitting}
+                >
+                  {t("close")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("close")}</TooltipContent>
+            </Tooltip>
+            {renderFinalizeButton()}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={finalizeConfirmationOpen} onOpenChange={handleFinalizeConfirmationOpenChange}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>{t("scanwordsReviewFinalizeConfirmTitle")}</DialogTitle>
+            <DialogDescription>{t("scanwordsReviewFinalizeConfirmDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <label htmlFor="scanwords-review-finalize-confirm" className="text-sm font-medium">
+              {t("typeToConfirm", { keyword: finalizeConfirmKeyword })}
+            </label>
+            <Input
+              id="scanwords-review-finalize-confirm"
+              value={finalizeConfirmationInput}
+              onChange={(event) => setFinalizeConfirmationInput(event.target.value)}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              autoFocus
+              disabled={submitting || finalizing}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => handleFinalizeConfirmationOpenChange(false)}
+              disabled={submitting || finalizing}
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handleFinalizeWithWarnings()}
+              disabled={!finalizeConfirmationMatched || submitting || finalizing}
+            >
+              {t("scanwordsReviewFinalizeConfirmAction")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </TooltipProvider>
+  );
+}

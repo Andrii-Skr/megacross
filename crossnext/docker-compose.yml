@@ -1,0 +1,374 @@
+# docker-compose.yml
+name: crossnext
+
+services:
+  # ---------- PROD ----------
+  app:
+    profiles: ["prod"]
+    image: crossnext-app:prod
+    build:
+      context: .
+      target: runner
+      args:
+        # ВАЖНО: NEXT_PUBLIC_* подставляются на этапе build.
+        NEXT_PUBLIC_CROSS_API_URL: ${NEXT_PUBLIC_CROSS_API_URL:-http://localhost:3001}
+    pull_policy: build
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      # В контейнере всегда слушаем 3000. Снаружи публикуем на APP_PORT.
+      PORT: 3000
+      # entrypoint соберёт DATABASE_URL из секрета:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:${APP_PORT:-3000}}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+      # Server-side URL до cross внутри docker-сети.
+      CROSS_API_URL: ${CROSS_API_URL:-http://cross:3001}
+      # Runtime-переменная; client-side значение уже зашито на build через args.
+      NEXT_PUBLIC_CROSS_API_URL: ${NEXT_PUBLIC_CROSS_API_URL:-http://localhost:3001}
+      # Общие папки с cross сервисом.
+      CROSS_SAMPLES_DIR: /app/var/crosswords/sample
+      CROSS_OUTPUT_DIR: /app/var/crosswords/out
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    entrypoint: ["/app/entrypoint.sh"]
+    command: ["node","server.js"]
+    depends_on:
+      db:
+        condition: service_healthy
+      cross:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - ${CROSSWORDS_HOST_DIR:-../var/crosswords}:/app/var/crosswords
+    networks: [backend]
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD","node","-e","fetch('http://app:3000/api/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1.5G
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    secrets: [postgres_password, gemini_api_key, nextauth_secret, admin_password]
+
+  cross:
+    profiles: ["prod"]
+    image: cross-app:prod
+    build:
+      context: ../cross/server
+      dockerfile: Dockerfile
+    pull_policy: build
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      CROSS_SAMPLES_DIR: /app/var/crosswords/sample
+      CROSS_OUTPUT_DIR: /app/var/crosswords/out
+      # Для production укажи домен crossnext через CROSS_ALLOWED_ORIGINS в .env.
+      CROSS_ALLOWED_ORIGINS: ${CROSS_ALLOWED_ORIGINS:-http://localhost:3000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${CROSS_PORT:-3001}:3001"
+    volumes:
+      - ${CROSSWORDS_HOST_DIR:-../var/crosswords}:/app/var/crosswords
+    networks: [backend]
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD","node","-e","fetch('http://127.0.0.1:3001/api/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    secrets: [postgres_password]
+
+  db:
+    profiles: ["prod"]
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      # Жестко обнуляем переменную, чтобы исключить конфликт с POSTGRES_PASSWORD_FILE,
+      # если POSTGRES_PASSWORD задан в .env/окружении хоста
+      POSTGRES_PASSWORD: ""
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [backend]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    secrets: [postgres_password]
+
+  # ---------- DEV ----------
+  app-dev:
+    profiles: ["dev"]
+    image: crossnext-app:dev
+    build:
+      context: .
+      target: dev
+    pull_policy: build
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      # Dev-сервер слушает 3000 внутри контейнера; наружный порт задаёт ports-мэппинг.
+      PORT: 3000
+      # В dev удобно авто-применять миграции при старте
+      MIGRATE_ON_START: "true"
+      DATABASE_URL: "${DATABASE_URL_DEV:-postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db-dev:5432/${POSTGRES_DB:-app}?schema=public}"
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:${APP_PORT:-3000}}
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Auto-seed on dev startup
+      SEED_ON_START: "true"
+    depends_on:
+      db-dev:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - .:/app:cached
+      - pnpm-store:/root/.local/share/pnpm/store
+      - node_modules:/app/node_modules
+    networks: [backend]
+    entrypoint: ["/app/entrypoint.sh"]
+    command: ["pnpm","dev"]
+    init: true
+    healthcheck:
+      test: ["CMD","node","-e","fetch('http://127.0.0.1:3000/api/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    secrets: [postgres_password, gemini_api_key, nextauth_secret, admin_password]
+
+  db-dev:
+    profiles: ["dev"]
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}  # dev-only
+    # Вариант A: ПОРТЫ НЕ ПУБЛИКУЕМ
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [backend]
+
+  pgadmin:
+    profiles: ["dev"]
+    image: dpage/pgadmin4:9.8
+    depends_on:
+      db-dev:
+        condition: service_healthy
+    env_file:
+      - ./secrets/pgadmin.env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks: [backend]
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+
+  mysql-dev:
+    profiles: ["mysql"]
+    image: mysql:5.7.37
+    container_name: crossnext-mysql-dev
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: legacydb
+      MYSQL_USER: legacy
+      MYSQL_PASSWORD: legacy
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-time-zone=+00:00
+      --max-allowed-packet=512M
+      --log-bin-trust-function-creators=ON
+      --bulk-insert-buffer-size=512M
+      --myisam-sort-buffer-size=512M
+      --key-buffer-size=512M
+      --read-buffer-size=4M
+      --read-rnd-buffer-size=4M
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_dev_data:/var/lib/mysql
+    networks: [backend]
+    healthcheck:
+      test: ["CMD","mysqladmin","ping","-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  phpmyadmin-dev:
+    profiles: ["mysql"]
+    image: phpmyadmin:5
+    container_name: crossnext-pma-dev
+    environment:
+      PMA_HOST: mysql-dev
+      PMA_USER: root
+      PMA_PASSWORD: root
+    ports:
+      - "8081:80"          # чтобы не конфликтовать с pgadmin:5050
+    depends_on:
+      - mysql-dev
+    networks: [backend]
+
+  legacy-sync-dev:
+    profiles: ["sync"]
+    image: crossnext-legacy-sync:dev
+    build:
+      context: .
+      target: deps
+    pull_policy: build
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      # Prisma/Postgres (use the same DB as app-dev)
+      DATABASE_URL: "${DATABASE_URL_DEV:-postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db-dev:5432/${POSTGRES_DB:-app}?schema=public}"
+      # Legacy MySQL DSN (adjust if you use a different container/creds)
+      LEGACY_MYSQL_URL: ${LEGACY_MYSQL_URL:-mysql://root:root@mysql-dev:3306/legacydb}
+      LEGACY_EXPORT_SCHEMA: ${LEGACY_EXPORT_SCHEMA:-legacy_export}
+      # Test mode: when true runs every 5 minutes; when false runs daily at 03:00
+      SYNK_TEST: ${SYNK_TEST:-false}
+      # Optional: schedule; if unset runs once and exits
+      # SYNC_CRON: "0 * * * *"
+      SYNC_BATCH_SIZE: ${SYNC_BATCH_SIZE:-10000}
+      # Per-table batch sizes (override global)
+      SYNC_BATCH_SIZE_WORDS: ${SYNC_BATCH_SIZE_WORDS:-10000}
+      SYNC_BATCH_SIZE_OPREDS: ${SYNC_BATCH_SIZE_OPREDS:-10000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      db-dev:
+        condition: service_healthy
+      mysql-dev:
+        condition: service_healthy
+    command: ["pnpm","exec","tsx","services/legacy-sync/src/index.ts"]
+    volumes:
+      - .:/app:cached
+      - pnpm-store:/root/.local/share/pnpm/store
+      - node_modules:/app/node_modules
+    networks: [backend]
+    init: true
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    extra_hosts:
+      - "host.docker.internal:${HOST_GATEWAY_IP:-host-gateway}"
+
+  legacy-sync:
+    profiles: ["prod", "sync"]
+    image: crossnext-legacy-sync:prod
+    build:
+      context: .
+      target: dev
+    pull_policy: build
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      # Compose DATABASE_URL from POSTGRES_* and secret via entrypoint
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      # External MySQL DSN must be provided via env/CI
+      # Example: mysql://user:pass@host:3306/legacydb
+      LEGACY_MYSQL_URL: ${LEGACY_MYSQL_URL:-}
+      LEGACY_EXPORT_SCHEMA: ${LEGACY_EXPORT_SCHEMA:-legacy_export}
+      SYNC_BATCH_SIZE: ${SYNC_BATCH_SIZE:-10000}
+      SYNC_BATCH_SIZE_WORDS: ${SYNC_BATCH_SIZE_WORDS:-10000}
+      SYNC_BATCH_SIZE_OPREDS: ${SYNC_BATCH_SIZE_OPREDS:-10000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional: schedule; if unset runs once and exits
+      # SYNC_CRON: "0 3 * * *"
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/app/entrypoint.sh"]
+    command: ["pnpm","exec","tsx","services/legacy-sync/src/index.ts"]
+    networks: [backend]
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    secrets: [postgres_password, legacy_mysql_url]
+    extra_hosts:
+      - "host.docker.internal:${HOST_GATEWAY_IP:-host-gateway}"
+
+networks:
+  backend: { driver: bridge }
+
+volumes:
+  postgres_data:
+  postgres_data_dev:
+  pnpm-store:
+  node_modules:
+  pgadmin_data:
+  mysql_dev_data: {}
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  gemini_api_key:
+    file: ./secrets/gemini_api_key
+  nextauth_secret:
+    file: ./secrets/nextauth_secret
+  admin_password:
+    file: ./secrets/admin_password
+  legacy_mysql_url:
+    file: ./secrets/legacy_mysql_url

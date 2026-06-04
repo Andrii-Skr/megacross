@@ -1,0 +1,32 @@
+// RBAC models: permissions, roles and role-permission mapping
+
+model Permission {
+  id          Int               @id @default(autoincrement())
+  code        String            @unique @db.VarChar(64)
+  description String?           @db.VarChar(255)
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+/// Canonical list of roles, backed by the Role enum
+model RoleDb {
+  id          Int             @id @default(autoincrement())
+  code        Role            @unique
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+/// Map role (via RoleDb) -> Permission rows
+model RolePermission {
+  roleId       Int
+  role         RoleDb         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId Int
+  permission   Permission     @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}

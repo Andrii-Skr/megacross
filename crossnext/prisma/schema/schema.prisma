@@ -1,0 +1,11 @@
+// Prisma schema entrypoint (folder mode)
+// Contains only generators and datasource. Models/enums live in sibling files.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Connection URL is configured in prisma.config.ts
+}

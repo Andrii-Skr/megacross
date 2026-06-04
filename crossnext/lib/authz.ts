@@ -1,0 +1,189 @@
+import type { Role } from "@prisma/client";
+import { prisma } from "@/lib/db";
+
+type RoleLike = Role | string;
+
+// ----- Roles -----
+export function hasRole(userRole: RoleLike | null | undefined, required: RoleLike | RoleLike[]) {
+  if (!userRole) return false;
+  const userStr = String(userRole);
+  const req = Array.isArray(required) ? required : [required];
+  return req.some((r) => String(r) === userStr);
+}
+
+export function requireRole<T extends { role?: RoleLike | null }>(
+  user: T | null | undefined,
+  required: RoleLike | RoleLike[],
+) {
+  if (!user || !hasRole(user.role ?? null, required)) {
+    const err = new Error("Forbidden");
+    (err as Error & { status?: number }).status = 403;
+    throw err;
+  }
+}
+
+// ----- Permissions -----
+export const Permissions = {
+  AdminAccess: "admin:access",
+  PendingReview: "pending:review",
+  DictionaryWrite: "dictionary:write",
+  TagsAdminAccess: "tags:admin",
+  TagsWrite: "tags:write",
+  StatsAdmin: "stats:admin",
+} as const;
+
+export type PermissionCode = (typeof Permissions)[keyof typeof Permissions];
+
+// Fallback mapping to keep app working before migrations are applied
+const fallbackRolePermissions: Record<string, ReadonlySet<PermissionCode>> = {
+  ADMIN: new Set<PermissionCode>([
+    Permissions.AdminAccess,
+    Permissions.PendingReview,
+    Permissions.DictionaryWrite,
+    Permissions.TagsAdminAccess,
+    Permissions.TagsWrite,
+    Permissions.StatsAdmin,
+  ]),
+  CHIEF_EDITOR_PLUS: new Set<PermissionCode>([
+    Permissions.AdminAccess,
+    Permissions.PendingReview,
+    Permissions.DictionaryWrite,
+    Permissions.TagsAdminAccess,
+    Permissions.TagsWrite,
+    Permissions.StatsAdmin,
+  ]),
+  CHIEF_EDITOR: new Set<PermissionCode>([
+    Permissions.AdminAccess,
+    Permissions.PendingReview,
+    Permissions.DictionaryWrite,
+    Permissions.TagsAdminAccess,
+    Permissions.TagsWrite,
+    Permissions.StatsAdmin,
+  ]),
+  EDITOR: new Set<PermissionCode>([Permissions.DictionaryWrite, Permissions.TagsWrite]),
+  MANAGER: new Set<PermissionCode>([Permissions.PendingReview]),
+  USER: new Set<PermissionCode>([]),
+};
+
+const PERM_CACHE = new Map<string, { set: ReadonlySet<PermissionCode>; fetchedAt: number }>();
+const CACHE_TTL_MS = 5_000;
+
+function getCachedPermissions(key: string) {
+  const cached = PERM_CACHE.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.fetchedAt > CACHE_TTL_MS) {
+    PERM_CACHE.delete(key);
+    return null;
+  }
+  return cached.set;
+}
+
+function setCachedPermissions(key: string, set: ReadonlySet<PermissionCode>) {
+  PERM_CACHE.set(key, { set, fetchedAt: Date.now() });
+}
+
+async function seedRolePermissionsFromFallback(key: string) {
+  const fallback = fallbackRolePermissions[key];
+  if (!fallback || fallback.size === 0) return;
+
+  const allCodes = Object.values(Permissions);
+
+  await prisma.$transaction(async (tx) => {
+    // Ensure all permissions exist (descriptions are optional in schema)
+    for (const code of allCodes) {
+      await tx.permission.upsert({
+        where: { code },
+        update: {},
+        create: { code },
+      });
+    }
+
+    const codesForRole = Array.from(fallback);
+    const permRows = await tx.permission.findMany({
+      where: { code: { in: codesForRole } },
+      select: { id: true, code: true },
+    });
+
+    if (permRows.length === 0) return;
+
+    const roleRow = await tx.roleDb.upsert({
+      where: { code: key as Role },
+      update: {},
+      create: { code: key as Role },
+    });
+
+    await tx.rolePermission.createMany({
+      data: permRows.map((row) => ({
+        roleId: roleRow.id,
+        permissionId: row.id,
+      })),
+      skipDuplicates: true,
+    });
+  });
+}
+
+export async function getRolePermissions(role: RoleLike | null | undefined): Promise<ReadonlySet<PermissionCode>> {
+  if (!role) return new Set();
+  const key = String(role);
+  const cached = getCachedPermissions(key);
+  if (cached) return cached;
+  try {
+    const query = async () => {
+      const roleRow = await prisma.roleDb.findUnique({
+        where: { code: key as Role },
+        select: {
+          permissions: {
+            select: {
+              permission: {
+                select: { code: true },
+              },
+            },
+          },
+        },
+      });
+      return roleRow?.permissions.map((entry) => ({ code: entry.permission.code })) ?? [];
+    };
+    let rows = await query();
+
+    if (!rows.length) {
+      await seedRolePermissionsFromFallback(key);
+      rows = await query();
+    }
+
+    if (!rows.length) {
+      const fallback = fallbackRolePermissions[key] ?? new Set<PermissionCode>();
+      setCachedPermissions(key, fallback);
+      return fallback;
+    }
+
+    const set = new Set<PermissionCode>(rows.map((r) => r.code as PermissionCode));
+    setCachedPermissions(key, set);
+    return set;
+  } catch {
+    // Likely tables not migrated yet; use fallback
+    const fallback = fallbackRolePermissions[key] ?? new Set<PermissionCode>();
+    setCachedPermissions(key, fallback);
+    return fallback;
+  }
+}
+
+export async function hasPermissionAsync(
+  userRole: RoleLike | null | undefined,
+  required: PermissionCode | PermissionCode[],
+) {
+  if (!userRole) return false;
+  const granted = await getRolePermissions(userRole);
+  const req = Array.isArray(required) ? required : [required];
+  return req.every((p) => granted.has(p));
+}
+
+export async function requirePermissionAsync<T extends { role?: RoleLike | null }>(
+  user: T | null | undefined,
+  required: PermissionCode | PermissionCode[],
+) {
+  if (!user || !(await hasPermissionAsync(user.role ?? null, required))) {
+    const err = new Error("Forbidden");
+    (err as Error & { status?: number }).status = 403;
+    throw err;
+  }
+}

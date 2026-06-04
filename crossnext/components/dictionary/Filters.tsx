@@ -1,0 +1,549 @@
+"use client";
+import {
+  BrushCleaning,
+  Check,
+  CircleQuestionMark,
+  FileCheck2 as FileCheckCorner,
+  FilePlus2 as FilePlusCorner,
+  Hash,
+  Loader2,
+  X,
+} from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useEffect, useMemo, useState } from "react";
+import { type TagOption as TagOptionType, TagSelector } from "@/components/tags/TagSelector";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useDifficulties } from "@/lib/useDifficulties";
+
+export type FiltersValue = {
+  q: string;
+  scope: "word" | "def" | "both";
+  tags?: string[];
+  excludeTags?: string[];
+  searchMode?: "contains" | "startsWith" | "exact";
+  lenDir?: "asc" | "desc";
+  lenFilterField?: "word" | "def";
+  lenMin?: number;
+  lenMax?: number;
+  difficultyMin?: number;
+  difficultyMax?: number;
+};
+
+export type TagOption = TagOptionType;
+
+export function Filters({
+  value,
+  onChange,
+  onReset,
+  bulkMode = false,
+  bulkTags = [],
+  onBulkTagsChange,
+  onToggleBulkMode,
+  onApplyBulkTags,
+  onOpenTemplates,
+  onOpenTemplatesPicker,
+  bulkApplyDisabled,
+  bulkApplyPending,
+  canUseBulkTags = true,
+}: {
+  value: FiltersValue;
+  onChange: (v: FiltersValue) => void;
+  onReset?: () => void;
+  bulkMode?: boolean;
+  bulkTags?: TagOption[];
+  onBulkTagsChange?: (tags: TagOption[]) => void;
+  onToggleBulkMode?: (next: boolean) => void;
+  onApplyBulkTags?: () => void;
+  onOpenTemplates?: () => void;
+  onOpenTemplatesPicker?: () => void;
+  bulkApplyDisabled?: boolean;
+  bulkApplyPending?: boolean;
+  canUseBulkTags?: boolean;
+}) {
+  const t = useTranslations();
+  // Mount guard to avoid Radix Select SSR hydration id drift and Chrome-injected attrs
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const { data: difficultiesData } = useDifficulties(mounted);
+  const difficulties = difficultiesData ?? [];
+
+  const radios = useMemo(
+    () =>
+      [
+        { id: "both", label: t("scopeBoth") },
+        { id: "word", label: t("scopeWord") },
+        { id: "def", label: t("scopeDef") },
+      ] as const,
+    [t],
+  );
+  const filterTags = value.tags ?? [];
+  const excludeTags = value.excludeTags ?? [];
+
+  if (!mounted) {
+    return (
+      <div className="sticky top-0 z-10 bg-background/80 border-b p-4 grid gap-3" suppressHydrationWarning aria-hidden>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+          <div className="h-9 w-full rounded-md bg-muted/60 animate-pulse" />
+          <div className="h-9 w-full rounded-md bg-muted/60 animate-pulse" />
+        </div>
+        <div className="grid gap-2 text-sm">
+          <div className="h-4 w-48 rounded bg-muted/60 animate-pulse" />
+          <div className="h-4 w-56 rounded bg-muted/60 animate-pulse" />
+          <div className="h-4 w-64 rounded bg-muted/60 animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sticky top-0 z-10 bg-background/92 border-b p-4 grid gap-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+        <div className="flex-1 w-full">
+          <Input
+            placeholder={t("searchPlaceholder")}
+            value={value.q}
+            onChange={(e) => onChange({ ...value, q: e.target.value })}
+            aria-label={t("searchAria")}
+          />
+        </div>
+        <div className="flex-1 w-full grid gap-1">
+          <div className="flex items-start gap-2 sm:gap-3">
+            {bulkMode ? (
+              <TagSelector
+                selected={bulkTags}
+                onChange={(next) => onBulkTagsChange?.(next)}
+                labelKey="bulkTagMode"
+                showLabel={false}
+                placeholderKey="bulkTagPlaceholder"
+                createLabelKey="createTagNamed"
+              />
+            ) : (
+              <TagSelector
+                selected={filterTags.map((name, idx) => ({ id: -(idx + 1), name }))}
+                onChange={(next) => {
+                  const nextTags = next.map((n) => n.name);
+                  const nextExcluded = excludeTags.filter((tag) => !nextTags.includes(tag));
+                  onChange({ ...value, tags: nextTags, excludeTags: nextExcluded });
+                }}
+                onTagContextMenu={(tag) => {
+                  const nextTags = filterTags.filter((name) => name !== tag.name);
+                  const nextExcluded = Array.from(new Set([...excludeTags, tag.name]));
+                  onChange({ ...value, tags: nextTags, excludeTags: nextExcluded });
+                }}
+                inputTrailing={
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-5 text-muted-foreground hover:text-foreground"
+                          aria-label={t("tagFilterHelp")}
+                        >
+                          <CircleQuestionMark className="size-4" aria-hidden />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t("tagFilterHelp")}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                }
+                labelKey="tags"
+                showLabel={false}
+                placeholderKey="tagFilterPlaceholder"
+                createLabelKey="createTagNamed"
+              />
+            )}
+            <div className="flex items-center gap-1 self-start">
+              {onReset && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="shrink-0"
+                        onClick={() => onReset()}
+                        aria-label={t("resetFilters")}
+                      >
+                        <BrushCleaning className="size-4" aria-hidden />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("resetFilters")}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+              {onOpenTemplates && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="shrink-0"
+                        onClick={onOpenTemplates}
+                        aria-label={t("templateCreateTitle")}
+                      >
+                        <FilePlusCorner className="size-4" aria-hidden />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("templateCreateTitle")}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+              {onOpenTemplatesPicker && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="shrink-0"
+                        onClick={onOpenTemplatesPicker}
+                        aria-label={t("templateApplyTitle")}
+                      >
+                        <FileCheckCorner className="size-4" aria-hidden />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("templateApplyTitle")}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+              {onToggleBulkMode && canUseBulkTags && (onOpenTemplates || onOpenTemplatesPicker) && (
+                <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+              )}
+              {onToggleBulkMode && canUseBulkTags && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant={bulkMode ? "secondary" : "outline"}
+                        size="icon"
+                        className={`shrink-0 ${
+                          bulkMode ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100" : ""
+                        }`}
+                        onClick={() => onToggleBulkMode(!bulkMode)}
+                        aria-pressed={bulkMode}
+                        aria-label={t("bulkTagMode")}
+                      >
+                        <Hash className="size-4" aria-hidden />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("bulkTagMode")}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+              {bulkMode && onApplyBulkTags && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="icon"
+                        className="shrink-0"
+                        onClick={onApplyBulkTags}
+                        disabled={bulkApplyDisabled}
+                        aria-label={t("applyTags")}
+                      >
+                        {bulkApplyPending ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden />
+                        ) : (
+                          <Check className="size-4" aria-hidden />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("applyTags")}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </div>
+          </div>
+          {!bulkMode && excludeTags.length > 0 && (
+            <div className="grid gap-1">
+              <span className="text-xs text-muted-foreground">{t("excludedTagsLabel")}</span>
+              <div className="flex flex-wrap gap-2">
+                {excludeTags.map((tag) => (
+                  <Badge
+                    key={`exclude-${tag}`}
+                    variant="outline"
+                    className="gap-1 border-destructive/40 text-destructive"
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      const nextExcluded = excludeTags.filter((name) => name !== tag);
+                      const nextTags = filterTags.includes(tag) ? filterTags : [...filterTags, tag];
+                      onChange({ ...value, tags: nextTags, excludeTags: nextExcluded });
+                    }}
+                  >
+                    <span className="mb-1 h-3 line-through">{tag}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="inline-flex h-4 w-4 items-center justify-center p-0 text-destructive/80 hover:text-destructive"
+                      onClick={() => {
+                        const nextExcluded = excludeTags.filter((name) => name !== tag);
+                        onChange({ ...value, excludeTags: nextExcluded });
+                      }}
+                      aria-label={t("delete")}
+                    >
+                      <X className="size-3" aria-hidden />
+                    </Button>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {bulkMode && <p className="text-xs text-muted-foreground">{t("bulkTagModeHint")}</p>}
+        </div>
+      </div>
+      <div className="grid gap-2 text-sm">
+        {/* Scope */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-muted-foreground text-xs">{t("scopeLabel")}</span>
+          <RadioGroup
+            className="flex flex-wrap gap-2 items-center"
+            value={value.scope}
+            onValueChange={(v) => onChange({ ...value, scope: v as FiltersValue["scope"] })}
+          >
+            {radios.map((r) => (
+              <div key={r.id} className="flex items-center gap-1">
+                <RadioGroupItem value={r.id} id={`scope-${r.id}`} className="size-3" />
+                <Label htmlFor={`scope-${r.id}`} className="text-xs">
+                  {r.label}
+                </Label>
+              </div>
+            ))}
+          </RadioGroup>
+        </div>
+
+        {/* Match */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-muted-foreground text-xs">{t("searchModeLabel")}</span>
+          <RadioGroup
+            className="flex flex-wrap gap-2"
+            value={value.searchMode ?? "contains"}
+            onValueChange={(v) => onChange({ ...value, searchMode: v as FiltersValue["searchMode"] })}
+          >
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="contains" id="mode-contains" className="size-3" />
+              <Label htmlFor="mode-contains" className="text-xs">
+                {t("searchModeContains")}
+              </Label>
+            </div>
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="exact" id="mode-exact" className="size-3" />
+              <Label htmlFor="mode-exact" className="text-xs">
+                {t("searchModeExact")}
+              </Label>
+            </div>
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="startsWith" id="mode-startsWith" className="size-3" />
+              <Label htmlFor="mode-startsWith" className="text-xs">
+                {t("searchModeStartsWith")}
+              </Label>
+            </div>
+          </RadioGroup>
+        </div>
+
+        {/* Difficulty filter (range) */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-muted-foreground text-xs">{t("difficultyFilterLabel")}</span>
+          {mounted ? (
+            <>
+              <Select
+                value={value.difficultyMin !== undefined ? String(value.difficultyMin) : ""}
+                onValueChange={(v) => {
+                  const nextMin = v === "any" || v === "" ? undefined : Number.parseInt(v, 10);
+                  const max = value.difficultyMax;
+                  onChange({
+                    ...value,
+                    difficultyMin: Number.isFinite(nextMin as number) ? (nextMin as number) : undefined,
+                    difficultyMax:
+                      Number.isFinite(max as number) &&
+                      Number.isFinite(nextMin as number) &&
+                      (nextMin as number) > (max as number)
+                        ? (nextMin as number)
+                        : max,
+                  });
+                }}
+              >
+                <SelectTrigger size="xs" className="w-15" aria-label={t("difficultyFilterLabel")}>
+                  <SelectValue placeholder={t("lengthMinPlaceholder")} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">{t("difficultyAny")}</SelectItem>
+                  {difficulties.map((d) => (
+                    <SelectItem key={d} value={String(d)}>
+                      {d}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-muted-foreground text-xs">–</span>
+              <Select
+                value={value.difficultyMax !== undefined ? String(value.difficultyMax) : ""}
+                onValueChange={(v) => {
+                  const nextMax = v === "any" || v === "" ? undefined : Number.parseInt(v, 10);
+                  const min = value.difficultyMin;
+                  onChange({
+                    ...value,
+                    difficultyMax: Number.isFinite(nextMax as number) ? (nextMax as number) : undefined,
+                    difficultyMin:
+                      Number.isFinite(min as number) &&
+                      Number.isFinite(nextMax as number) &&
+                      (nextMax as number) < (min as number)
+                        ? (nextMax as number)
+                        : min,
+                  });
+                }}
+              >
+                <SelectTrigger size="xs" className="w-15" aria-label={t("difficultyFilterLabel")}>
+                  <SelectValue placeholder={t("lengthMaxPlaceholder")} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">{t("difficultyAny")}</SelectItem>
+                  {difficulties.map((d) => (
+                    <SelectItem key={d} value={String(d)}>
+                      {d}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          ) : (
+            // SSR-safe placeholder that visually matches two SelectTriggers
+            <div className="inline-flex items-center gap-2">
+              <span className="inline-flex h-5 w-15 items-center justify-between rounded-md border border-input bg-background px-2 text-xs text-muted-foreground">
+                {t("lengthMinPlaceholder")}
+              </span>
+              <span className="text-muted-foreground text-xs">–</span>
+              <span className="inline-flex h-5 w-15 items-center justify-between rounded-md border border-input bg-background px-2 text-xs text-muted-foreground">
+                {t("lengthMaxPlaceholder")}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Length filter */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-muted-foreground text-xs">{t("lengthFilterLabel")}</span>
+          <RadioGroup
+            className="flex flex-wrap gap-2 items-center"
+            value={value.lenFilterField ?? ""}
+            onValueChange={(v) =>
+              onChange({
+                ...value,
+                lenFilterField: v ? (v as "word" | "def") : undefined,
+                ...(v ? {} : { lenMin: undefined, lenMax: undefined }),
+              })
+            }
+          >
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="" id="lenf-none" className="size-3" />
+              <Label htmlFor="lenf-none" className="text-xs">
+                {t("lengthSortNone")}
+              </Label>
+            </div>
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="word" id="lenf-word" className="size-3" />
+              <Label htmlFor="lenf-word" className="text-xs">
+                {t("lengthSortWord")}
+              </Label>
+            </div>
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="def" id="lenf-def" className="size-3" />
+              <Label htmlFor="lenf-def" className="text-xs">
+                {t("lengthSortDef")}
+              </Label>
+            </div>
+          </RadioGroup>
+          <div className="flex flex-wrap items-center gap-1">
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              placeholder={t("lengthMinPlaceholder")}
+              aria-label={t("lengthMinPlaceholder")}
+              className="h-5 w-15 text-xs placeholder:text-xs"
+              value={value.lenMin ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const num = raw === "" ? undefined : Number.parseInt(raw, 10);
+                onChange({
+                  ...value,
+                  lenMin: Number.isFinite(num as number) ? (num as number) : undefined,
+                });
+              }}
+              disabled={!value.lenFilterField}
+            />
+            <span className="text-muted-foreground text-xs">–</span>
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              placeholder={t("lengthMaxPlaceholder")}
+              aria-label={t("lengthMaxPlaceholder")}
+              className="h-5 w-15 text-xs placeholder:text-xs"
+              value={value.lenMax ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const num = raw === "" ? undefined : Number.parseInt(raw, 10);
+                onChange({
+                  ...value,
+                  lenMax: Number.isFinite(num as number) ? (num as number) : undefined,
+                });
+              }}
+              disabled={!value.lenFilterField}
+            />
+          </div>
+        </div>
+
+        {/* Length sort */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-muted-foreground text-xs">{t("lengthSortLabel")}</span>
+          <RadioGroup
+            className="flex flex-wrap gap-2 items-center"
+            value={value.lenDir ?? "none"}
+            onValueChange={(v) =>
+              onChange({
+                ...value,
+                lenDir: v === "none" ? undefined : (v as "asc" | "desc"),
+              })
+            }
+          >
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="none" id="lens-none" className="size-3" />
+              <Label htmlFor="lens-none" className="text-xs">
+                {t("lengthSortNone")}
+              </Label>
+            </div>
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="asc" id="lens-asc" className="size-3" />
+              <Label htmlFor="lens-asc" className="text-xs">
+                {t("lengthSortAsc")}
+              </Label>
+            </div>
+            <div className="flex items-center gap-1">
+              <RadioGroupItem value="desc" id="lens-desc" className="size-3" />
+              <Label htmlFor="lens-desc" className="text-xs">
+                {t("lengthSortDesc")}
+              </Label>
+            </div>
+          </RadioGroup>
+        </div>
+      </div>
+    </div>
+  );
+}

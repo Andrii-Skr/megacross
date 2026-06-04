@@ -1,0 +1,343 @@
+"use client";
+
+import { Sparkles } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useEffect, useMemo, useState } from "react";
+import { FilterStatsSummary } from "@/components/dictionary/FilterStatsSummary";
+import { TemplatePicker } from "@/components/dictionary/TemplatePicker";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { UploadPanel } from "@/components/upload/UploadPanel";
+import { cn } from "@/lib/utils";
+import { ArchivesDialog } from "./workspace/ArchivesDialog";
+import { ConflictsPanel } from "./workspace/ConflictsPanel";
+import { FillReviewDialog } from "./workspace/FillReviewDialog";
+import { FillSettingsDialog } from "./workspace/FillSettingsDialog";
+import { GenerationPanel } from "./workspace/GenerationPanel";
+import { useScanwordFill } from "./workspace/hooks/useScanwordFill";
+import { useScanwordTemplateSetup } from "./workspace/hooks/useScanwordTemplateSetup";
+import { useScanwordUploadFlow } from "./workspace/hooks/useScanwordUploadFlow";
+import type { ScanwordsWorkspaceProps, WorkspaceTab } from "./workspace/model";
+import { TemplateSetupPanel } from "./workspace/TemplateSetupPanel";
+import { WorkspaceProgressHeader } from "./workspace/WorkspaceProgressHeader";
+
+export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
+  const {
+    selectedEdition,
+    selectedIssue,
+    templates,
+    selectedTemplateId,
+    selectedTemplateFilter,
+    templatesLoading,
+    templatesError,
+    stats,
+    statsLoading,
+    statsError,
+    onTemplateSelect,
+  } = props;
+
+  const t = useTranslations();
+  const crossApiBase = (process.env.NEXT_PUBLIC_CROSS_API_URL || "http://localhost:3001").replace(/\/$/, "");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("dictionary");
+  const selectedIssueId = selectedIssue?.id ?? null;
+  const tabStorageKey = selectedIssueId ? `scanwords:workspaceTab:${selectedIssueId}` : null;
+
+  const selectedTemplate = useMemo(
+    () => templates.find((template) => template.id === selectedTemplateId) ?? null,
+    [templates, selectedTemplateId],
+  );
+
+  const upload = useScanwordUploadFlow({
+    selectedIssueId,
+    selectedTemplateId,
+    selectedTemplateName: selectedTemplate?.name ?? null,
+  });
+
+  const templateSetup = useScanwordTemplateSetup({
+    selectedIssueId,
+    reloadToken: `${upload.uploadClicked}:${upload.effectiveUploadCount}:${upload.filesSignature}`,
+  });
+
+  const fill = useScanwordFill({
+    selectedIssueId,
+    selectedTemplateId,
+    filesSignature: upload.filesSignature,
+    crossApiBase,
+    templateSetup: templateSetup.templateSetup,
+    t,
+  });
+
+  useEffect(() => {
+    if (!selectedIssueId) return;
+    const saved = typeof window !== "undefined" && tabStorageKey ? window.localStorage.getItem(tabStorageKey) : null;
+    const normalized: WorkspaceTab =
+      saved === "dictionary" ||
+      saved === "upload" ||
+      saved === "conflicts" ||
+      saved === "templateSetup" ||
+      saved === "generation"
+        ? saved
+        : "dictionary";
+    setActiveTab(normalized);
+  }, [selectedIssueId, tabStorageKey]);
+
+  useEffect(() => {
+    if (!selectedIssueId || !tabStorageKey) return;
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(tabStorageKey, activeTab);
+  }, [activeTab, selectedIssueId, tabStorageKey]);
+
+  const dictionaryComplete = selectedTemplateId != null;
+  const conflictsStepComplete = upload.uploadClicked;
+  const templateSetupStepComplete = upload.uploadClicked;
+  const generationStepComplete = fill.fillStatus === "done" || fill.fillStatus === "error";
+  const generationHasTemplateErrors = fill.templateList.some((item) => item.status === "error");
+
+  const neededCounts = useMemo(() => {
+    if (!upload.effectiveTotals) return [];
+    return Object.entries(upload.effectiveTotals)
+      .filter(([key, value]) => key !== "total" && value > 0)
+      .map(([key, value]) => ({ length: Number(key), count: value }))
+      .filter((row) => Number.isFinite(row.length))
+      .sort((a, b) => a.length - b.length);
+  }, [upload.effectiveTotals]);
+
+  const dictionaryCounts = useMemo(() => {
+    if (!stats?.lengthCounts?.length) return new Map<number, number>();
+    return new Map(stats.lengthCounts.map((row) => [row.length, row.count]));
+  }, [stats]);
+
+  const conflictRows = useMemo(
+    () =>
+      neededCounts.map((row) => ({
+        length: row.length,
+        needed: row.count,
+        available: dictionaryCounts.get(row.length) ?? 0,
+      })),
+    [dictionaryCounts, neededCounts],
+  );
+
+  const hasShortage = conflictRows.some((row) => row.available < row.needed);
+  const hasExcess = conflictRows.some(
+    (row) => row.available > row.needed && (row.available - row.needed) / row.needed < 0.2,
+  );
+  const conflictsHasIssues = upload.uploadHasErrors || hasShortage || hasExcess;
+
+  const fillReady = dictionaryComplete && upload.uploadHasFiles && !upload.uploadHasErrors && upload.uploadClicked;
+  const fillCanStart = fillReady && !fill.fillStarting && fill.fillStatus !== "running" && fill.fillStatus !== "queued";
+
+  const completedSteps =
+    (dictionaryComplete ? 1 : 0) +
+    (upload.uploadStepComplete ? 1 : 0) +
+    (conflictsStepComplete ? 1 : 0) +
+    (templateSetupStepComplete ? 1 : 0) +
+    (generationStepComplete ? 1 : 0);
+  const totalSteps = 5;
+
+  if (!selectedIssue) return null;
+
+  return (
+    <TooltipProvider>
+      <section className="min-w-0 flex-1">
+        <Card className="flex flex-col bg-background/70 lg:h-[calc(100vh-7rem)]">
+          <CardHeader className="shrink-0 pb-4">
+            <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+              <Sparkles className="size-4 text-emerald-500" />
+              {t("scanwordsWorkspace")}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {selectedEdition && <Badge variant="outline">{selectedEdition.name}</Badge>}
+                <Badge variant="secondary">{selectedIssue.label}</Badge>
+              </div>
+            </CardTitle>
+          </CardHeader>
+
+          <CardContent className="flex flex-1 flex-col pt-2 lg:min-h-0">
+            <WorkspaceProgressHeader
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              dictionaryComplete={dictionaryComplete}
+              uploadStepComplete={upload.uploadStepComplete}
+              effectiveUploadCount={upload.effectiveUploadCount}
+              uploadHasErrors={upload.uploadHasErrors}
+              conflictsStepComplete={conflictsStepComplete}
+              conflictsHasIssues={conflictsHasIssues}
+              templateSetupStepComplete={templateSetupStepComplete}
+              generationStepComplete={generationStepComplete}
+              generationHasTemplateErrors={generationHasTemplateErrors}
+              fillStatus={fill.fillStatus}
+              completedSteps={completedSteps}
+              totalSteps={totalSteps}
+            />
+
+            <div
+              className={cn(
+                "flex flex-1 flex-col gap-4",
+                activeTab === "upload"
+                  ? "overflow-visible lg:min-h-0 lg:overflow-hidden"
+                  : "overflow-visible lg:min-h-0 lg:overflow-y-auto",
+              )}
+            >
+              <div
+                className={cn("grid gap-3", activeTab === "dictionary" ? "" : "hidden")}
+                aria-hidden={activeTab !== "dictionary"}
+              >
+                <TemplatePicker
+                  templates={templates}
+                  selectedId={selectedTemplateId}
+                  onSelect={onTemplateSelect}
+                  loading={templatesLoading}
+                  error={templatesError}
+                  showLabel
+                  showMeta
+                />
+
+                <FilterStatsSummary
+                  stats={stats}
+                  loading={statsLoading}
+                  error={statsError}
+                  hint={t("templateStatsSelectHint")}
+                />
+              </div>
+
+              <div
+                className={cn(activeTab === "upload" ? "flex min-h-0 flex-1 flex-col" : "hidden")}
+                aria-hidden={activeTab !== "upload"}
+              >
+                <UploadPanel
+                  key={selectedIssueId ?? "issue"}
+                  ref={upload.uploadPanelRef}
+                  issueId={selectedIssueId}
+                  onUploadComplete={upload.handleUploadComplete}
+                  onFilesCountChange={upload.setSelectedFilesCount}
+                  onFilesMetaChange={upload.setCurrentFiles}
+                  onUploadingChange={upload.setUploading}
+                  onTotalsChange={upload.setUploadTotals}
+                  onParseErrorsChange={upload.setParseErrors}
+                  showUploadAction={false}
+                  containerClassName="flex min-h-0 flex-1 flex-col"
+                  listClassName="flex-1 min-h-0 max-h-none"
+                />
+              </div>
+
+              <ConflictsPanel
+                active={activeTab === "conflicts"}
+                uploading={upload.uploading}
+                hasLiveFiles={upload.hasLiveFiles}
+                uploadClicked={upload.uploadClicked}
+                effectiveUploadCount={upload.effectiveUploadCount}
+                uploadHasErrors={upload.uploadHasErrors}
+                showParseErrors={upload.showParseErrors}
+                visibleParseErrors={upload.visibleParseErrors}
+                selectedTemplateId={selectedTemplateId}
+                selectedTemplateName={selectedTemplate?.name ?? null}
+                statsLoading={statsLoading}
+                statsError={statsError}
+                conflictRows={conflictRows}
+                hasShortage={hasShortage}
+                hasExcess={hasExcess}
+                onUploadClick={upload.handleUploadClick}
+              />
+
+              <TemplateSetupPanel
+                active={activeTab === "templateSetup"}
+                loading={templateSetup.loading}
+                error={templateSetup.error}
+                dictionaryFilter={selectedTemplateFilter}
+                dictionaryLanguage={selectedTemplate?.language ?? "ru"}
+                dictionaryReady={Boolean(selectedTemplate)}
+                templates={templateSetup.templates}
+                templateMap={templateSetup.templateMap}
+                onKeywordChange={templateSetup.setKeyword}
+                onFixedSlotChange={templateSetup.setFixedSlot}
+                onFixedSlotClear={templateSetup.clearFixedSlot}
+              />
+
+              <GenerationPanel
+                active={activeTab === "generation"}
+                fillReady={fillReady}
+                fillError={fill.fillError}
+                fillJob={fill.fillJob}
+                fillStatus={fill.fillStatus}
+                hasTemplateErrors={generationHasTemplateErrors}
+                fillStatusLabel={fill.fillStatusLabel}
+                fillProgress={fill.fillProgress}
+                fillCompleted={fill.fillCompleted}
+                fillTotal={fill.fillTotal}
+                archiveUrl={fill.archiveUrl}
+                latestArchiveOnly={fill.latestArchiveOnly}
+                fillCanStart={fillCanStart}
+                fillStarting={fill.fillStarting}
+                finalizing={fill.reviewFinalizing}
+                reviewAvailable={fill.fillStatus === "review"}
+                templateList={fill.templateList}
+                regeneratingTemplateKey={fill.regeneratingTemplateKey}
+                templateStatusLabel={fill.templateStatusLabel}
+                templateErrorText={fill.templateErrorText}
+                onSettingsOpen={fill.handleSettingsOpen}
+                onFillStart={fill.handleFillStart}
+                onLatestArchiveOnlyChange={fill.handleLatestArchiveOnlyChange}
+                onOpenArchivesDialog={() => void fill.openArchivesDialog()}
+                onOpenReview={() => fill.setReviewOpen(true)}
+                onRegenerateTemplate={(templateKey) => void fill.regenerateTemplate(templateKey)}
+              />
+            </div>
+
+            <FillSettingsDialog
+              open={fill.settingsOpen}
+              onOpenChange={fill.setSettingsOpen}
+              selectedEditionName={selectedEdition?.name ?? null}
+              selectedIssueLabel={selectedIssue.label}
+              settingsDraft={fill.settingsDraft}
+              settingsSaving={fill.settingsSaving}
+              svgFonts={fill.svgFonts}
+              svgFontsLoading={fill.svgFontsLoading}
+              fontUploading={fill.fontUploading}
+              speedOptions={fill.speedOptions}
+              onSpeedPresetChange={fill.handleSpeedPresetChange}
+              onDefinitionMaxPerCellChange={fill.handleDefinitionMaxPerCellChange}
+              onDefinitionMaxPerHalfCellChange={fill.handleDefinitionMaxPerHalfCellChange}
+              onClueFontBasePtChange={fill.handleClueFontBasePtChange}
+              onClueFontMinPtChange={fill.handleClueFontMinPtChange}
+              onClueGlyphWidthPctChange={fill.handleClueGlyphWidthPctChange}
+              onClueLineHeightPctChange={fill.handleClueLineHeightPctChange}
+              onSvgFontIdChange={fill.handleSvgFontIdChange}
+              onSvgSystemFontFamilyChange={fill.handleSvgSystemFontFamilyChange}
+              onUploadSvgFont={fill.handleUploadSvgFont}
+              onSave={() => void fill.handleSettingsSave()}
+            />
+
+            <ArchivesDialog
+              open={fill.archivesDialogOpen}
+              onOpenChange={fill.setArchivesDialogOpen}
+              selectedEditionName={selectedEdition?.name ?? null}
+              selectedIssueLabel={selectedIssue.label}
+              archivesLoading={fill.archivesLoading}
+              archivesError={fill.archivesError}
+              archives={fill.archives}
+              crossApiBase={crossApiBase}
+              fillStatusLabelByValue={fill.fillStatusLabelByValue}
+            />
+
+            <FillReviewDialog
+              open={fill.reviewOpen}
+              onOpenChange={fill.setReviewOpen}
+              reviewJobId={fill.fillJob?.id ?? null}
+              reviewData={fill.reviewData}
+              definitionLimits={{
+                maxPerCell: fill.fillSettings.definitionMaxPerCell,
+                maxPerHalfCell: fill.fillSettings.definitionMaxPerHalfCell,
+              }}
+              templateSetup={templateSetup.templateSetup}
+              loading={fill.reviewLoading}
+              finalizing={fill.reviewFinalizing}
+              error={fill.reviewError}
+              onFinalize={fill.finalizeReview}
+              onRequestCandidates={fill.requestWordCandidates}
+            />
+          </CardContent>
+        </Card>
+      </section>
+    </TooltipProvider>
+  );
+}
