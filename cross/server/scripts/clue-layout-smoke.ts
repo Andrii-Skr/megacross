@@ -836,16 +836,18 @@ function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
   ];
   const solved = ["*##*", "*##*", "*A**", "*B**"];
   const definitions = new Map<string, string>([["AB", "Фото определение"]]);
+  const embeddedPhoto = "data:image/jpeg;base64,QUJDRA==";
   const { svg } = buildCrosswordSvg(grid, slots, solved, definitions, {
     style: "default",
     arrowMode: "export",
     arrowScale: 1,
-    photoClues: [{ clueKey: "1,1", href: "https://example.com/photo.jpg" }],
+    photoClues: [{ clueKey: "1,1", href: embeddedPhoto }],
   });
 
-  const imageIndex = svg.indexOf('<image href="https://example.com/photo.jpg"');
+  const imageIndex = svg.indexOf(`<image href="${embeddedPhoto}"`);
   const textIndex = svg.indexOf(">Фото<");
   assert.ok(imageIndex >= 0, "expected photo clue image in svg");
+  assert.equal(svg.includes('href="assets/'), false, "photo clue image should not depend on archive assets");
   assert.ok(
     svg.includes(">определение</tspan>") || (svg.includes(">определе-</tspan>") && svg.includes(">ние</tspan>")),
     "expected definition text to be rendered either on one line or split across lines",

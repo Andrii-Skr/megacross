@@ -2040,6 +2040,35 @@ function sanitizeSvgFontFamily(value: string | null | undefined): string | null 
   return normalized.slice(0, 120);
 }
 
+function resolveImageMimeType(fileName: string, sourcePath: string): string {
+  const ext = path.extname(fileName || sourcePath).trim().toLowerCase();
+  switch (ext) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    case ".svg":
+      return "image/svg+xml";
+    case ".bmp":
+      return "image/bmp";
+    case ".avif":
+      return "image/avif";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function buildEmbeddedImageHref(fileName: string, sourcePath: string): string {
+  const mimeType = resolveImageMimeType(fileName, sourcePath);
+  const encoded = readFileSync(sourcePath).toString("base64");
+  return `data:${mimeType};base64,${encoded}`;
+}
+
 function parseOptionalPositiveBigInt(value: unknown): bigint | null {
   if (typeof value === "bigint") {
     return value > 0n ? value : null;
@@ -2869,8 +2898,6 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const photoErrors: string[] = [];
     const templateDir = path.join(issueDir, sanitizeName(template.name));
     mkdirSync(templateDir, { recursive: true });
-    const photoDir = path.join(templateDir, "assets");
-    mkdirSync(photoDir, { recursive: true });
     for (const slot of template.slots) {
       if (!slot.isPhotoDefinition) continue;
       const state = states.get(slot.slotId);
@@ -2893,10 +2920,9 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
         continue;
       }
       const sourcePath = buildWordImageAbsolutePath(image.storageRelPath);
-      const ext = path.extname(image.fileName) || ".img";
-      const assetName = `slot-${slot.slotId}${ext}`;
+      let href: string;
       try {
-        writeFileSync(path.join(photoDir, assetName), readFileSync(sourcePath));
+        href = buildEmbeddedImageHref(image.fileName, sourcePath);
       } catch {
         photoErrors.push(`Template ${template.name}: image file is missing for slot ${slot.slotId}`);
         continue;
@@ -2904,7 +2930,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       if (slot.clueCell) {
         photoClues.push({
           clueKey: slot.clueCell.key,
-          href: `assets/${assetName}`,
+          href,
         });
       }
     }
