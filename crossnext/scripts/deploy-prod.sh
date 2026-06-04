@@ -37,12 +37,12 @@ echo "📦 Monorepo root: $REPO_ROOT | App dir: $APP_DIR | Branch: $BRANCH | Pro
 
 sync_monorepo_root() {
   # Bootstrap repo if the monorepo root is not a Git work tree
-  if [[ -z "${GIT_URL:-}" ]]; then
-    echo "❌ Not a Git repository and GIT_URL is not set."
-    echo "   Set GIT_URL=git@github.com:org/repo.git (or HTTPS URL) and re-run."
-    exit 1
-  fi
   if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [[ -z "${GIT_URL:-}" ]]; then
+      echo "❌ Not a Git repository and GIT_URL is not set."
+      echo "   Set GIT_URL=git@github.com:org/repo.git (or HTTPS URL) and re-run."
+      exit 1
+    fi
     echo "🔧 Bootstrapping monorepo Git root from $GIT_URL (branch: $BRANCH, remote: $REMOTE) ..."
     mkdir -p "$REPO_ROOT"
     git -C "$REPO_ROOT" -c init.defaultBranch="$BRANCH" init
