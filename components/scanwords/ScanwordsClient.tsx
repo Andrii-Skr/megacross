@@ -86,6 +86,7 @@ export function ScanwordsClient({ editions }: { editions: Edition[] }) {
     templates,
     templatesLoading,
     templatesError,
+    selectedTemplateFilter,
     stats,
     statsLoading,
     statsError,
@@ -356,6 +357,7 @@ export function ScanwordsClient({ editions }: { editions: Edition[] }) {
                 selectedIssue={selectedIssue}
                 templates={templates}
                 selectedTemplateId={selectedTemplateId}
+                selectedTemplateFilter={selectedTemplateFilter}
                 templatesLoading={templatesLoading}
                 templatesError={templatesError}
                 stats={stats}

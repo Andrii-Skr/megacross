@@ -52,7 +52,7 @@ export function ConflictsPanel({
   return (
     <div className={cn(active ? "" : "hidden")} aria-hidden={!active}>
       <div className="grid gap-3">
-        <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+        <div className="mt-2 flex flex-wrap items-center justify-start gap-2 sm:justify-end">
           <Button type="button" variant="default" onClick={onUploadClick} disabled={uploading || !hasLiveFiles}>
             {uploading ? t("uploading") : t("uploadAction")}
           </Button>
@@ -100,7 +100,33 @@ export function ConflictsPanel({
                   <p className="text-xs text-muted-foreground">{t("noData")}</p>
                 ) : (
                   <div className="grid gap-2">
-                    <div className="overflow-x-auto">
+                    <ul className="grid gap-2 sm:hidden">
+                      {conflictRows.map((row) => {
+                        const shortage = row.available < row.needed;
+                        const excess = row.available > row.needed && (row.available - row.needed) / row.needed < 0.2;
+                        const countClass = shortage
+                          ? "text-destructive"
+                          : excess
+                            ? "text-amber-600"
+                            : "text-muted-foreground";
+                        return (
+                          <li key={`mobile-${row.length}`} className="rounded-md border bg-background/70 p-3 text-xs">
+                            <div className="font-medium">
+                              {t("scanwordsConflictsLengthLabel", { length: row.length })}
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-3">
+                              <span className="text-muted-foreground">{t("scanwordsConflictsNeededAll")}</span>
+                              <span className="tabular-nums">{f.number(row.needed)}</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-3">
+                              <span className="text-muted-foreground">{t("scanwordsConflictsDictionaryLine")}</span>
+                              <span className={cn("tabular-nums", countClass)}>{f.number(row.available)}</span>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <div className="hidden overflow-x-auto sm:block">
                       <table className="w-full text-xs">
                         <tbody>
                           <tr>

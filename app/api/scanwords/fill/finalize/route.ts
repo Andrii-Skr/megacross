@@ -11,6 +11,7 @@ const slotSchema = z.object({
   definition: z.string().max(1024),
   wordId: z.string().min(1).max(32).nullable(),
   opredId: z.string().min(1).max(32).nullable(),
+  imageId: z.string().min(1).max(32).nullable().optional(),
 });
 
 const templateSchema = z.object({

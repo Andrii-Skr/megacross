@@ -1,7 +1,8 @@
 "use client";
 
-import { Loader2, Save, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, KeyRound, Loader2, Radar, Trash2 } from "lucide-react";
 import Image from "next/image";
+import { useTranslations } from "next-intl";
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,12 +16,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import type { DictionaryFilterInput } from "@/types/dictionary-bulk";
 import type {
   FillReviewStartPosition,
   TemplateSetupFixedSlot,
   TemplateSetupPreviewTemplate,
   TemplateSetupTemplate,
+  WordImageOption,
 } from "./model";
 
 type DictionaryWordCandidate = {
@@ -28,13 +32,25 @@ type DictionaryWordCandidate = {
   word_text: string;
 };
 
+type DictionaryCacheEntry = {
+  items: DictionaryWordCandidate[];
+  nextCursor: string | null;
+  initialized: boolean;
+  exhausted: boolean;
+};
+
+const AUTOCOMPLETE_MIN_LETTERS = 2;
+const AUTOCOMPLETE_BATCH_SIZE = 50;
+const AUTOCOMPLETE_MAX_RESULTS = 24;
+const AUTOCOMPLETE_MAX_SCANNED = 300;
+const AUTOCOMPLETE_PAGE_SIZE = 16;
+const AUTOCOMPLETE_ROWS_VISIBLE = 4;
+
 type TemplateSetupPanelProps = {
   active: boolean;
   loading: boolean;
-  saving: boolean;
-  dirty: boolean;
   error: string | null;
-  hasPreview: boolean;
+  dictionaryFilter: DictionaryFilterInput | null;
   dictionaryLanguage: string;
   dictionaryReady: boolean;
   templates: TemplateSetupPreviewTemplate[];
@@ -42,7 +58,6 @@ type TemplateSetupPanelProps = {
   onKeywordChange: (templateKey: string, keyword: string) => void;
   onFixedSlotChange: (templateKey: string, fixedSlot: TemplateSetupFixedSlot) => void;
   onFixedSlotClear: (templateKey: string, slotId: number) => void;
-  onSave: () => void;
 };
 
 function slotLabel(slot: TemplateSetupPreviewTemplate["slots"][number]) {
@@ -111,6 +126,110 @@ function wordMatchesLockedLetters(word: string, lockedLetters: Map<number, strin
   return true;
 }
 
+function buildKnownLettersMap(word: string[]): Map<number, string> {
+  const knownLetters = new Map<number, string>();
+  word.forEach((letter, index) => {
+    if (letter) knownLetters.set(index, letter);
+  });
+  return knownLetters;
+}
+
+function buildSearchSeed(word: string[]): { query: string; mode: "contains" | "startsWith" | "exact" } | null {
+  let bestStart = -1;
+  let bestLength = 0;
+  let currentStart = -1;
+  let currentLength = 0;
+
+  word.forEach((letter, index) => {
+    if (letter) {
+      if (currentLength === 0) currentStart = index;
+      currentLength += 1;
+      if (currentLength > bestLength) {
+        bestStart = currentStart;
+        bestLength = currentLength;
+      }
+      return;
+    }
+    currentStart = -1;
+    currentLength = 0;
+  });
+
+  if (bestLength < AUTOCOMPLETE_MIN_LETTERS || bestStart < 0) return null;
+
+  const query = word.slice(bestStart, bestStart + bestLength).join("");
+  if (bestLength === word.length) return { query, mode: "exact" };
+  if (bestStart === 0) return { query, mode: "startsWith" };
+  return { query, mode: "contains" };
+}
+
+function buildDictionaryFilterCacheKey(filter: DictionaryFilterInput | null): string {
+  if (!filter) return "none";
+  return JSON.stringify({
+    language: filter.language,
+    query: filter.query ?? null,
+    scope: filter.scope ?? null,
+    tagNames: filter.tagNames ?? [],
+    excludeTagNames: filter.excludeTagNames ?? [],
+    searchMode: filter.searchMode ?? null,
+    lenFilterField: filter.lenFilterField ?? null,
+    lenMin: filter.lenMin ?? null,
+    lenMax: filter.lenMax ?? null,
+    difficultyMin: filter.difficultyMin ?? null,
+    difficultyMax: filter.difficultyMax ?? null,
+  });
+}
+
+function buildAutocompleteCacheKey(params: {
+  dictionaryFilterCacheKey: string;
+  dictionaryLanguage: string;
+  slotLength: number;
+  searchSeed: { query: string; mode: "contains" | "startsWith" | "exact" } | null;
+}): string {
+  const { dictionaryFilterCacheKey, dictionaryLanguage, slotLength, searchSeed } = params;
+  return `${dictionaryFilterCacheKey}:${dictionaryLanguage || "ru"}:${slotLength}:${searchSeed?.mode ?? "scan"}:${searchSeed?.query ?? ""}`;
+}
+
+function appendDictionaryFilterToParams(params: URLSearchParams, filter: DictionaryFilterInput | null) {
+  if (!filter) return;
+  params.set("lang", filter.language);
+  params.set("scope", filter.scope ?? "word");
+  if (filter.query?.trim()) params.set("q", filter.query.trim());
+  if (filter.searchMode === "startsWith" || filter.searchMode === "exact") {
+    params.set("mode", filter.searchMode);
+  }
+  if (typeof filter.difficultyMin === "number") params.set("difficultyMin", String(filter.difficultyMin));
+  if (typeof filter.difficultyMax === "number") params.set("difficultyMax", String(filter.difficultyMax));
+  for (const tagName of filter.tagNames ?? []) {
+    params.append("tags", tagName);
+  }
+  for (const tagName of filter.excludeTagNames ?? []) {
+    params.append("excludeTags", tagName);
+  }
+}
+
+function wordMatchesKnownLetters(word: string, knownLetters: Map<number, string>): boolean {
+  const normalized = normalizeOtpLetters(word).join("");
+  for (const [index, letter] of knownLetters) {
+    if (normalized[index] !== letter) return false;
+  }
+  return true;
+}
+
+function scoreCandidateWord(
+  word: string,
+  knownLetters: Map<number, string>,
+  lockedLetters: Map<number, string>,
+): number {
+  const normalized = normalizeOtpLetters(word).join("");
+  let score = 0;
+  for (const [index] of knownLetters) {
+    score += lockedLetters.has(index) ? 100 : 10;
+    if (index === 0) score += 5;
+    if (index > 0 && normalized[index - 1] && knownLetters.has(index - 1)) score += 1;
+  }
+  return score;
+}
+
 function buildStartsByCell(startPositions: FillReviewStartPosition[]): Map<string, FillReviewStartPosition[]> {
   const map = new Map<string, FillReviewStartPosition[]>();
   for (const start of startPositions) {
@@ -141,10 +260,8 @@ function buildPreviewArrowDataUrl(markup: string): string {
 export function TemplateSetupPanel({
   active,
   loading,
-  saving,
-  dirty,
   error,
-  hasPreview,
+  dictionaryFilter,
   dictionaryLanguage,
   dictionaryReady,
   templates,
@@ -152,16 +269,23 @@ export function TemplateSetupPanel({
   onKeywordChange,
   onFixedSlotChange,
   onFixedSlotClear,
-  onSave,
 }: TemplateSetupPanelProps) {
+  const t = useTranslations();
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
   const [editingSlotId, setEditingSlotId] = useState<number | null>(null);
   const [pendingStarts, setPendingStarts] = useState<FillReviewStartPosition[] | null>(null);
   const [modalWord, setModalWord] = useState<string[]>([]);
   const [modalCandidates, setModalCandidates] = useState<DictionaryWordCandidate[]>([]);
+  const [modalCandidatesPage, setModalCandidatesPage] = useState(0);
+  const [modalSearchAllowEmpty, setModalSearchAllowEmpty] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+  const [modalImages, setModalImages] = useState<WordImageOption[]>([]);
+  const [modalImagesLoading, setModalImagesLoading] = useState(false);
+  const [modalImageBusy, setModalImageBusy] = useState(false);
+  const [modalImageError, setModalImageError] = useState<string | null>(null);
   const otpRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const dictionaryCacheRef = useRef<Map<string, DictionaryCacheEntry>>(new Map());
 
   useEffect(() => {
     if (!templates.length) {
@@ -177,6 +301,7 @@ export function TemplateSetupPanel({
     () => templates.find((item) => item.key === selectedTemplateKey) ?? null,
     [selectedTemplateKey, templates],
   );
+  const hasPreview = templates.length > 0;
   const selectedSetup = selectedTemplate ? (templateMap.get(selectedTemplate.key) ?? null) : null;
 
   const fixedSlotMap = useMemo(
@@ -242,12 +367,56 @@ export function TemplateSetupPanel({
     [editingSlotId, selectedTemplate],
   );
   const editingFixedSlot = editingSlot ? (fixedSlotMap.get(editingSlot.slotId) ?? null) : null;
+  const editingWordId = editingFixedSlot?.wordId ?? null;
+  const editingSelectedImageId = editingFixedSlot?.imageId ?? null;
+  const editingPhotoAreaBounds = editingSlot?.photoAreaBounds ?? null;
+  const editingIsPhotoDefinition = editingSlot?.isPhotoDefinition === true;
   const editingLockedLetters = useMemo(
     () => (editingSlot ? (lockedLettersBySlotId.get(editingSlot.slotId) ?? new Map<number, string>()) : new Map()),
     [editingSlot, lockedLettersBySlotId],
   );
   const modalOpen = Boolean(selectedTemplate && editingSlot);
-  const modalWordValue = modalWord.join("");
+  const modalKnownLetters = useMemo(() => buildKnownLettersMap(modalWord), [modalWord]);
+  const modalSearchSeed = useMemo(() => buildSearchSeed(modalWord), [modalWord]);
+  const dictionaryFilterCacheKey = useMemo(() => buildDictionaryFilterCacheKey(dictionaryFilter), [dictionaryFilter]);
+  const resolvedEditingImageId = useMemo(() => {
+    if (modalImages.length === 0) return null;
+    if (editingSelectedImageId && modalImages.some((image) => image.id === editingSelectedImageId)) {
+      return editingSelectedImageId;
+    }
+    return modalImages[0]?.id ?? null;
+  }, [editingSelectedImageId, modalImages]);
+  const activeSearchSeed = useMemo(
+    () => (modalSearchAllowEmpty ? null : modalSearchSeed),
+    [modalSearchAllowEmpty, modalSearchSeed],
+  );
+  const activeAutocompleteCacheKey = useMemo(() => {
+    if (!editingSlot) return null;
+    return buildAutocompleteCacheKey({
+      dictionaryFilterCacheKey,
+      dictionaryLanguage,
+      slotLength: editingSlot.len,
+      searchSeed: activeSearchSeed,
+    });
+  }, [activeSearchSeed, dictionaryFilterCacheKey, dictionaryLanguage, editingSlot]);
+  const hasNextCandidatesPage = useMemo(() => {
+    const nextPageStart = (modalCandidatesPage + 1) * AUTOCOMPLETE_PAGE_SIZE;
+    if (nextPageStart < modalCandidates.length) return true;
+    if (!activeAutocompleteCacheKey) return false;
+    return dictionaryCacheRef.current.get(activeAutocompleteCacheKey)?.exhausted === false;
+  }, [activeAutocompleteCacheKey, modalCandidates.length, modalCandidatesPage]);
+  const modalCandidatesPageCount = useMemo(
+    () => Math.max(1, Math.ceil(modalCandidates.length / AUTOCOMPLETE_PAGE_SIZE)),
+    [modalCandidates.length],
+  );
+  const pagedModalCandidates = useMemo(() => {
+    const start = modalCandidatesPage * AUTOCOMPLETE_PAGE_SIZE;
+    return modalCandidates.slice(start, start + AUTOCOMPLETE_PAGE_SIZE);
+  }, [modalCandidates, modalCandidatesPage]);
+
+  useEffect(() => {
+    setModalCandidatesPage((current) => Math.min(current, modalCandidatesPageCount - 1));
+  }, [modalCandidatesPageCount]);
 
   const focusEditableIndex = useCallback(
     (startIndex: number, direction: 1 | -1) => {
@@ -276,6 +445,8 @@ export function TemplateSetupPanel({
       setPendingStarts(null);
       setModalWord(applyLockedLettersToWord(buildOtpWord(fixed?.word ?? "", slot.len), slot.len, lockedLetters));
       setModalCandidates([]);
+      setModalCandidatesPage(0);
+      setModalSearchAllowEmpty(false);
       setModalError(null);
       setModalLoading(false);
       window.setTimeout(() => {
@@ -294,8 +465,14 @@ export function TemplateSetupPanel({
     setEditingSlotId(null);
     setModalWord([]);
     setModalCandidates([]);
+    setModalCandidatesPage(0);
+    setModalSearchAllowEmpty(false);
     setModalError(null);
     setModalLoading(false);
+    setModalImages([]);
+    setModalImagesLoading(false);
+    setModalImageBusy(false);
+    setModalImageError(null);
   }, []);
 
   const openStartCell = useCallback(
@@ -311,44 +488,292 @@ export function TemplateSetupPanel({
     [openSlotEditor],
   );
 
-  const searchModalWord = useCallback(async () => {
-    if (!selectedTemplate || !editingSlot) return;
-    const query = modalWordValue.trim();
-    if (!query || modalWord.some((char) => !char)) {
-      setModalCandidates([]);
-      setModalError("Заполните слово целиком.");
+  const searchModalWord = useCallback(
+    async (options?: { allowEmpty?: boolean; resetPage?: boolean; targetPage?: number }) => {
+      const allowEmpty = options?.allowEmpty === true;
+      const resetPage = options?.resetPage !== false;
+      const targetPage = options?.targetPage ?? 0;
+      const requiredCount = Math.max(AUTOCOMPLETE_MAX_RESULTS, (targetPage + 1) * AUTOCOMPLETE_PAGE_SIZE);
+      if (!editingSlot || !dictionaryReady) return;
+      if (!allowEmpty && modalKnownLetters.size < AUTOCOMPLETE_MIN_LETTERS) {
+        setModalCandidates([]);
+        if (resetPage) setModalCandidatesPage(0);
+        setModalSearchAllowEmpty(allowEmpty);
+        setModalError(null);
+        return;
+      }
+      setModalSearchAllowEmpty(allowEmpty);
+      setModalLoading(true);
+      setModalError(null);
+      try {
+        const searchSeed = allowEmpty ? null : modalSearchSeed;
+        const cacheKey = buildAutocompleteCacheKey({
+          dictionaryFilterCacheKey,
+          dictionaryLanguage,
+          slotLength: editingSlot.len,
+          searchSeed,
+        });
+        const cache =
+          dictionaryCacheRef.current.get(cacheKey) ??
+          ({
+            items: [],
+            nextCursor: null,
+            initialized: false,
+            exhausted: false,
+          } satisfies DictionaryCacheEntry);
+
+        let scanned = 0;
+        let matches = cache.items.filter((candidate) =>
+          allowEmpty
+            ? wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)
+            : wordMatchesKnownLetters(candidate.word_text, modalKnownLetters),
+        );
+
+        while (!cache.exhausted && scanned < AUTOCOMPLETE_MAX_SCANNED && matches.length < requiredCount) {
+          const params = new URLSearchParams({
+            lenFilterField: "word",
+            lenMin: String(editingSlot.len),
+            lenMax: String(editingSlot.len),
+            sortField: "word",
+            sortDir: "asc",
+            take: String(AUTOCOMPLETE_BATCH_SIZE),
+          });
+          appendDictionaryFilterToParams(params, dictionaryFilter);
+          if (!params.has("lang")) {
+            params.set("lang", dictionaryLanguage || "ru");
+          }
+          if (!params.has("scope")) {
+            params.set("scope", "word");
+          }
+          if (searchSeed && !params.has("q")) {
+            params.set("q", searchSeed.query);
+            params.set("mode", searchSeed.mode);
+          }
+          if (cache.initialized && cache.nextCursor) params.set("cursor", cache.nextCursor);
+
+          const res = await fetch(`/api/dictionary?${params.toString()}`, { cache: "no-store" });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(typeof data?.message === "string" ? data.message : `HTTP ${res.status}`);
+          }
+
+          const items = Array.isArray(data?.items) ? (data.items as DictionaryWordCandidate[]) : [];
+          scanned += items.length;
+          const existingIds = new Set(cache.items.map((candidate) => candidate.id));
+          for (const candidate of items) {
+            if (existingIds.has(candidate.id)) continue;
+            cache.items.push(candidate);
+            existingIds.add(candidate.id);
+          }
+          cache.initialized = true;
+          cache.nextCursor = typeof data?.nextCursor === "string" ? data.nextCursor : null;
+          cache.exhausted = !cache.nextCursor || items.length === 0;
+          dictionaryCacheRef.current.set(cacheKey, cache);
+          matches = cache.items.filter((candidate) =>
+            allowEmpty
+              ? wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)
+              : wordMatchesKnownLetters(candidate.word_text, modalKnownLetters),
+          );
+        }
+
+        const items = matches
+          .slice()
+          .sort((left, right) => {
+            const scoreDiff =
+              scoreCandidateWord(right.word_text, modalKnownLetters, editingLockedLetters) -
+              scoreCandidateWord(left.word_text, modalKnownLetters, editingLockedLetters);
+            if (scoreDiff !== 0) return scoreDiff;
+            return left.word_text.localeCompare(right.word_text, dictionaryLanguage || "ru");
+          })
+          .slice(0, requiredCount);
+
+        setModalCandidates(items);
+        if (resetPage) setModalCandidatesPage(0);
+        if (items.length === 0) {
+          setModalError(t("scanwordsTemplateSetupNoMatches"));
+        }
+        return items.length;
+      } catch (err) {
+        setModalCandidates([]);
+        if (resetPage) setModalCandidatesPage(0);
+        setModalError(err instanceof Error ? err.message : t("scanwordsTemplateSetupLoadError"));
+        return 0;
+      } finally {
+        setModalLoading(false);
+      }
+    },
+    [
+      dictionaryFilter,
+      dictionaryFilterCacheKey,
+      dictionaryLanguage,
+      dictionaryReady,
+      editingLockedLetters,
+      editingSlot,
+      modalKnownLetters,
+      modalSearchSeed,
+      t,
+    ],
+  );
+
+  const handleNextCandidatesPage = useCallback(async () => {
+    const nextPage = modalCandidatesPage + 1;
+    const nextPageStart = nextPage * AUTOCOMPLETE_PAGE_SIZE;
+    if (nextPageStart < modalCandidates.length) {
+      setModalCandidatesPage(nextPage);
       return;
     }
-    setModalLoading(true);
-    setModalError(null);
-    try {
-      const params = new URLSearchParams({
-        q: query,
-        mode: "exact",
-        scope: "word",
-        lang: dictionaryLanguage || "ru",
-        lenFilterField: "word",
-        lenMin: String(editingSlot.len),
-        lenMax: String(editingSlot.len),
-        take: "10",
-      });
-      const res = await fetch(`/api/dictionary?${params.toString()}`, { cache: "no-store" });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(typeof data?.message === "string" ? data.message : `HTTP ${res.status}`);
-      }
-      const items = Array.isArray(data?.items) ? (data.items as DictionaryWordCandidate[]) : [];
-      setModalCandidates(items);
-      if (items.length === 0) {
-        setModalError("Такого слова в словаре не найдено.");
-      }
-    } catch (err) {
-      setModalCandidates([]);
-      setModalError(err instanceof Error ? err.message : "Не удалось загрузить слова из словаря");
-    } finally {
-      setModalLoading(false);
+
+    const loadedCount =
+      (await searchModalWord({
+        allowEmpty: modalSearchAllowEmpty,
+        resetPage: false,
+        targetPage: nextPage,
+      })) ?? 0;
+
+    if (loadedCount > nextPageStart) {
+      setModalCandidatesPage(nextPage);
     }
-  }, [dictionaryLanguage, editingSlot, modalWord, modalWordValue, selectedTemplate]);
+  }, [modalCandidates.length, modalCandidatesPage, modalSearchAllowEmpty, searchModalWord]);
+
+  useEffect(() => {
+    if (!modalOpen || !editingSlot || !dictionaryReady) return;
+    if (modalKnownLetters.size < AUTOCOMPLETE_MIN_LETTERS) {
+      setModalCandidates([]);
+      setModalCandidatesPage(0);
+      setModalLoading(false);
+      setModalError(null);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void searchModalWord();
+    }, 180);
+    return () => window.clearTimeout(timeoutId);
+  }, [dictionaryReady, editingSlot, modalKnownLetters, modalOpen, searchModalWord]);
+
+  const refreshModalImages = useCallback(
+    async (wordId: string) => {
+      setModalImagesLoading(true);
+      setModalImageError(null);
+      try {
+        const response = await fetch(`/api/dictionary/word/${encodeURIComponent(wordId)}/images`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        const payload = (await response.json().catch(() => ({}))) as { images?: WordImageOption[]; message?: string };
+        if (!response.ok) {
+          throw new Error(
+            typeof payload.message === "string" && payload.message.trim().length > 0
+              ? payload.message
+              : t("scanwordsTemplateSetupImageLoadError"),
+          );
+        }
+        setModalImages(Array.isArray(payload.images) ? payload.images : []);
+      } catch (error) {
+        setModalImages([]);
+        setModalImageError(error instanceof Error ? error.message : t("scanwordsTemplateSetupImageLoadError"));
+      } finally {
+        setModalImagesLoading(false);
+      }
+    },
+    [t],
+  );
+
+  useEffect(() => {
+    if (!modalOpen || !editingWordId || !editingIsPhotoDefinition) {
+      setModalImages((current) => (current.length > 0 ? [] : current));
+      setModalImagesLoading(false);
+      setModalImageError(null);
+      return;
+    }
+    void refreshModalImages(editingWordId);
+  }, [editingIsPhotoDefinition, editingWordId, modalOpen, refreshModalImages]);
+
+  useEffect(() => {
+    if (!selectedTemplate || !editingFixedSlot || resolvedEditingImageId === editingSelectedImageId) return;
+    onFixedSlotChange(selectedTemplate.key, {
+      ...editingFixedSlot,
+      imageId: resolvedEditingImageId,
+    });
+  }, [editingFixedSlot, editingSelectedImageId, onFixedSlotChange, resolvedEditingImageId, selectedTemplate]);
+
+  const handleModalImageUpload = useCallback(
+    async (file: File) => {
+      if (!editingWordId) return;
+      setModalImageBusy(true);
+      setModalImageError(null);
+      try {
+        const formData = new FormData();
+        formData.set("file", file);
+        if (editingPhotoAreaBounds) {
+          formData.set("targetWidth", String(editingPhotoAreaBounds.maxCol - editingPhotoAreaBounds.minCol + 1));
+          formData.set("targetHeight", String(editingPhotoAreaBounds.maxRow - editingPhotoAreaBounds.minRow + 1));
+        }
+        const response = await fetch(`/api/dictionary/word/${encodeURIComponent(editingWordId)}/images`, {
+          method: "POST",
+          body: formData,
+        });
+        const payload = (await response.json().catch(() => ({}))) as { message?: string };
+        if (!response.ok) {
+          throw new Error(
+            typeof payload.message === "string" && payload.message.trim().length > 0
+              ? payload.message
+              : t("scanwordsTemplateSetupImageUploadError"),
+          );
+        }
+        await refreshModalImages(editingWordId);
+      } catch (error) {
+        setModalImageError(error instanceof Error ? error.message : t("scanwordsTemplateSetupImageUploadError"));
+      } finally {
+        setModalImageBusy(false);
+      }
+    },
+    [editingPhotoAreaBounds, editingWordId, refreshModalImages, t],
+  );
+
+  const handleModalImageDelete = useCallback(
+    async (imageId: string) => {
+      if (!editingWordId) return;
+      setModalImageBusy(true);
+      setModalImageError(null);
+      try {
+        const response = await fetch(
+          `/api/dictionary/word/${encodeURIComponent(editingWordId)}/images/${encodeURIComponent(imageId)}`,
+          { method: "DELETE" },
+        );
+        const payload = (await response.json().catch(() => ({}))) as { message?: string };
+        if (!response.ok) {
+          throw new Error(
+            typeof payload.message === "string" && payload.message.trim().length > 0
+              ? payload.message
+              : t("scanwordsTemplateSetupImageDeleteError"),
+          );
+        }
+        if (selectedTemplate && editingSlot && editingFixedSlot?.imageId === imageId) {
+          onFixedSlotChange(selectedTemplate.key, {
+            ...editingFixedSlot,
+            imageId: null,
+          });
+        }
+        await refreshModalImages(editingWordId);
+      } catch (error) {
+        setModalImageError(error instanceof Error ? error.message : t("scanwordsTemplateSetupImageDeleteError"));
+      } finally {
+        setModalImageBusy(false);
+      }
+    },
+    [editingFixedSlot, editingSlot, editingWordId, onFixedSlotChange, refreshModalImages, selectedTemplate, t],
+  );
+
+  const handleModalImageSelect = useCallback(
+    (imageId: string | null) => {
+      if (!selectedTemplate || !editingFixedSlot) return;
+      onFixedSlotChange(selectedTemplate.key, {
+        ...editingFixedSlot,
+        imageId,
+      });
+    },
+    [editingFixedSlot, onFixedSlotChange, selectedTemplate],
+  );
 
   const applyOtpInput = useCallback(
     (index: number, rawValue: string) => {
@@ -356,6 +781,7 @@ export function TemplateSetupPanel({
       if (editingLockedLetters.has(index)) return;
       const letters = normalizeOtpLetters(rawValue);
       setModalCandidates([]);
+      setModalCandidatesPage(0);
       setModalError(null);
       setModalWord((current) => {
         const next = [...current];
@@ -389,6 +815,7 @@ export function TemplateSetupPanel({
       if (event.key === "Backspace") {
         event.preventDefault();
         setModalCandidates([]);
+        setModalCandidatesPage(0);
         setModalError(null);
         if (modalWord[index]) {
           setModalWord((current) => {
@@ -404,6 +831,7 @@ export function TemplateSetupPanel({
       if (event.key === "Delete") {
         event.preventDefault();
         setModalCandidates([]);
+        setModalCandidatesPage(0);
         setModalError(null);
         setModalWord((current) => {
           const next = [...current];
@@ -424,10 +852,9 @@ export function TemplateSetupPanel({
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        void searchModalWord();
       }
     },
-    [editingLockedLetters, editingSlot, focusEditableIndex, modalWord, searchModalWord],
+    [editingLockedLetters, editingSlot, focusEditableIndex, modalWord],
   );
 
   useEffect(() => {
@@ -480,7 +907,8 @@ export function TemplateSetupPanel({
           <DialogHeader>
             <DialogTitle>{editingSlot ? `Слот ${slotLabel(editingSlot)}` : "Выбор слова"}</DialogTitle>
             <DialogDescription>
-              Введите слово по буквам. Поиск идет только по словарю и только по точному совпадению длины.
+              Введите хотя бы две буквы. Ниже автоматически появятся словарные слова подходящей длины и с учетом
+              пересечений.
             </DialogDescription>
           </DialogHeader>
 
@@ -525,16 +953,32 @@ export function TemplateSetupPanel({
                 )}
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!dictionaryReady || modalLoading}
-                  onClick={() => void searchModalWord()}
-                >
-                  {modalLoading ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Search className="mr-2 size-4" />}
-                  Найти в словаре
-                </Button>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                {modalLoading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="size-4 animate-spin" />
+                    {t("scanwordsTemplateSetupSearching")}
+                  </span>
+                ) : modalKnownLetters.size < AUTOCOMPLETE_MIN_LETTERS ? (
+                  <span>{t("scanwordsTemplateSetupTypeMore", { count: AUTOCOMPLETE_MIN_LETTERS })}</span>
+                ) : modalCandidates.length > 0 ? (
+                  <span>{t("scanwordsTemplateSetupSuggestionsFound", { count: modalCandidates.length })}</span>
+                ) : null}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="size-8"
+                      disabled={!dictionaryReady || modalLoading}
+                      onClick={() => void searchModalWord({ allowEmpty: true })}
+                    >
+                      <Radar className="size-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{t("scanwordsTemplateSetupFindAll")}</TooltipContent>
+                </Tooltip>
                 {editingFixedSlot && (
                   <Button
                     type="button"
@@ -554,30 +998,195 @@ export function TemplateSetupPanel({
               {modalError && <p className="text-sm text-destructive">{modalError}</p>}
 
               {modalCandidates.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {modalCandidates.map((candidate) => (
-                    <Button
-                      key={candidate.id}
-                      type="button"
-                      variant={editingFixedSlot?.wordId === candidate.id ? "secondary" : "outline"}
-                      onClick={() => {
-                        if (!selectedTemplate) return;
-                        if (!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)) {
-                          setModalError("Слово не подходит по уже заполненным пересечениям.");
-                          return;
-                        }
-                        onFixedSlotChange(selectedTemplate.key, {
-                          slotId: editingSlot.slotId,
-                          wordId: candidate.id,
-                          word: candidate.word_text,
-                        });
-                        closeSlotEditor();
+                <div className="relative">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="absolute inset-y-1 left-0 z-10 h-auto w-9 rounded-full px-0 shadow-sm"
+                    disabled={modalCandidatesPage === 0}
+                    onClick={() => setModalCandidatesPage((current) => Math.max(0, current - 1))}
+                  >
+                    <ChevronLeft className="size-4" />
+                  </Button>
+
+                  <div className="min-w-0 px-11">
+                    <div
+                      className="grid grid-cols-4 content-start gap-2 overflow-hidden"
+                      style={{
+                        minHeight: `calc(${AUTOCOMPLETE_ROWS_VISIBLE} * 2.25rem + ${(AUTOCOMPLETE_ROWS_VISIBLE - 1) * 0.5}rem)`,
                       }}
-                      disabled={!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)}
                     >
-                      {candidate.word_text}
-                    </Button>
-                  ))}
+                      {pagedModalCandidates.map((candidate) => (
+                        <Button
+                          key={candidate.id}
+                          type="button"
+                          variant={editingFixedSlot?.wordId === candidate.id ? "secondary" : "outline"}
+                          onClick={() => {
+                            if (!selectedTemplate) return;
+                            if (!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)) {
+                              setModalError("Слово не подходит по уже заполненным пересечениям.");
+                              return;
+                            }
+                            onFixedSlotChange(selectedTemplate.key, {
+                              slotId: editingSlot.slotId,
+                              wordId: candidate.id,
+                              word: candidate.word_text,
+                              imageId: null,
+                            });
+                            setModalWord(
+                              applyLockedLettersToWord(
+                                buildOtpWord(candidate.word_text, editingSlot.len),
+                                editingSlot.len,
+                                editingLockedLetters,
+                              ),
+                            );
+                            setModalImageError(null);
+                            if (!editingIsPhotoDefinition) {
+                              closeSlotEditor();
+                            }
+                          }}
+                          disabled={!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)}
+                        >
+                          {candidate.word_text}
+                        </Button>
+                      ))}
+                    </div>
+                    {modalCandidatesPageCount > 1 && (
+                      <div className="mt-2 text-center text-xs text-muted-foreground">
+                        {modalCandidatesPage + 1} / {modalCandidatesPageCount}
+                      </div>
+                    )}
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="absolute inset-y-1 right-0 z-10 h-auto w-9 rounded-full px-0 shadow-sm"
+                    disabled={!hasNextCandidatesPage || modalLoading}
+                    onClick={() => void handleNextCandidatesPage()}
+                  >
+                    <ChevronRight className="size-4" />
+                  </Button>
+                </div>
+              )}
+
+              {editingIsPhotoDefinition && (
+                <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">{t("scanwordsTemplateSetupImageSectionTitle")}</div>
+                      <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageHint")}</div>
+                    </div>
+                    <div>
+                      <input
+                        id="template-setup-word-image-upload"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        className="hidden"
+                        disabled={!editingWordId || modalImageBusy}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = "";
+                          if (!file) return;
+                          void handleModalImageUpload(file);
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={!editingWordId || modalImageBusy}
+                        onClick={() => {
+                          const input = document.getElementById(
+                            "template-setup-word-image-upload",
+                          ) as HTMLInputElement | null;
+                          input?.click();
+                        }}
+                      >
+                        {modalImageBusy ? t("loading") : t("scanwordsReviewImageUpload")}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {!editingWordId && (
+                    <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageWordRequired")}</div>
+                  )}
+
+                  {modalImagesLoading && <div className="text-xs text-muted-foreground">{t("loading")}</div>}
+
+                  {editingWordId && !modalImagesLoading && modalImages.length === 0 && (
+                    <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageEmpty")}</div>
+                  )}
+
+                  {modalImages.length > 0 && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {modalImages.map((image) => (
+                        <div
+                          key={image.id}
+                          className={cn(
+                            "grid min-h-0 gap-2 rounded border bg-background p-2",
+                            resolvedEditingImageId === image.id ? "border-sky-500 bg-sky-500/10" : "border-border",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            className="overflow-hidden rounded border bg-background"
+                            onClick={() => handleModalImageSelect(image.id)}
+                            disabled={modalImageBusy}
+                          >
+                            <Image
+                              src={image.url}
+                              alt={image.fileName}
+                              width={image.width}
+                              height={image.height}
+                              className="h-24 w-full object-contain"
+                              unoptimized
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className={cn(
+                              "min-w-0 text-left text-xs leading-snug",
+                              resolvedEditingImageId === image.id
+                                ? "font-medium text-foreground"
+                                : "text-muted-foreground",
+                            )}
+                            onClick={() => handleModalImageSelect(image.id)}
+                            disabled={modalImageBusy}
+                          >
+                            <span className="block break-all">{image.fileName}</span>
+                            <span className="mt-1 block">
+                              {t("scanwordsTemplateSetupImageMeta", { width: image.width, height: image.height })}
+                            </span>
+                          </button>
+                          <div className="flex items-center justify-between gap-2">
+                            <span
+                              className={cn(
+                                "text-[11px]",
+                                resolvedEditingImageId === image.id
+                                  ? "text-sky-600 dark:text-sky-300"
+                                  : "text-transparent",
+                              )}
+                            >
+                              {t("scanwordsTemplateSetupImageSelected")}
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="ml-auto h-7 shrink-0 px-2 text-destructive"
+                              onClick={() => void handleModalImageDelete(image.id)}
+                              disabled={modalImageBusy}
+                            >
+                              {t("delete")}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {modalImageError && <div className="text-xs text-destructive">{modalImageError}</div>}
                 </div>
               )}
             </div>
@@ -592,32 +1201,12 @@ export function TemplateSetupPanel({
       </Dialog>
 
       <div className="grid gap-3">
-        <div className="rounded-md border bg-muted/20 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <div className="text-sm font-medium">Настройка шаблонов</div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Кликните по клетке со стрелкой в превью, чтобы закрепить словарное слово за слотом, и при необходимости
-                задайте ключевое слово.
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="default"
-              disabled={!dirty || saving || loading || !hasPreview}
-              onClick={onSave}
-            >
-              {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Save className="mr-2 size-4" />}
-              Сохранить
-            </Button>
-          </div>
-          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-          {!dictionaryReady && (
-            <p className="mt-2 text-xs text-amber-700">
-              Сначала выберите словарный шаблон на шаге словаря, иначе подбор слов для слотов будет недоступен.
-            </p>
-          )}
-        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        {!dictionaryReady && (
+          <p className="text-xs text-amber-700">
+            Сначала выберите словарный шаблон на шаге словаря, иначе подбор слов для слотов будет недоступен.
+          </p>
+        )}
 
         {loading && (
           <div className="rounded-md border bg-background/80 p-4 text-sm text-muted-foreground">
@@ -650,7 +1239,11 @@ export function TemplateSetupPanel({
                     >
                       <span className="truncate text-left text-xs font-medium">{template.sourceName}</span>
                       <span className="inline-flex shrink-0 items-center gap-2">
-                        {config?.keyword ? <Badge variant="secondary">Ключ</Badge> : null}
+                        {config?.keyword ? (
+                          <Badge variant="secondary" className="px-1.5">
+                            <KeyRound className="size-3.5" />
+                          </Badge>
+                        ) : null}
                         {config?.fixedSlots.length ? <Badge variant="outline">{config.fixedSlots.length}</Badge> : null}
                       </span>
                     </Button>
@@ -784,9 +1377,6 @@ export function TemplateSetupPanel({
                           placeholder="Например, КЛЮЧ"
                           autoComplete="off"
                         />
-                        <p className="text-xs text-muted-foreground">
-                          Если заполнено, backend попытается автоматически встроить это слово в шаблон.
-                        </p>
                       </div>
                     </div>
                   </CardContent>

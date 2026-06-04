@@ -41,9 +41,27 @@ CREATE UNIQUE INDEX "scanword_issue_svg_settings_issueId_key"
 CREATE INDEX "idx_scanword_issue_svg_settings_font"
   ON "public"."scanword_issue_svg_settings"("fontId");
 
-ALTER TABLE "public"."scanword_issue_svg_settings"
-  ADD CONSTRAINT "scanword_issue_svg_settings_issueId_fkey"
-    FOREIGN KEY ("issueId") REFERENCES "public"."issues"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = 'issues'
+  ) THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_constraint
+      WHERE conname = 'scanword_issue_svg_settings_issueId_fkey'
+    ) THEN
+      ALTER TABLE "public"."scanword_issue_svg_settings"
+        ADD CONSTRAINT "scanword_issue_svg_settings_issueId_fkey"
+        FOREIGN KEY ("issueId") REFERENCES "public"."issues"("id")
+        ON DELETE CASCADE
+        ON UPDATE CASCADE;
+    END IF;
+  END IF;
+END $$;
 
 ALTER TABLE "public"."scanword_issue_svg_settings"
   ADD CONSTRAINT "scanword_issue_svg_settings_fontId_fkey"

@@ -87,7 +87,7 @@ export function WorkspaceProgressHeader({
           return <span key={step} className={cn("h-2 flex-1 rounded-full transition-colors", fillClass)} />;
         })}
       </div>
-      <div className="grid gap-2 sm:grid-cols-5">
+      <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 lg:grid-cols-5">
         <Button
           type="button"
           variant={activeTab === "dictionary" ? "secondary" : "outline"}
@@ -139,13 +139,13 @@ export function WorkspaceProgressHeader({
           onClick={() => onTabChange("templateSetup")}
           aria-pressed={activeTab === "templateSetup"}
         >
-          <span className="truncate">Настройка</span>
+          <span className="truncate">{t("scanwordsTemplateSetupStep")}</span>
           {templateSetupStepComplete && <CircleCheckBig className="size-4 text-emerald-500" aria-hidden />}
         </Button>
         <Button
           type="button"
           variant={activeTab === "generation" ? "secondary" : "outline"}
-          className="w-full justify-between"
+          className="w-full justify-between min-[360px]:col-span-2 lg:col-span-1"
           onClick={() => onTabChange("generation")}
           aria-pressed={activeTab === "generation"}
         >

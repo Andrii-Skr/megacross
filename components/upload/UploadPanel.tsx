@@ -263,9 +263,9 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
         <div className="text-sm text-muted-foreground">{t("orClickToSelect")}</div>
       </div>
 
-      <div className="mt-4 flex items-center justify-between">
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-muted-foreground">{countText}</div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {showClearAction && (
             <Button type="button" variant="outline" onClick={clearFiles} disabled={uploading}>
               {t("clear")}
@@ -291,7 +291,7 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
                 {!parsing && totalStats && (
                   <div className="text-sm">
                     <div className="mb-1">{t("totalWords", { count: totalStats.total ?? 0 })}</div>
-                    <div className="text-muted-foreground">
+                    <div className="flex flex-wrap gap-x-2 gap-y-1 text-muted-foreground">
                       <span className="mr-1">{t("byLength")}:</span>
                       {Object.keys(totalStats)
                         .filter((k) => k !== "total")

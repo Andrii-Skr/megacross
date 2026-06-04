@@ -11,6 +11,7 @@ import {
   Loader2,
   SquarePen,
 } from "lucide-react";
+import NextImage from "next/image";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
@@ -38,10 +39,13 @@ import type {
   FillDefinitionLimits,
   FillFinalizePayload,
   FillMaskCandidate,
+  FillPhotoAreaBounds,
   FillReviewDefinitionOption,
   FillReviewPayload,
   FillReviewSlot,
   FillReviewTemplate,
+  TemplateSetupPayload,
+  WordImageOption,
 } from "./model";
 import {
   buildFinalizePayload,
@@ -52,11 +56,13 @@ import {
   type EditableReviewSlotState as EditableSlot,
   mapPersistedRowsByTemplate,
   mergeTemplateStateWithDraft,
+  mergeTemplateStateWithTemplateSetup,
   normalizeDefinitionKey,
   normalizeDefinitionOptions,
   normalizePersistedRows,
   normalizeWordInput,
   type PersistedReviewRow,
+  resolveSelectedImageId,
   wordMatchesFixedLetters,
 } from "./reviewDraftState";
 
@@ -65,6 +71,7 @@ type WordOption = {
   word: string;
   wordId: string | null;
   definitions: FillReviewDefinitionOption[];
+  availableImages: WordImageOption[];
 };
 
 type DefinitionExistingOption = {
@@ -105,6 +112,7 @@ type FillReviewDialogProps = {
   reviewJobId: string | null;
   reviewData: FillReviewPayload | null;
   definitionLimits: FillDefinitionLimits;
+  templateSetup: TemplateSetupPayload | null;
   loading: boolean;
   finalizing: boolean;
   error: string | null;
@@ -268,7 +276,12 @@ function cleanupLegacyReviewDraftStorage() {
 
 function buildWordOptions(row: EditableSlot, candidates: FillMaskCandidate[]): WordOption[] {
   const byKey = new Map<string, WordOption>();
-  const add = (wordId: string | null, word: string, definitions: FillReviewDefinitionOption[]) => {
+  const add = (
+    wordId: string | null,
+    word: string,
+    definitions: FillReviewDefinitionOption[],
+    availableImages: WordImageOption[],
+  ) => {
     const normalizedWord = normalizeWordInput(word);
     if (!normalizedWord) return;
     const value = keyForWordOption(wordId, normalizedWord);
@@ -278,15 +291,28 @@ function buildWordOptions(row: EditableSlot, candidates: FillMaskCandidate[]): W
       word: normalizedWord,
       wordId,
       definitions: normalizeDefinitionOptions(definitions),
+      availableImages,
     });
   };
 
-  add(row.wordId, row.word, row.definitionOptions);
+  add(row.wordId, row.word, row.definitionOptions, row.availableImages);
   for (const candidate of candidates) {
-    add(candidate.wordId ?? null, candidate.word, candidate.definitions ?? []);
+    add(candidate.wordId ?? null, candidate.word, candidate.definitions ?? [], candidate.availableImages ?? []);
   }
 
   return [...byKey.values()];
+}
+
+function buildPhotoAreaSize(bounds: FillPhotoAreaBounds | null | undefined): { width: number; height: number } | null {
+  if (!bounds) return null;
+  const width = bounds.maxCol - bounds.minCol + 1;
+  const height = bounds.maxRow - bounds.minRow + 1;
+  if (!(width > 0) || !(height > 0)) return null;
+  return { width, height };
+}
+
+function pickDefaultImageId(images: WordImageOption[], preferredImageId?: string | null): string | null {
+  return resolveSelectedImageId(images, preferredImageId);
 }
 
 function buildDefinitionClueGroups(template: FillReviewTemplate) {
@@ -390,6 +416,7 @@ export function FillReviewDialog({
   reviewJobId,
   reviewData,
   definitionLimits,
+  templateSetup,
   loading,
   finalizing,
   error,
@@ -416,6 +443,8 @@ export function FillReviewDialog({
   const [finalizeConfirmationInput, setFinalizeConfirmationInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [draftHydrated, setDraftHydrated] = useState(false);
+  const [imageBusyRowKey, setImageBusyRowKey] = useState<string | null>(null);
+  const [imageErrorByRowKey, setImageErrorByRowKey] = useState<Record<string, string | null>>({});
   const draftStorageKey = useMemo(() => (reviewJobId ? buildReviewDraftStorageKey(reviewJobId) : null), [reviewJobId]);
   const draftStorageDisabledRef = useRef(false);
   const draftRemoteEnabledRef = useRef(false);
@@ -474,8 +503,44 @@ export function FillReviewDialog({
 
       const initial: Record<string, EditableSlot[]> = {};
       for (const template of templates) {
-        const initialRows = buildInitialTemplateState(template);
+        const initialRows = mergeTemplateStateWithTemplateSetup(
+          template.key,
+          buildInitialTemplateState(template),
+          templateSetup,
+        );
         initial[template.key] = mergeTemplateStateWithDraft(initialRows, persistedDraft?.get(template.key));
+      }
+      const hydrateImageRequests: Array<Promise<void>> = [];
+      for (const template of templates) {
+        const serverSlotById = new Map(template.slots.map((slot) => [slot.slotId, slot]));
+        for (const row of initial[template.key] ?? []) {
+          const serverSlot = serverSlotById.get(row.slotId);
+          if (!row.wordId) continue;
+          const needsImages =
+            row.wordId !== (serverSlot?.wordId ?? null) ||
+            (row.selectedImageId != null && !row.availableImages.some((image) => image.id === row.selectedImageId));
+          if (!needsImages) continue;
+          const wordId = row.wordId;
+          hydrateImageRequests.push(
+            (async () => {
+              try {
+                const response = await fetch(`/api/dictionary/word/${encodeURIComponent(wordId)}/images`, {
+                  method: "GET",
+                  cache: "no-store",
+                });
+                const payload = (await response.json().catch(() => ({}))) as { images?: WordImageOption[] };
+                if (!response.ok || !Array.isArray(payload.images)) return;
+                row.availableImages = payload.images;
+                row.selectedImageId = pickDefaultImageId(payload.images, row.selectedImageId);
+              } catch {
+                // Keep draft word/definition even if image metadata fails to hydrate.
+              }
+            })(),
+          );
+        }
+      }
+      if (hydrateImageRequests.length > 0) {
+        await Promise.all(hydrateImageRequests);
       }
       if (!active) return;
 
@@ -495,7 +560,7 @@ export function FillReviewDialog({
         draftPersistTimeoutRef.current = null;
       }
     };
-  }, [draftStorageKey, reviewJobId, templates]);
+  }, [draftStorageKey, reviewJobId, templateSetup, templates]);
 
   useEffect(() => {
     if (!draftHydrated) return;
@@ -605,6 +670,31 @@ export function FillReviewDialog({
     [],
   );
 
+  const setRowImageError = useCallback((rowKey: string, message: string | null) => {
+    setImageErrorByRowKey((prev) => {
+      if ((prev[rowKey] ?? null) === message) return prev;
+      return {
+        ...prev,
+        [rowKey]: message,
+      };
+    });
+  }, []);
+
+  const refreshWordImages = useCallback(async (wordId: string): Promise<WordImageOption[]> => {
+    const response = await fetch(`/api/dictionary/word/${encodeURIComponent(wordId)}/images`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      images?: WordImageOption[];
+      message?: string;
+    };
+    if (!response.ok) {
+      throw new Error(payload.message || `HTTP ${response.status}`);
+    }
+    return Array.isArray(payload.images) ? payload.images : [];
+  }, []);
+
   const buildMask = useCallback(
     (template: FillReviewTemplate, slot: FillReviewSlot): string => {
       const currentSlots = slotsByTemplate[template.key] ?? [];
@@ -677,6 +767,22 @@ export function FillReviewDialog({
         }
         if (!definition) {
           push(`${template.name}: слот ${slot.slotId} — определение пустое`, rowRef, template.key);
+        }
+        if (slot.isPhotoDefinition) {
+          const resolvedImageId = resolveSelectedImageId(current.availableImages, current.selectedImageId);
+          if (!current.wordId) {
+            push(
+              `${template.name}: слот ${slot.slotId} — для фото-кластера нужно существующее слово словаря`,
+              rowRef,
+              template.key,
+            );
+          } else if (!resolvedImageId) {
+            push(
+              `${template.name}: слот ${slot.slotId} — для фото-кластера нужно выбрать картинку`,
+              rowRef,
+              template.key,
+            );
+          }
         }
 
         const mask = buildMask(template, slot);
@@ -1043,6 +1149,90 @@ export function FillReviewDialog({
     [buildMask, onRequestCandidates, t],
   );
 
+  const replaceRowImages = useCallback(
+    (templateKey: string, slotId: number, images: WordImageOption[], preferredImageId?: string | null) => {
+      updateSlot(templateKey, slotId, (slot) => ({
+        ...slot,
+        availableImages: images,
+        selectedImageId: pickDefaultImageId(images, preferredImageId ?? slot.selectedImageId),
+      }));
+    },
+    [updateSlot],
+  );
+
+  const handleUploadRowImage = useCallback(
+    async (template: FillReviewTemplate, slot: FillReviewSlot, row: EditableSlot, file: File) => {
+      if (!row.wordId) return;
+      const rowKey = keyForRow(template.key, slot.slotId);
+      const photoAreaSize = buildPhotoAreaSize(slot.photoAreaBounds);
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      if (photoAreaSize) {
+        formData.append("targetWidth", String(photoAreaSize.width));
+        formData.append("targetHeight", String(photoAreaSize.height));
+      }
+
+      setImageBusyRowKey(rowKey);
+      setRowImageError(rowKey, null);
+      try {
+        const response = await fetch(`/api/dictionary/word/${encodeURIComponent(row.wordId)}/images`, {
+          method: "POST",
+          body: formData,
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          image?: WordImageOption;
+          message?: string;
+          errorCode?: string;
+        };
+        if (!response.ok) {
+          throw new Error(payload.message || `HTTP ${response.status}`);
+        }
+        const images = await refreshWordImages(row.wordId);
+        replaceRowImages(template.key, slot.slotId, images, payload.image?.id ?? null);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t("scanwordsReviewImageUploadError");
+        setRowImageError(rowKey, message);
+        toast.error(message);
+      } finally {
+        setImageBusyRowKey(null);
+      }
+    },
+    [refreshWordImages, replaceRowImages, setRowImageError, t],
+  );
+
+  const handleDeleteRowImage = useCallback(
+    async (template: FillReviewTemplate, slot: FillReviewSlot, row: EditableSlot, imageId: string) => {
+      if (!row.wordId) return;
+      const rowKey = keyForRow(template.key, slot.slotId);
+      setImageBusyRowKey(rowKey);
+      setRowImageError(rowKey, null);
+      try {
+        const response = await fetch(
+          `/api/dictionary/word/${encodeURIComponent(row.wordId)}/images/${encodeURIComponent(imageId)}`,
+          { method: "DELETE" },
+        );
+        const payload = (await response.json().catch(() => ({}))) as { message?: string };
+        if (!response.ok) {
+          throw new Error(payload.message || `HTTP ${response.status}`);
+        }
+        const images = await refreshWordImages(row.wordId);
+        replaceRowImages(
+          template.key,
+          slot.slotId,
+          images,
+          row.selectedImageId === imageId ? null : row.selectedImageId,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t("scanwordsReviewImageDeleteError");
+        setRowImageError(rowKey, message);
+        toast.error(message);
+      } finally {
+        setImageBusyRowKey(null);
+      }
+    },
+    [refreshWordImages, replaceRowImages, setRowImageError, t],
+  );
+
   const applyNewWord = useCallback(
     (target: WordCreateTarget, payload: NewWordCreatedPayload) => {
       const normalizedWord = normalizeWordInput(payload.word);
@@ -1070,6 +1260,8 @@ export function FillReviewDialog({
         definition: firstDefinition || slot.definition,
         opredId: null,
         definitionOptions: nextOptions.length > 0 ? nextOptions : slot.definitionOptions,
+        availableImages: [],
+        selectedImageId: null,
       }));
     },
     [t, updateSlot],
@@ -1341,6 +1533,12 @@ export function FillReviewDialog({
     const intersectionIndexes = new Set(slot.intersections.map((item) => item.index));
     const fixedLetters = buildFixedLetters(template, slot);
     const templateLang = toSupportedLanguage(template.language);
+    const resolvedSelectedImageId = resolveSelectedImageId(row.availableImages, row.selectedImageId);
+    const selectedImage = row.availableImages.find((image) => image.id === resolvedSelectedImageId) ?? null;
+    const photoAreaSize = buildPhotoAreaSize(slot.photoAreaBounds);
+    const imageError = imageErrorByRowKey[rowKey] ?? null;
+    const imageBusy = imageBusyRowKey === rowKey;
+    const fileInputId = `${rowKey}-image-upload`;
 
     return (
       <tr key={rowKey} className={rowHighlightClass}>
@@ -1397,6 +1595,8 @@ export function FillReviewDialog({
                       definition: selectedDefinition?.text ?? "",
                       opredId: selectedDefinition?.opredId ?? null,
                       definitionOptions: nextDefinitions,
+                      availableImages: selectedOption.availableImages,
+                      selectedImageId: pickDefaultImageId(selectedOption.availableImages),
                     };
                   });
                 }}
@@ -1686,6 +1886,139 @@ export function FillReviewDialog({
                 <TooltipContent>{t("editDefinition")}</TooltipContent>
               </Tooltip>
             </div>
+            {slot.isPhotoDefinition && (
+              <div className="rounded-md border border-sky-500/25 bg-sky-500/5 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs text-muted-foreground">
+                    {photoAreaSize
+                      ? t("scanwordsReviewImageArea", {
+                          width: photoAreaSize.width,
+                          height: photoAreaSize.height,
+                        })
+                      : t("scanwordsReviewImageAreaUnknown")}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id={fileInputId}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      disabled={!row.wordId || imageBusy || finalizing || submitting}
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        event.currentTarget.value = "";
+                        if (!file) return;
+                        void handleUploadRowImage(template, slot, row, file);
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!row.wordId || imageBusy || finalizing || submitting}
+                      onClick={() => {
+                        const input = document.getElementById(fileInputId) as HTMLInputElement | null;
+                        input?.click();
+                      }}
+                    >
+                      {imageBusy ? t("loading") : t("scanwordsReviewImageUpload")}
+                    </Button>
+                  </div>
+                </div>
+                {!row.wordId && (
+                  <div className="mt-2 text-xs text-muted-foreground">{t("scanwordsReviewImageWordRequired")}</div>
+                )}
+                {selectedImage && (
+                  <div className="mt-3 grid gap-2">
+                    <div className="overflow-hidden rounded border bg-background">
+                      <NextImage
+                        src={selectedImage.url}
+                        alt={selectedImage.fileName}
+                        width={selectedImage.width}
+                        height={selectedImage.height}
+                        className="h-32 w-full object-contain"
+                        unoptimized
+                      />
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {t("scanwordsReviewImageMeta", {
+                        width: selectedImage.width,
+                        height: selectedImage.height,
+                      })}
+                    </div>
+                  </div>
+                )}
+                {row.availableImages.length > 0 && (
+                  <div className="mt-3 grid gap-2">
+                    <div className="text-xs font-medium">{t("scanwordsReviewImageChoose")}</div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {row.availableImages.map((image) => {
+                        const active = resolvedSelectedImageId === image.id;
+                        return (
+                          <div
+                            key={image.id}
+                            className={cn(
+                              "grid gap-2 rounded border p-2",
+                              active ? "border-sky-500 bg-sky-500/10" : "border-border",
+                            )}
+                          >
+                            <button
+                              type="button"
+                              className="overflow-hidden rounded border bg-background"
+                              onClick={() =>
+                                updateSlot(template.key, slot.slotId, (prev) => ({
+                                  ...prev,
+                                  selectedImageId: image.id,
+                                }))
+                              }
+                              disabled={imageBusy || finalizing || submitting}
+                            >
+                              <NextImage
+                                src={image.url}
+                                alt={image.fileName}
+                                width={image.width}
+                                height={image.height}
+                                className="h-24 w-full object-contain"
+                                unoptimized
+                              />
+                            </button>
+                            <div className="flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                className={cn(
+                                  "text-left text-xs",
+                                  active ? "font-medium text-foreground" : "text-muted-foreground",
+                                )}
+                                onClick={() =>
+                                  updateSlot(template.key, slot.slotId, (prev) => ({
+                                    ...prev,
+                                    selectedImageId: image.id,
+                                  }))
+                                }
+                                disabled={imageBusy || finalizing || submitting}
+                              >
+                                {image.fileName}
+                              </button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-destructive"
+                                onClick={() => void handleDeleteRowImage(template, slot, row, image.id)}
+                                disabled={imageBusy || finalizing || submitting}
+                              >
+                                {t("delete")}
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {imageError && <div className="mt-2 text-xs text-destructive">{imageError}</div>}
+              </div>
+            )}
           </div>
         </td>
       </tr>

@@ -28,6 +28,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
     selectedIssue,
     templates,
     selectedTemplateId,
+    selectedTemplateFilter,
     templatesLoading,
     templatesError,
     stats,
@@ -139,7 +140,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
   return (
     <TooltipProvider>
       <section className="min-w-0 flex-1">
-        <Card className="flex h-[calc(100vh-7rem)] flex-col bg-background/70">
+        <Card className="flex flex-col bg-background/70 lg:h-[calc(100vh-7rem)]">
           <CardHeader className="shrink-0 pb-4">
             <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
               <Sparkles className="size-4 text-emerald-500" />
@@ -151,7 +152,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
             </CardTitle>
           </CardHeader>
 
-          <CardContent className="flex min-h-0 flex-1 flex-col pt-2">
+          <CardContent className="flex flex-1 flex-col pt-2 lg:min-h-0">
             <WorkspaceProgressHeader
               activeTab={activeTab}
               onTabChange={setActiveTab}
@@ -171,8 +172,10 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
 
             <div
               className={cn(
-                "flex min-h-0 flex-1 flex-col gap-4",
-                activeTab === "upload" ? "overflow-hidden" : "overflow-y-auto",
+                "flex flex-1 flex-col gap-4",
+                activeTab === "upload"
+                  ? "overflow-visible lg:min-h-0 lg:overflow-hidden"
+                  : "overflow-visible lg:min-h-0 lg:overflow-y-auto",
               )}
             >
               <div
@@ -239,10 +242,8 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
               <TemplateSetupPanel
                 active={activeTab === "templateSetup"}
                 loading={templateSetup.loading}
-                saving={templateSetup.saving}
-                dirty={templateSetup.dirty}
                 error={templateSetup.error}
-                hasPreview={templateSetup.hasPreview}
+                dictionaryFilter={selectedTemplateFilter}
                 dictionaryLanguage={selectedTemplate?.language ?? "ru"}
                 dictionaryReady={Boolean(selectedTemplate)}
                 templates={templateSetup.templates}
@@ -250,7 +251,6 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
                 onKeywordChange={templateSetup.setKeyword}
                 onFixedSlotChange={templateSetup.setFixedSlot}
                 onFixedSlotClear={templateSetup.clearFixedSlot}
-                onSave={() => void templateSetup.save()}
               />
 
               <GenerationPanel
@@ -328,6 +328,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
                 maxPerCell: fill.fillSettings.definitionMaxPerCell,
                 maxPerHalfCell: fill.fillSettings.definitionMaxPerHalfCell,
               }}
+              templateSetup={templateSetup.templateSetup}
               loading={fill.reviewLoading}
               finalizing={fill.reviewFinalizing}
               error={fill.reviewError}

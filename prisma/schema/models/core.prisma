@@ -73,6 +73,7 @@ model word_v {
   pendings       PendingWords[]
   issueUsages    IssueWordUsage[]
   editionStats   EditionWordStat[]
+  images         ScanwordWordImage[]
   language       language          @relation(fields: [langId], references: [id])
 
   @@index([is_deleted])
@@ -80,6 +81,27 @@ model word_v {
   @@index([langId, word_text], map: "idx_word_v__langId_word_text")
   @@index([langId, is_deleted, word_text], map: "idx_word_v_lang_del_text")
   @@map("word_v")
+}
+
+model ScanwordWordImage {
+  id             BigInt   @id @default(autoincrement())
+  wordId         BigInt
+  fileName       String   @db.VarChar(255)
+  mimeType       String   @db.VarChar(120)
+  storageRelPath String   @db.VarChar(255)
+  sha256         String   @db.Char(64)
+  sizeBytes      BigInt
+  width          Int
+  height         Int
+  aspectRatio    Decimal  @db.Decimal(12, 6)
+  createdBy      Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  word           word_v   @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@index([wordId], map: "idx_scanword_word_images_word")
+  @@unique([wordId, sha256], map: "scanword_word_images_wordId_sha256_key")
+  @@map("scanword_word_images")
 }
 
 /// Added @@index([langId]) for FK lookups and filtering by language

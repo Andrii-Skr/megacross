@@ -1,5 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TemplateSetupPreviewTemplate, TemplateSetupTemplate } from "@/components/scanwords/workspace/model";
 import { TemplateSetupPanel } from "@/components/scanwords/workspace/TemplateSetupPanel";
@@ -41,6 +40,8 @@ function makeTemplate(): TemplateSetupPreviewTemplate {
           [0, 5],
         ],
         startNumber: 1,
+        isPhotoDefinition: false,
+        photoAreaBounds: null,
       },
       {
         slotId: 4,
@@ -57,6 +58,8 @@ function makeTemplate(): TemplateSetupPreviewTemplate {
           [5, 5],
         ],
         startNumber: 4,
+        isPhotoDefinition: true,
+        photoAreaBounds: { minRow: 0, minCol: 0, maxRow: 2, maxCol: 2 },
       },
     ],
     startPositions: [
@@ -98,7 +101,7 @@ describe("TemplateSetupPanel", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: /Открыть 4\. ↓ 6/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Открыть 4\. ↓ 6/i }));
 
     const dialog = screen.getByRole("dialog");
     const inputs = within(dialog).getAllByRole("textbox");
@@ -108,11 +111,64 @@ describe("TemplateSetupPanel", () => {
     expect(inputs[0]).toHaveAttribute("readonly");
     expect(inputs[1]).not.toHaveAttribute("readonly");
 
-    await userEvent.type(inputs[0], "А");
+    fireEvent.change(inputs[0] as HTMLInputElement, { target: { value: "А" } });
     expect(inputs[0]).toHaveValue("Г");
 
-    await userEvent.type(inputs[1], "О");
+    fireEvent.change(inputs[1] as HTMLInputElement, { target: { value: "О" } });
     expect(inputs[1]).toHaveValue("О");
     expect(onFixedSlotChange).not.toHaveBeenCalled();
+  });
+
+  it("shows the image section only for photo-definition slots", () => {
+    const template = makeTemplate();
+
+    const { rerender } = render(
+      <TemplateSetupPanel
+        active
+        loading={false}
+        saving={false}
+        dirty={false}
+        error={null}
+        hasPreview
+        dictionaryLanguage="ru"
+        dictionaryReady
+        templates={[template]}
+        templateMap={new Map()}
+        onKeywordChange={vi.fn()}
+        onFixedSlotChange={vi.fn()}
+        onFixedSlotClear={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Открыть 1\. → 6/i }));
+    let dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByText("scanwordsTemplateSetupImageSectionTitle")).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+
+    rerender(
+      <TemplateSetupPanel
+        active
+        loading={false}
+        saving={false}
+        dirty={false}
+        error={null}
+        hasPreview
+        dictionaryLanguage="ru"
+        dictionaryReady
+        templates={[template]}
+        templateMap={new Map()}
+        onKeywordChange={vi.fn()}
+        onFixedSlotChange={vi.fn()}
+        onFixedSlotClear={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Открыть 4\. ↓ 6/i }));
+    dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("scanwordsTemplateSetupImageSectionTitle")).toBeInTheDocument();
+    expect(within(dialog).getByText("scanwordsTemplateSetupImageWordRequired")).toBeInTheDocument();
   });
 });

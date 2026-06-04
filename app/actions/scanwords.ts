@@ -19,6 +19,7 @@ import {
 import { actionError } from "@/lib/action-error";
 import { Permissions, requirePermissionAsync } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
+import { buildPhotoAreaBoundsBySlotId } from "@/lib/scanwordPhotoClues";
 import { scanSlotsDetailed, validate } from "@/utils/cross/grid";
 import { parseFshBytes } from "@/utils/cross/parseFsh";
 import type { GridCell } from "@/utils/cross/types";
@@ -1238,6 +1239,7 @@ export async function getScanwordTemplateSetupPreviewAction(
     const grid = parseFshBytes(buffer);
     validate(grid);
     const slotScan = scanSlotsDetailed(grid);
+    const photoAreaBoundsBySlotId = buildPhotoAreaBoundsBySlotId(grid, slotScan.slots, grid.data, new Map());
     const slots: TemplateSetupPreviewSlot[] = slotScan.slots.map((slot) => ({
       slotId: slot.id,
       r: slot.r,
@@ -1246,6 +1248,8 @@ export async function getScanwordTemplateSetupPreviewAction(
       len: slot.len,
       cells: slot.cells,
       startNumber: slotScan.startNumberBySlotId.get(slot.id) ?? null,
+      isPhotoDefinition: photoAreaBoundsBySlotId.has(slot.id),
+      photoAreaBounds: photoAreaBoundsBySlotId.get(slot.id) ?? null,
     }));
     const arrows = await buildPreviewArrows(grid);
     const key = file.key;

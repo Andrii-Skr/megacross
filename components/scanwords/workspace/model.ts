@@ -1,3 +1,4 @@
+import type { DictionaryFilterInput } from "@/types/dictionary-bulk";
 import type { DictionaryTemplateItem, FilterStats } from "@/types/dictionary-templates";
 import type { Edition, Issue } from "../types";
 
@@ -43,6 +44,24 @@ export type FillReviewDefinitionOption = {
   difficulty: number | null;
 };
 
+export type WordImageOption = {
+  id: string;
+  wordId: string;
+  fileName: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  aspectRatio: number;
+  url: string;
+};
+
+export type FillPhotoAreaBounds = {
+  minRow: number;
+  minCol: number;
+  maxRow: number;
+  maxCol: number;
+};
+
 export type FillReviewIntersection = {
   slotId: number;
   index: number;
@@ -65,6 +84,9 @@ export type FillReviewSlot = {
   definition: string;
   definitionOptions: FillReviewDefinitionOption[];
   isPhotoDefinition?: boolean | null;
+  photoAreaBounds?: FillPhotoAreaBounds | null;
+  availableImages?: WordImageOption[];
+  selectedImageId?: string | null;
   intersections: FillReviewIntersection[];
   clueCell: { key: string; row: number; col: number } | null;
   startNumber?: number | null;
@@ -125,6 +147,7 @@ export type TemplateSetupFixedSlot = {
   slotId: number;
   wordId: string;
   word: string;
+  imageId?: string | null;
 };
 
 export type TemplateSetupTemplate = {
@@ -159,6 +182,8 @@ export type TemplateSetupPreviewSlot = {
   len: number;
   cells: [number, number][];
   startNumber: number | null;
+  isPhotoDefinition?: boolean | null;
+  photoAreaBounds?: FillPhotoAreaBounds | null;
 };
 
 export type TemplateSetupPreviewTemplate = {
@@ -202,6 +227,7 @@ export type FillMaskCandidate = {
   wordId: string;
   word: string;
   definitions: FillReviewDefinitionOption[];
+  availableImages?: WordImageOption[];
 };
 
 export type FillFinalizePayload = {
@@ -213,6 +239,7 @@ export type FillFinalizePayload = {
       definition: string;
       wordId: string | null;
       opredId: string | null;
+      imageId: string | null;
     }>;
   }>;
   definitionLimits?: FillDefinitionLimits;
@@ -309,15 +336,22 @@ function normalizeTemplateKeyword(value: string | null | undefined): string | nu
 
 function normalizeTemplateFixedSlot(value: unknown): TemplateSetupFixedSlot | null {
   if (!value || typeof value !== "object") return null;
-  const raw = value as { slotId?: unknown; wordId?: unknown; word?: unknown };
+  const raw = value as { slotId?: unknown; wordId?: unknown; word?: unknown; imageId?: unknown };
   const slotId = typeof raw.slotId === "number" ? raw.slotId : Number(raw.slotId);
   const wordId = typeof raw.wordId === "string" ? raw.wordId.trim() : "";
   const word = typeof raw.word === "string" ? normalizeTemplateSetupWord(raw.word) : "";
   if (!Number.isFinite(slotId) || slotId < 0 || !wordId || !word) return null;
+  const imageId =
+    typeof raw.imageId === "string" && raw.imageId.trim().length > 0
+      ? raw.imageId.trim()
+      : raw.imageId === null
+        ? null
+        : null;
   return {
     slotId: Math.trunc(slotId),
     wordId,
     word,
+    imageId,
   };
 }
 
@@ -381,6 +415,7 @@ export type ScanwordsWorkspaceProps = {
   selectedIssue: Issue | null;
   templates: DictionaryTemplateItem[];
   selectedTemplateId: number | null;
+  selectedTemplateFilter: DictionaryFilterInput | null;
   templatesLoading: boolean;
   templatesError: boolean;
   stats: FilterStats | null;

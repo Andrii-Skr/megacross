@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, CirclePlus, CircleQuestionMark } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, CirclePlus, CircleQuestionMark } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -46,6 +46,8 @@ export function ScanwordsLists({
   const t = useTranslations();
   const [showHiddenEditions, setShowHiddenEditions] = useState(false);
   const [showHiddenIssues, setShowHiddenIssues] = useState(false);
+  const [mobileEditionsCollapsed, setMobileEditionsCollapsed] = useState(false);
+  const [mobileIssuesCollapsed, setMobileIssuesCollapsed] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -53,6 +55,7 @@ export function ScanwordsLists({
   } | null>(null);
   const [menuStyle, setMenuStyle] = useState<{ top: number; left: number } | null>(null);
   const [menuMounted, setMenuMounted] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const issuesPanelRef = useRef<HTMLDivElement | null>(null);
   const issuesCardRef = useRef<HTMLDivElement | null>(null);
@@ -78,12 +81,41 @@ export function ScanwordsLists({
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(min-width: 1024px)");
+    const update = () => {
+      setIsDesktop(media.matches);
+    };
+    update();
+    media.addEventListener("change", update);
+    return () => {
+      media.removeEventListener("change", update);
+    };
+  }, []);
+
+  useEffect(() => {
     if (selectedEditionId === null) {
       setShowHiddenIssues(false);
       return;
     }
     setShowHiddenIssues(false);
   }, [selectedEditionId]);
+
+  useEffect(() => {
+    if (isDesktop) {
+      setMobileEditionsCollapsed(false);
+      return;
+    }
+    setMobileEditionsCollapsed(selectedEditionId !== null);
+  }, [isDesktop, selectedEditionId]);
+
+  useEffect(() => {
+    if (isDesktop) {
+      setMobileIssuesCollapsed(false);
+      return;
+    }
+    setMobileIssuesCollapsed(selectedIssueId !== null);
+  }, [isDesktop, selectedIssueId]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -157,6 +189,9 @@ export function ScanwordsLists({
     onSelectEdition(editionId);
     setShowHiddenIssues(false);
   };
+
+  const editionsCollapsed = !isDesktop && mobileEditionsCollapsed && selectedEdition != null;
+  const issuesCollapsed = !isDesktop && mobileIssuesCollapsed && selectedIssue != null;
 
   const setEditionButtonRef = useCallback(
     (editionId: number) => (node: HTMLButtonElement | null) => {
@@ -286,9 +321,9 @@ export function ScanwordsLists({
 
   return (
     <>
-      <div className="sticky top-12 z-20 -mx-4 px-4 py-2 md:-mx-6 md:px-6">
+      <div className="-mx-4 px-4 py-2 md:-mx-6 md:px-6 lg:sticky lg:top-12 lg:z-20">
         <nav aria-label={t("breadcrumb")} className="text-sm">
-          <div className="inline-flex rounded-full border border-border/50 bg-background/80 px-3 py-1.5 shadow-sm backdrop-blur-sm">
+          <div className="inline-flex max-w-full rounded-2xl border border-border/50 bg-background/80 px-3 py-1.5 shadow-sm backdrop-blur-sm">
             <ol className="flex flex-wrap items-center gap-2 text-muted-foreground">
               <li>
                 <Button
@@ -355,25 +390,41 @@ export function ScanwordsLists({
                     </Tooltip>
                   </TooltipProvider>
                 </CardTitle>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
+                <div className="flex items-center gap-1">
+                  {!isDesktop && selectedEdition && (
+                    <>
+                      <span className="max-w-28 truncate text-xs text-muted-foreground">{selectedEdition.name}</span>
                       <Button
                         type="button"
                         size="icon"
                         variant="ghost"
-                        aria-label={t("scanwordsCreateEdition")}
-                        onClick={onOpenEditionDialog}
+                        aria-label={editionsCollapsed ? t("expand") : t("collapse")}
+                        onClick={() => setMobileEditionsCollapsed((prev) => !prev)}
                       >
-                        <CirclePlus className="size-4" />
+                        {editionsCollapsed ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
                       </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">{t("scanwordsCreateEdition")}</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                    </>
+                  )}
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          aria-label={t("scanwordsCreateEdition")}
+                          onClick={onOpenEditionDialog}
+                        >
+                          <CirclePlus className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">{t("scanwordsCreateEdition")}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
               </div>
             </CardHeader>
-            <CardContent className="pt-2">
+            <CardContent className={cn("pt-2", editionsCollapsed && "hidden")}>
               {visibleEditions.length === 0 && hiddenEditions.length === 0 ? (
                 <div className="py-6 text-center text-sm text-muted-foreground">{t("scanwordsNoEditions")}</div>
               ) : visibleEditions.length > 0 ? (
@@ -482,7 +533,7 @@ export function ScanwordsLists({
         >
           <div
             className="transition-transform duration-300"
-            style={selectedEdition ? { transform: `translateY(${issuesOffset}px)` } : undefined}
+            style={selectedEdition && isDesktop ? { transform: `translateY(${issuesOffset}px)` } : undefined}
             ref={issuesCardRef}
           >
             <Card className="bg-background/70">
@@ -507,26 +558,42 @@ export function ScanwordsLists({
                       </Tooltip>
                     </TooltipProvider>
                   </div>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
+                  <div className="flex items-center gap-1">
+                    {!isDesktop && selectedIssue && (
+                      <>
+                        <span className="max-w-24 truncate text-xs text-muted-foreground">{selectedIssue.label}</span>
                         <Button
                           type="button"
                           size="icon"
                           variant="ghost"
-                          aria-label={t("scanwordsCreateIssue")}
-                          disabled={!selectedEdition}
-                          onClick={onOpenIssueDialog}
+                          aria-label={issuesCollapsed ? t("expand") : t("collapse")}
+                          onClick={() => setMobileIssuesCollapsed((prev) => !prev)}
                         >
-                          <CirclePlus className="size-4" />
+                          {issuesCollapsed ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
                         </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">{t("scanwordsCreateIssue")}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                      </>
+                    )}
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            aria-label={t("scanwordsCreateIssue")}
+                            disabled={!selectedEdition}
+                            onClick={onOpenIssueDialog}
+                          >
+                            <CirclePlus className="size-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">{t("scanwordsCreateIssue")}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
                 </CardTitle>
               </CardHeader>
-              <CardContent className="pt-2">
+              <CardContent className={cn("pt-2", issuesCollapsed && "hidden")}>
                 {!selectedEdition ? (
                   <div className="py-6 text-center text-sm text-muted-foreground">{t("scanwordsSelectEdition")}</div>
                 ) : visibleIssues.length === 0 && hiddenIssues.length === 0 ? (
@@ -638,7 +705,7 @@ export function ScanwordsLists({
         >
           <div
             className="transition-transform duration-300"
-            style={selectedIssue ? { transform: `translateY(${workspaceOffset}px)` } : undefined}
+            style={selectedIssue && isDesktop ? { transform: `translateY(${workspaceOffset}px)` } : undefined}
             ref={workspaceCardRef}
           >
             {children}

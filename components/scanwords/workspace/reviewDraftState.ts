@@ -5,6 +5,8 @@ import type {
   FillReviewPayload,
   FillReviewSlot,
   FillReviewTemplate,
+  TemplateSetupPayload,
+  WordImageOption,
 } from "./model";
 
 export type PersistedReviewRow = {
@@ -14,6 +16,7 @@ export type PersistedReviewRow = {
   definition: string;
   wordId: string | null;
   opredId: string | null;
+  imageId: string | null;
 };
 
 export type EditableReviewSlotState = {
@@ -23,6 +26,8 @@ export type EditableReviewSlotState = {
   wordId: string | null;
   opredId: string | null;
   definitionOptions: FillReviewDefinitionOption[];
+  availableImages: WordImageOption[];
+  selectedImageId: string | null;
 };
 
 export type EditableReviewTemplateState = {
@@ -85,6 +90,17 @@ export function normalizeDefinitionOptions(
   return [...byText.values()];
 }
 
+export function resolveSelectedImageId(
+  images: WordImageOption[] | null | undefined,
+  preferredImageId?: string | null,
+): string | null {
+  const safeImages = Array.isArray(images) ? images : [];
+  if (preferredImageId && safeImages.some((image) => image.id === preferredImageId)) {
+    return preferredImageId;
+  }
+  return safeImages.length === 1 ? (safeImages[0]?.id ?? null) : null;
+}
+
 export function buildSlotFixedLetters(
   slot: FillReviewSlot,
   rowsBySlotId: Map<number, Pick<EditableReviewSlotState, "word">>,
@@ -127,7 +143,30 @@ export function buildInitialTemplateState(template: FillReviewTemplate): Editabl
     wordId: slot.wordId ?? null,
     opredId: slot.opredId ?? null,
     definitionOptions: normalizeDefinitionOptions(slot.definitionOptions),
+    availableImages: Array.isArray(slot.availableImages) ? slot.availableImages : [],
+    selectedImageId: slot.selectedImageId ?? null,
   }));
+}
+
+export function mergeTemplateStateWithTemplateSetup(
+  templateKey: string,
+  initialRows: EditableReviewSlotState[],
+  templateSetup: TemplateSetupPayload | null | undefined,
+): EditableReviewSlotState[] {
+  const setupTemplate = templateSetup?.templates.find((template) => template.templateKey === templateKey) ?? null;
+  if (!setupTemplate?.fixedSlots.length) return initialRows;
+
+  const fixedBySlotId = new Map(setupTemplate.fixedSlots.map((slot) => [slot.slotId, slot]));
+
+  return initialRows.map((initialRow) => {
+    const fixedSlot = fixedBySlotId.get(initialRow.slotId);
+    if (!fixedSlot) return initialRow;
+    if (fixedSlot.wordId !== initialRow.wordId) return initialRow;
+    return {
+      ...initialRow,
+      selectedImageId: fixedSlot.imageId ?? initialRow.selectedImageId ?? null,
+    };
+  });
 }
 
 export function normalizePersistedSlot(value: unknown): PersistedReviewRow | null {
@@ -139,6 +178,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
     definition?: unknown;
     wordId?: unknown;
     opredId?: unknown;
+    imageId?: unknown;
   };
   if (typeof row.templateKey !== "string" || !row.templateKey) return null;
   const slotId = typeof row.slotId === "number" ? row.slotId : Number.NaN;
@@ -147,6 +187,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
   const definition = typeof row.definition === "string" ? row.definition : "";
   const wordId = typeof row.wordId === "string" && row.wordId.length > 0 ? row.wordId : null;
   const opredId = typeof row.opredId === "string" && row.opredId.length > 0 ? row.opredId : null;
+  const imageId = typeof row.imageId === "string" && row.imageId.length > 0 ? row.imageId : null;
   return {
     templateKey: row.templateKey,
     slotId,
@@ -154,6 +195,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
     definition,
     wordId,
     opredId,
+    imageId,
   };
 }
 
@@ -210,6 +252,7 @@ export function mergeTemplateStateWithDraft(
       definition: nextDefinition,
       wordId: draft.wordId ?? null,
       opredId: draft.opredId ?? null,
+      selectedImageId: draft.imageId ?? initialRow.selectedImageId ?? null,
       definitionOptions: nextDefinitionOptions,
     };
   });
@@ -245,11 +288,14 @@ export function buildPersistedRows(
       const initialDefinition = initialRow.definition ?? "";
       const currentOpredId = currentRow.opredId ?? null;
       const initialOpredId = initialRow.opredId ?? null;
+      const currentImageId = currentRow.selectedImageId ?? null;
+      const initialImageId = initialRow.selectedImageId ?? null;
       const unchanged =
         currentWord === initialWord &&
         currentWordId === initialWordId &&
         currentDefinition === initialDefinition &&
-        currentOpredId === initialOpredId;
+        currentOpredId === initialOpredId &&
+        currentImageId === initialImageId;
       if (unchanged) continue;
       rows.push({
         templateKey: template.key,
@@ -258,6 +304,7 @@ export function buildPersistedRows(
         definition: currentDefinition,
         wordId: currentWordId,
         opredId: currentOpredId,
+        imageId: currentImageId,
       });
     }
   }
@@ -278,6 +325,7 @@ export function buildFinalizePayload(
         definition: (slot.definition ?? "").trim(),
         wordId: slot.wordId ?? null,
         opredId: slot.opredId ?? null,
+        imageId: resolveSelectedImageId(slot.availableImages, slot.selectedImageId),
       })),
     })),
     definitionLimits: {

@@ -109,7 +109,7 @@ export function TemplatePicker({
                 variant="outline"
                 role="combobox"
                 aria-expanded={comboOpen}
-                className="w-full justify-between"
+                className="w-full justify-between gap-2 text-left"
               >
                 <span className={cn("truncate", !selected && "text-muted-foreground")}>
                   {selected ? selected.name : t("templateSelectPlaceholder")}
@@ -117,7 +117,10 @@ export function TemplatePicker({
                 <ChevronsUpDown className="size-4 text-muted-foreground" aria-hidden />
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-2" align="start">
+            <PopoverContent
+              className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] p-2"
+              align="start"
+            >
               <Input
                 placeholder={t("templateSearchPlaceholder")}
                 value={comboQuery}

@@ -120,7 +120,7 @@ export function GenerationPanel({
       <div className={cn(active ? "" : "hidden")} aria-hidden={!active}>
         <div className="grid gap-3">
           <div className="rounded-md border bg-muted/20 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
               <div className="text-sm font-medium">{t("scanwordsFillTitle")}</div>
               <div className="flex flex-wrap items-center gap-2">
                 <Tooltip>
@@ -184,7 +184,7 @@ export function GenerationPanel({
                 )}
                 {fillJob.error && <div className="text-destructive">{fillJob.error}</div>}
                 {archiveUrl && (
-                  <div className="flex items-center justify-end gap-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                     <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                       <Checkbox
                         id={latestArchiveOnlyCheckboxId}
@@ -198,11 +198,16 @@ export function GenerationPanel({
                       </label>
                     </div>
                     {latestArchiveOnly ? (
-                      <Button asChild variant="outline" className="bg-background">
+                      <Button asChild variant="outline" className="bg-background sm:w-auto">
                         <a href={archiveUrl}>{t("scanwordsFillDownload")}</a>
                       </Button>
                     ) : (
-                      <Button type="button" variant="outline" className="bg-background" onClick={onOpenArchivesDialog}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="bg-background sm:w-auto"
+                        onClick={onOpenArchivesDialog}
+                      >
                         {t("scanwordsFillDownload")}
                       </Button>
                     )}

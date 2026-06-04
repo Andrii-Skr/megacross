@@ -25,7 +25,7 @@ export async function readJson<T = unknown>(res: Response): Promise<{ status: nu
   return { status, json };
 }
 
-export function makePrismaKnownError(code: "P2002" | "P2025", meta?: Record<string, unknown>) {
+export function makePrismaKnownError(code: "P2002" | "P2025" | "P2021" | "P2010", meta?: Record<string, unknown>) {
   // Create an object that passes `instanceof PrismaClientKnownRequestError`
   const err = Object.create(Prisma.PrismaClientKnownRequestError.prototype);
   err.code = code;

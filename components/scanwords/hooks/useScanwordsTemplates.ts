@@ -5,6 +5,29 @@ import { fetcher } from "@/lib/fetcher";
 import type { DictionaryFilterInput } from "@/types/dictionary-bulk";
 import type { DictionaryTemplateItem, DictionaryTemplatesResponse, FilterStats } from "@/types/dictionary-templates";
 
+function buildSelectedTemplateFilter(selectedTemplate: DictionaryTemplateItem | null): DictionaryFilterInput | null {
+  if (!selectedTemplate) return null;
+  return {
+    language: selectedTemplate.language,
+    query: selectedTemplate.query ?? undefined,
+    scope: selectedTemplate.scope === "def" || selectedTemplate.scope === "both" ? selectedTemplate.scope : "word",
+    tagNames: selectedTemplate.tagNames?.length ? selectedTemplate.tagNames : undefined,
+    excludeTagNames: selectedTemplate.excludeTagNames?.length ? selectedTemplate.excludeTagNames : undefined,
+    searchMode:
+      selectedTemplate.searchMode === "startsWith" || selectedTemplate.searchMode === "exact"
+        ? selectedTemplate.searchMode
+        : "contains",
+    lenFilterField:
+      selectedTemplate.lenFilterField === "word" || selectedTemplate.lenFilterField === "def"
+        ? selectedTemplate.lenFilterField
+        : undefined,
+    lenMin: typeof selectedTemplate.lenMin === "number" ? selectedTemplate.lenMin : undefined,
+    lenMax: typeof selectedTemplate.lenMax === "number" ? selectedTemplate.lenMax : undefined,
+    difficultyMin: typeof selectedTemplate.difficultyMin === "number" ? selectedTemplate.difficultyMin : undefined,
+    difficultyMax: typeof selectedTemplate.difficultyMax === "number" ? selectedTemplate.difficultyMax : undefined,
+  };
+}
+
 export function useScanwordsTemplates({ selectedTemplateId }: { selectedTemplateId: number | null }) {
   const [templates, setTemplates] = useState<DictionaryTemplateItem[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
@@ -20,6 +43,8 @@ export function useScanwordsTemplates({ selectedTemplateId }: { selectedTemplate
     if (selectedTemplateId == null) return null;
     return templates.find((template) => template.id === selectedTemplateId) ?? null;
   }, [selectedTemplateId, templates]);
+
+  const selectedTemplateFilter = useMemo(() => buildSelectedTemplateFilter(selectedTemplate), [selectedTemplate]);
 
   useEffect(() => {
     let active = true;
@@ -52,25 +77,13 @@ export function useScanwordsTemplates({ selectedTemplateId }: { selectedTemplate
     }
 
     let active = true;
-    const filter: DictionaryFilterInput = {
-      language: selectedTemplate.language,
-      query: selectedTemplate.query ?? undefined,
-      scope: selectedTemplate.scope === "def" || selectedTemplate.scope === "both" ? selectedTemplate.scope : "word",
-      tagNames: selectedTemplate.tagNames?.length ? selectedTemplate.tagNames : undefined,
-      excludeTagNames: selectedTemplate.excludeTagNames?.length ? selectedTemplate.excludeTagNames : undefined,
-      searchMode:
-        selectedTemplate.searchMode === "startsWith" || selectedTemplate.searchMode === "exact"
-          ? selectedTemplate.searchMode
-          : "contains",
-      lenFilterField:
-        selectedTemplate.lenFilterField === "word" || selectedTemplate.lenFilterField === "def"
-          ? selectedTemplate.lenFilterField
-          : undefined,
-      lenMin: typeof selectedTemplate.lenMin === "number" ? selectedTemplate.lenMin : undefined,
-      lenMax: typeof selectedTemplate.lenMax === "number" ? selectedTemplate.lenMax : undefined,
-      difficultyMin: typeof selectedTemplate.difficultyMin === "number" ? selectedTemplate.difficultyMin : undefined,
-      difficultyMax: typeof selectedTemplate.difficultyMax === "number" ? selectedTemplate.difficultyMax : undefined,
-    };
+    const filter = selectedTemplateFilter;
+    if (!filter) {
+      setStats(null);
+      setStatsLoading(false);
+      setStatsError(false);
+      return;
+    }
 
     setStatsLoading(true);
     setStatsError(false);
@@ -96,7 +109,7 @@ export function useScanwordsTemplates({ selectedTemplateId }: { selectedTemplate
     return () => {
       active = false;
     };
-  }, [selectedTemplate]);
+  }, [selectedTemplate, selectedTemplateFilter]);
 
   useEffect(() => {
     if (!selectedTemplate?.language) {
@@ -138,6 +151,7 @@ export function useScanwordsTemplates({ selectedTemplateId }: { selectedTemplate
     templatesLoading,
     templatesError,
     selectedTemplate,
+    selectedTemplateFilter,
     stats,
     statsLoading,
     statsError,

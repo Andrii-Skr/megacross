@@ -198,6 +198,7 @@ export const POST = apiRoute<Body>(
           definition: slot.definition,
           wordId: slot.wordId,
           opredId: slot.opredId,
+          imageId: slot.selectedImageId,
         })),
       }),
     );

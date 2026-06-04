@@ -63,6 +63,13 @@ export const prisma = {
     update: vi.fn(),
     upsert: vi.fn(),
   },
+  scanwordWordImage: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    findFirst: vi.fn(),
+    create: vi.fn(),
+    delete: vi.fn(),
+  },
   issue: {
     count: vi.fn(),
   },
