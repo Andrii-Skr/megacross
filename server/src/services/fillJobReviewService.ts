@@ -1,4 +1,4 @@
-import { buildClueLayouts } from "../utils/clues";
+import { buildClueLayouts, buildPhotoAreaBoundsBySlotId } from "../utils/clues";
 import type { SlotStart } from "../utils/grid";
 import { DIRS, type Grid, type Slot } from "../types";
 import type { FillTemplateKeywordCell } from "./fillJobTemplateSetupService";
@@ -237,12 +237,9 @@ function buildClueMaps(
   definitionsByWord: Map<string, string>
 ) {
   const clues = buildClueLayouts(grid, slots, solved, definitionsByWord);
-  const photoClues = buildClueLayouts(grid, slots, solved, definitionsByWord, {
-    expand02Area: true,
-  });
   const bySlot = new Map<number, { key: string; row: number; col: number }>();
   const groupByKey = new Map<string, ReviewClueGroup>();
-  const photoCellKeys = new Set<string>();
+  const photoAreaBoundsBySlotId = buildPhotoAreaBoundsBySlotId(grid, slots, solved, definitionsByWord);
   const photoBySlot = new Map<number, boolean>();
   const photoBoundsByKey = new Map<
     string,
@@ -254,32 +251,9 @@ function buildClueMaps(
     }
   >();
 
-  for (const clue of photoClues) {
-    const debugAreaCells = clue.clusterCells?.length ? clue.clusterCells : clue.areaCells;
-    if (debugAreaCells.length <= 1) continue;
-    let minRow = Number.POSITIVE_INFINITY;
-    let minCol = Number.POSITIVE_INFINITY;
-    let maxRow = Number.NEGATIVE_INFINITY;
-    let maxCol = Number.NEGATIVE_INFINITY;
-    for (const [row, col] of debugAreaCells) {
-      photoCellKeys.add(`${row},${col}`);
-      minRow = Math.min(minRow, row);
-      minCol = Math.min(minCol, col);
-      maxRow = Math.max(maxRow, row);
-      maxCol = Math.max(maxCol, col);
-    }
-    if (Number.isFinite(minRow) && Number.isFinite(minCol) && Number.isFinite(maxRow) && Number.isFinite(maxCol)) {
-      photoBoundsByKey.set(clue.key, { minRow, minCol, maxRow, maxCol });
-    }
-  }
-
   for (const clue of clues) {
-    const isPhotoDefinition = photoCellKeys.has(clue.key);
     for (const slotId of clue.slotIds) {
       bySlot.set(slotId, { key: clue.key, row: clue.row, col: clue.col });
-      if (isPhotoDefinition) {
-        photoBySlot.set(slotId, true);
-      }
     }
 
     const group = groupByKey.get(clue.key) ?? {
@@ -294,6 +268,14 @@ function buildClueMaps(
       if (!group.slotIds.includes(slotId)) group.slotIds.push(slotId);
     }
     groupByKey.set(clue.key, group);
+  }
+
+  for (const [slotId, bounds] of photoAreaBoundsBySlotId) {
+    photoBySlot.set(slotId, true);
+    const clue = bySlot.get(slotId);
+    if (clue) {
+      photoBoundsByKey.set(clue.key, bounds);
+    }
   }
 
   const clueGroups = [...groupByKey.values()].map((group) => ({

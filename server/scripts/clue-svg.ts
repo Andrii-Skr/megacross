@@ -17,6 +17,7 @@ export const CLUE_LINE_HEIGHT_SCALE = 0.8;
 export const CLUE_EDGE_INSET_MM = 0.1;
 export const CLUE_TEXT_ASCENT_RATIO = 0.64;
 export const CLUE_TEXT_DESCENT_RATIO = 0.16;
+export const CLUE_PLAQUE_TEXT_INSET_MM = 1;
 const MM_PER_PT = 25.4 / 72;
 const PX_PER_MM = 96 / 25.4;
 export const MIN_CLUE_FONT_SIZE = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
@@ -448,6 +449,10 @@ export function renderClueText(
     textAlign?: "center" | "bottom-left";
     background?: "none" | "text-block";
     backgroundInset?: number;
+    backgroundAnchor?: "auto" | "bottom-left";
+    plaqueTextInset?: number;
+    frame?: "none" | "rect";
+    frameWidth?: number;
     clusterFrame?: "none" | "top-right";
     clusterPadding?: number;
     clusterBorderWidth?: number;
@@ -459,6 +464,10 @@ export function renderClueText(
   const mode = options.mode ?? "default";
   const textAlign = options.textAlign ?? "center";
   const background = options.background ?? "none";
+  const backgroundAnchor = options.backgroundAnchor ?? "auto";
+  const plaqueTextInset = Math.max(0, options.plaqueTextInset ?? 0);
+  const frame = options.frame ?? "none";
+  const frameWidth = Math.max(0, options.frameWidth ?? 0);
   const clusterFrame = options.clusterFrame ?? "none";
   const clusterPadding = Math.max(0, options.clusterPadding ?? 0);
   const clusterBorderWidth = Math.max(0, options.clusterBorderWidth ?? 0);
@@ -576,7 +585,15 @@ export function renderClueText(
     backgroundWidth = clampedBackground.width;
     backgroundHeight = clampedBackground.height;
 
-    if (clusterFrame === "top-right") {
+    if (backgroundAnchor === "bottom-left") {
+      backgroundWidth = Math.min(layoutRect.width, textBlockWidth + plaqueTextInset * 2);
+      backgroundHeight = Math.min(layoutRect.height, textBlockHeight + plaqueTextInset * 2);
+      backgroundX = layoutRect.x;
+      backgroundY = layoutRect.y + layoutRect.height - backgroundHeight;
+      textX = backgroundX + backgroundWidth / 2;
+      textY = backgroundY + Math.max(0, (backgroundHeight - textBlockHeight) / 2);
+      textAnchor = "middle";
+    } else if (clusterFrame === "top-right") {
       backgroundWidth = Math.min(layoutRect.width, textBlockWidth + clusterPadding * 2);
       backgroundHeight = Math.min(layoutRect.height, textBlockHeight + clusterPadding * 2);
       backgroundX = layoutRect.x;
@@ -590,6 +607,13 @@ export function renderClueText(
   const backgroundRect =
     background === "text-block"
       ? `<rect x="${backgroundX}" y="${backgroundY}" width="${backgroundWidth}" height="${backgroundHeight}" fill="#fff"/>`
+      : "";
+  const frameRect =
+    frame === "rect" && frameWidth > 0
+      ? `<rect x="${backgroundX + frameWidth / 2}" y="${backgroundY + frameWidth / 2}" width="${Math.max(
+          0,
+          backgroundWidth - frameWidth
+        )}" height="${Math.max(0, backgroundHeight - frameWidth)}" fill="none" stroke="${fill}" stroke-width="${frameWidth}"/>`
       : "";
   const frameRight = backgroundX + backgroundWidth;
   const frameBottom = backgroundY + backgroundHeight;
@@ -624,8 +648,8 @@ export function renderClueText(
       })
       .join("");
     const textSvg = useClip
-      ? `<g clip-path="url(#${clipId})">${backgroundRect}${clusterFrameSvg}<g${scaleTransform}>${textLines}</g></g>`
-      : `<g>${backgroundRect}${clusterFrameSvg}<g${scaleTransform}>${textLines}</g></g>`;
+      ? `<g clip-path="url(#${clipId})">${backgroundRect}${frameRect}${clusterFrameSvg}<g${scaleTransform}>${textLines}</g></g>`
+      : `<g>${backgroundRect}${frameRect}${clusterFrameSvg}<g${scaleTransform}>${textLines}</g></g>`;
     return { defs, text: textSvg };
   }
 
@@ -637,8 +661,8 @@ export function renderClueText(
     .join("");
   const textNode = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="hanging" fill="${fill}"${buildUniformScaleTransform(textX, glyphWidthScale)}>${tspan}</text>`;
   const textSvg = useClip
-    ? `<g clip-path="url(#${clipId})">${backgroundRect}${clusterFrameSvg}${textNode}</g>`
-    : `<g>${backgroundRect}${clusterFrameSvg}${textNode}</g>`;
+    ? `<g clip-path="url(#${clipId})">${backgroundRect}${frameRect}${clusterFrameSvg}${textNode}</g>`
+    : `<g>${backgroundRect}${frameRect}${clusterFrameSvg}${textNode}</g>`;
 
   return { defs, text: textSvg };
 }

@@ -5,6 +5,7 @@ import { DIRS } from "../src/types";
 import { buildClueLayouts } from "../src/utils/clues";
 import { runClueRenderSmokeSuite } from "./clue-layout-smoke-render";
 import { runClueReviewSmokeSuite } from "./clue-layout-smoke-review";
+import { buildCrosswordSvg } from "./crossword-svg";
 
 const AREA_EXPANSION_ENV_KEY = "CROSS_ENABLE_02_AREA_EXPANSION";
 
@@ -812,6 +813,50 @@ function testAreaExpansionCanBeDisabledExplicitlyByOption(): void {
   assert.equal(clue.clusterCells, undefined);
 }
 
+function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
+  const data = ["*##*", "*##*", "*↓**", "****"];
+  const codes = createCodes(4, 4, 0x01);
+  codes[1][1] = 0x02;
+  codes[0][1] = 0x02;
+  codes[0][2] = 0x02;
+  codes[1][2] = 0x02;
+  const grid = buildGrid(data, codes);
+  const slots: Slot[] = [
+    {
+      id: 1,
+      r: 2,
+      c: 1,
+      dir: DIRS.down,
+      len: 2,
+      cells: [
+        [2, 1],
+        [3, 1],
+      ],
+    },
+  ];
+  const solved = ["*##*", "*##*", "*A**", "*B**"];
+  const definitions = new Map<string, string>([["AB", "Фото определение"]]);
+  const { svg } = buildCrosswordSvg(grid, slots, solved, definitions, {
+    style: "default",
+    arrowMode: "export",
+    arrowScale: 1,
+    photoClues: [{ clueKey: "1,1", href: "https://example.com/photo.jpg" }],
+  });
+
+  const imageIndex = svg.indexOf('<image href="https://example.com/photo.jpg"');
+  const textIndex = svg.indexOf(">Фото<");
+  assert.ok(imageIndex >= 0, "expected photo clue image in svg");
+  assert.ok(
+    svg.includes(">определение</tspan>") || (svg.includes(">определе-</tspan>") && svg.includes(">ние</tspan>")),
+    "expected definition text to be rendered either on one line or split across lines",
+  );
+  assert.ok(textIndex >= 0, "expected definition text in svg");
+  assert.ok(imageIndex < textIndex, "expected image layer before definition plaque");
+  assert.match(svg, /<rect x="31" y="[0-9.]+" width="60" height="[0-9.]+" fill="#fff"\/>/);
+  assert.match(svg, /<rect x="32" y="[0-9.]+" width="58" height="[0-9.]+" fill="none" stroke="#2B2A29" stroke-width="2"\/>/);
+  assert.match(svg, /<text x="61" y="[0-9.]+" font-size="12" text-anchor="middle"/);
+}
+
 function main(): void {
   const previousValue = process.env[AREA_EXPANSION_ENV_KEY];
   process.env[AREA_EXPANSION_ENV_KEY] = "1";
@@ -835,6 +880,7 @@ function main(): void {
     testClusterHighlightWithoutDefinitionTexts();
     testAreaExpansionIsEnabledByDefaultEvenWhenEnvDisabled();
     testAreaExpansionCanBeDisabledExplicitlyByOption();
+    testPhotoClueRendersImageUnderDefinitionPlaque();
   } finally {
     if (previousValue === undefined) {
       delete process.env[AREA_EXPANSION_ENV_KEY];

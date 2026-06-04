@@ -6,6 +6,7 @@ import {
   CLUE_FONT_MIN_PT,
   CLUE_GLYPH_WIDTH_SCALE,
   CLUE_LINE_HEIGHT_SCALE,
+  CLUE_PLAQUE_TEXT_INSET_MM,
   buildClueTextMap,
   convertCluePtToSvgUnits,
   renderClueText,
@@ -28,6 +29,7 @@ import {
 } from "./svg-theme";
 
 const MM_PER_PT = 25.4 / 72;
+const PX_PER_MM = 96 / 25.4;
 const DEFAULT_CELL = 30;
 const DEFAULT_TYPE0_CELL_MM = 8.5;
 const DEFAULT_TYPE0_NUMBER_FONT_PT = 10;
@@ -98,6 +100,12 @@ function escapeXmlAttr(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function convertMmToSvgUnits(mm: number, useCorelStyle: boolean): number {
+  return useCorelStyle
+    ? Math.round(mm * COREL_UNITS_PER_MM * 1000) / 1000
+    : Math.round(mm * PX_PER_MM * 1000) / 1000;
 }
 
 function buildStartNumberByCell(slots: Slot[]): Map<string, number> {
@@ -262,6 +270,8 @@ export function buildCrosswordSvg(
   ];
   const svgDefs: string[] = [];
   const clueDefs: string[] = [];
+  const photoLayer: string[] = [];
+  const photoRawLayer: string[] = [];
   const clueLayer: string[] = [];
   const clueRawLayer: string[] = [];
   const borderLayer: string[] = [];
@@ -285,6 +295,7 @@ export function buildCrosswordSvg(
     Number.isFinite(typography?.clueLineHeightScale) && Number(typography?.clueLineHeightScale) > 0
       ? Number(typography?.clueLineHeightScale)
       : CLUE_LINE_HEIGHT_SCALE;
+  const cluePlaqueTextInset = convertMmToSvgUnits(CLUE_PLAQUE_TEXT_INSET_MM, useCorelStyle);
   const clusterDefinitionPadding = useCorelStyle
     ? Math.round(COREL_UNITS_PER_MM * 1000) / 1000
     : cell / COREL_CELL_SIZE_MM;
@@ -326,29 +337,32 @@ export function buildCrosswordSvg(
               const imageWidth = (bounds.maxCol - bounds.minCol + 1) * cell - strokeWidth * 2;
               const imageHeight = (bounds.maxRow - bounds.minRow + 1) * cell - strokeWidth * 2;
               const imageTag = `<image href="${escapeXmlAttr(photoHref)}" x="${imageX}" y="${imageY}" width="${imageWidth}" height="${imageHeight}" preserveAspectRatio="xMidYMid meet"/>`;
-              clueLayer.push(imageTag);
-              clueRawLayer.push(imageTag);
+              photoLayer.push(imageTag);
+              photoRawLayer.push(imageTag);
             }
-          } else {
-            const clipId = `clue-${row}-${col}`;
-            const clueSvg = renderClueText(x, y, cell, clueFont, clueLayout.text, clipId, CLUE_TEXT_FILL, {
-              mode: clueMode,
-              areaCells: definitionAreaCells,
-              anchorCell: [row, col],
-              textAlign: isExpandedDefinition ? "bottom-left" : "center",
-              background: isExpandedDefinition ? "text-block" : "none",
-              backgroundInset: isExpandedDefinition ? strokeWidth : 0,
-              clusterFrame: isClusterDefinition ? "top-right" : "none",
-              clusterPadding: isClusterDefinition ? clusterDefinitionPadding : 0,
-              clusterBorderWidth: isClusterDefinition ? strokeWidth : 0,
-              minFontSize: clueMinFontSize,
-              glyphWidthScale: clueGlyphWidthScale,
-              lineHeightScale: clueLineHeightScale,
-            });
-            if (clueSvg.defs) clueDefs.push(clueSvg.defs);
-            clueLayer.push(clueSvg.text);
-            clueRawLayer.push(clueSvg.text);
           }
+          const clipId = `clue-${row}-${col}`;
+          const clueSvg = renderClueText(x, y, cell, clueFont, clueLayout.text, clipId, CLUE_TEXT_FILL, {
+            mode: clueMode,
+            areaCells: definitionAreaCells,
+            anchorCell: [row, col],
+            textAlign: photoHref ? "center" : isExpandedDefinition ? "bottom-left" : "center",
+            background: photoHref || isExpandedDefinition ? "text-block" : "none",
+            backgroundInset: photoHref || isExpandedDefinition ? strokeWidth : 0,
+            backgroundAnchor: photoHref ? "bottom-left" : "auto",
+            plaqueTextInset: photoHref ? cluePlaqueTextInset : 0,
+            frame: photoHref ? "rect" : "none",
+            frameWidth: photoHref ? strokeWidth : 0,
+            clusterFrame: !photoHref && isClusterDefinition ? "top-right" : "none",
+            clusterPadding: !photoHref && isClusterDefinition ? clusterDefinitionPadding : 0,
+            clusterBorderWidth: !photoHref && isClusterDefinition ? strokeWidth : 0,
+            minFontSize: clueMinFontSize,
+            glyphWidthScale: clueGlyphWidthScale,
+            lineHeightScale: clueLineHeightScale,
+          });
+          if (clueSvg.defs) clueDefs.push(clueSvg.defs);
+          clueLayer.push(clueSvg.text);
+          clueRawLayer.push(clueSvg.text);
         }
 
         const border = `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="none" stroke="${cellStrokeColor}" stroke-width="${strokeWidth}"/>`;
@@ -426,8 +440,8 @@ export function buildCrosswordSvg(
     }
   }
 
-  svgParts.push(...borderLayer, ...clueLayer);
-  svgRawParts.push(...borderRawLayer, ...clueRawLayer);
+  svgParts.push(...borderLayer, ...photoLayer, ...clueLayer);
+  svgRawParts.push(...borderRawLayer, ...photoRawLayer, ...clueRawLayer);
   if (outerContourLayer.length) {
     svgParts.splice(1, 0, ...outerContourLayer);
     svgRawParts.splice(1, 0, ...outerContourLayer);
