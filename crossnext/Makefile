@@ -10,7 +10,7 @@ DB_SERVICE  := $(if $(filter $(PROFILE),prod),db,db-dev)
         sync-once-debug sync-up-debug \
         mysql-up mysql-down mysql-restart mysql-wait mysql-import mysql-cli mysql-logs pma-open \
         pg-wait pg-import pg-cli pg-logs pgadmin-open pgadmin-up pgadmin-down pgadmin-logs \
-        deploy-prod
+        deploy-prod deploy-prod-pull
 
 help:
 	@echo "PROFILE=$(PROFILE) (dev|prod)"
@@ -18,7 +18,7 @@ help:
 	@echo "Sync: sync-once, sync-cron, sync-up, sync-down, sync-logs, sync-sh"
 	@echo "Debug: sync-once-debug, sync-up-debug"
 	@echo "Postgres: pg-import PG_DUMP=./file.sql(.gz|.dump), pg-cli, pg-logs"
-	@echo "Deploy: deploy-prod (wraps scripts/deploy-prod.sh)"
+	@echo "Deploy: deploy-prod (wraps scripts/deploy-prod.sh), deploy-prod-pull (git pull + deploy-prod)"
 
 ## One-command production deploy helper (wraps scripts/deploy-prod.sh)
 ## Env: BRANCH=main MIGRATE=1 SEED=0 PRUNE=0 HEALTH_URL=http://127.0.0.1:3000/api/healthz REPO_ROOT=/path/to/megacross
@@ -26,6 +26,11 @@ help:
 deploy-prod:
 	bash ./scripts/deploy-prod.sh
 	@echo "pgAdmin: pgadmin-up, pgadmin-logs, pgadmin-down, pgadmin-open"
+
+## Pull latest changes in /srv/megacross, then run production deploy from /srv/megacross/crossnext
+deploy-prod-pull:
+	cd /srv/megacross && git pull
+	$(MAKE) -C /srv/megacross/crossnext deploy-prod
 
 build:
 	$(COMPOSE) --profile $(PROFILE) build
