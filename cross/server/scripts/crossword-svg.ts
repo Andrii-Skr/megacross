@@ -336,7 +336,7 @@ export function buildCrosswordSvg(
               const imageY = gridOffsetY + bounds.minRow * cell + strokeWidth;
               const imageWidth = (bounds.maxCol - bounds.minCol + 1) * cell - strokeWidth * 2;
               const imageHeight = (bounds.maxRow - bounds.minRow + 1) * cell - strokeWidth * 2;
-              const imageTag = `<image href="${escapeXmlAttr(photoHref)}" x="${imageX}" y="${imageY}" width="${imageWidth}" height="${imageHeight}" preserveAspectRatio="xMidYMid meet"/>`;
+              const imageTag = `<image href="${escapeXmlAttr(photoHref)}" x="${imageX}" y="${imageY}" width="${imageWidth}" height="${imageHeight}" preserveAspectRatio="xMidYMid slice"/>`;
               photoLayer.push(imageTag);
               photoRawLayer.push(imageTag);
             }

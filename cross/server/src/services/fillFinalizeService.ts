@@ -103,6 +103,16 @@ function normalizeDefinitionLengthLimits(input: DefinitionLengthLimits | null | 
   };
 }
 
+function buildPhotoAreaSize(
+  bounds: ReviewSlot["photoAreaBounds"] | null | undefined
+): { width: number; height: number } | null {
+  if (!bounds) return null;
+  const width = bounds.maxCol - bounds.minCol + 1;
+  const height = bounds.maxRow - bounds.minRow + 1;
+  if (!(width > 0) || !(height > 0)) return null;
+  return { width, height };
+}
+
 export function convertReviewSlotToSlot(input: ReviewSlot): Slot {
   return {
     id: input.slotId,
@@ -157,6 +167,7 @@ export function buildSolvedGridFromSlots(
 }
 
 export function buildFinalSlotState(
+  template: ReviewTemplate,
   slot: ReviewSlot,
   input: FinalizeSlotInput | null | undefined
 ): { state: FinalSlotState; errors: string[] } {
@@ -180,7 +191,7 @@ export function buildFinalSlotState(
   if (!definition) {
     errors.push(`Slot ${slot.slotId}: definition is required`);
   }
-  if (slot.isPhotoDefinition && imageId === null) {
+  if (isEffectivePhotoDefinition(template, slot) && imageId === null) {
     errors.push(`Slot ${slot.slotId}: image is required for photo definition`);
   }
 
@@ -241,6 +252,20 @@ function buildDefinitionClueGroups(template: ReviewTemplate): ReviewClueGroup[] 
     return a.col - b.col;
   });
   return groups;
+}
+
+function isEffectivePhotoDefinition(
+  template: ReviewTemplate,
+  slot: ReviewSlot,
+  clueGroups: ReviewClueGroup[] = buildDefinitionClueGroups(template)
+): boolean {
+  if (slot.isPhotoDefinition !== true) return false;
+  const photoAreaSize = buildPhotoAreaSize(slot.photoAreaBounds);
+  if (!photoAreaSize || photoAreaSize.width * photoAreaSize.height <= 1) return false;
+  if (!slot.clueCell) return true;
+  const clueGroup = clueGroups.find((group) => group.key === slot.clueCell?.key) ?? null;
+  if (!clueGroup) return true;
+  return Math.max(1, Math.trunc(clueGroup.areaCellCount ?? 1)) > 1;
 }
 
 export function validateTemplateDefinitions(

@@ -325,7 +325,7 @@ export function buildFinalizePayload(
         definition: (slot.definition ?? "").trim(),
         wordId: slot.wordId ?? null,
         opredId: slot.opredId ?? null,
-        imageId: resolveSelectedImageId(slot.availableImages, slot.selectedImageId),
+        imageId: slot.selectedImageId ?? resolveSelectedImageId(slot.availableImages),
       })),
     })),
     definitionLimits: {

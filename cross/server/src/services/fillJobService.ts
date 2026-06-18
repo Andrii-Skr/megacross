@@ -103,6 +103,11 @@ import {
   type ReviewWordImageOption,
 } from "./fillWordImageService";
 import {
+  buildEmbeddedImageHref,
+  isSvgPhotoCluesGrayscaleEnabled,
+  isTruthyEnv,
+} from "../utils/svgEmbeddedImage";
+import {
   applyReviewTemplateOverrides,
   applyTemplateReviewResult,
   buildFillReviewPayload,
@@ -1245,12 +1250,6 @@ function buildSvg(
     } | null;
   }
 ): { svg: string; svgRaw: string; usedWords: string } {
-  const isTruthyEnv = (value: string | undefined): boolean => {
-    if (value === undefined) return false;
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) return false;
-    return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
-  };
   const typography = options.svgTypography ?? null;
   const configuredFontFamily = sanitizeSvgFontFamily(typography?.fontFamily);
   const fontFamily = configuredFontFamily ?? DEFAULT_SYSTEM_SVG_FONT_FAMILY;
@@ -2040,35 +2039,6 @@ function sanitizeSvgFontFamily(value: string | null | undefined): string | null 
   return normalized.slice(0, 120);
 }
 
-function resolveImageMimeType(fileName: string, sourcePath: string): string {
-  const ext = path.extname(fileName || sourcePath).trim().toLowerCase();
-  switch (ext) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".webp":
-      return "image/webp";
-    case ".gif":
-      return "image/gif";
-    case ".svg":
-      return "image/svg+xml";
-    case ".bmp":
-      return "image/bmp";
-    case ".avif":
-      return "image/avif";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function buildEmbeddedImageHref(fileName: string, sourcePath: string): string {
-  const mimeType = resolveImageMimeType(fileName, sourcePath);
-  const encoded = readFileSync(sourcePath).toString("base64");
-  return `data:${mimeType};base64,${encoded}`;
-}
-
 function parseOptionalPositiveBigInt(value: unknown): bigint | null {
   if (typeof value === "bigint") {
     return value > 0n ? value : null;
@@ -2832,7 +2802,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const states = new Map<number, FinalSlotState>();
     const errors: string[] = [];
     for (const slot of template.slots) {
-      const built = buildFinalSlotState(slot, slotInputMap.get(slot.slotId));
+      const built = buildFinalSlotState(template, slot, slotInputMap.get(slot.slotId));
       states.set(slot.slotId, built.state);
       errors.push(...built.errors.map((msg) => `Template ${template.name}: ${msg}`));
     }
@@ -2896,10 +2866,19 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const slots = template.slots.map((slot) => convertReviewSlotToSlot(slot));
     const photoClues: Array<{ clueKey: string; href: string }> = [];
     const photoErrors: string[] = [];
+    const grayscalePhotoClues = isSvgPhotoCluesGrayscaleEnabled();
+    const clueGroupByKey = new Map((template.clueGroups ?? []).map((group) => [group.key, group]));
     const templateDir = path.join(issueDir, sanitizeName(template.name));
     mkdirSync(templateDir, { recursive: true });
     for (const slot of template.slots) {
-      if (!slot.isPhotoDefinition) continue;
+      const photoAreaBounds = slot.photoAreaBounds;
+      const photoWidth = photoAreaBounds ? photoAreaBounds.maxCol - photoAreaBounds.minCol + 1 : 0;
+      const photoHeight = photoAreaBounds ? photoAreaBounds.maxRow - photoAreaBounds.minRow + 1 : 0;
+      const clueGroupArea =
+        slot.clueCell != null ? Math.max(1, Math.trunc(clueGroupByKey.get(slot.clueCell.key)?.areaCellCount ?? 1)) : 1;
+      const isEffectivePhotoDefinition =
+        slot.isPhotoDefinition === true && photoWidth > 0 && photoHeight > 0 && photoWidth * photoHeight > 1 && clueGroupArea > 1;
+      if (!isEffectivePhotoDefinition) continue;
       const state = states.get(slot.slotId);
       if (!state?.imageId) continue;
       const image = storedImagesById.get(String(state.imageId));
@@ -2922,7 +2901,10 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       const sourcePath = buildWordImageAbsolutePath(image.storageRelPath);
       let href: string;
       try {
-        href = buildEmbeddedImageHref(image.fileName, sourcePath);
+        href = await buildEmbeddedImageHref(image.fileName, sourcePath, {
+          grayscale: grayscalePhotoClues,
+          targetAspectRatio: photoWidth > 0 && photoHeight > 0 ? photoWidth / photoHeight : undefined,
+        });
       } catch {
         photoErrors.push(`Template ${template.name}: image file is missing for slot ${slot.slotId}`);
         continue;

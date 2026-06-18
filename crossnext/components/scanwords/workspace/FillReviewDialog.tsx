@@ -311,6 +311,16 @@ function buildPhotoAreaSize(bounds: FillPhotoAreaBounds | null | undefined): { w
   return { width, height };
 }
 
+function isEffectivePhotoDefinition(template: FillReviewTemplate, slot: FillReviewSlot): boolean {
+  if (slot.isPhotoDefinition !== true) return false;
+  const photoAreaSize = buildPhotoAreaSize(slot.photoAreaBounds);
+  if (!photoAreaSize || photoAreaSize.width * photoAreaSize.height <= 1) return false;
+  if (!slot.clueCell) return true;
+  const clueGroup = template.clueGroups.find((group) => group.key === slot.clueCell?.key) ?? null;
+  if (!clueGroup) return true;
+  return Math.max(1, clueGroup.areaCellCount ?? 1) > 1;
+}
+
 function pickDefaultImageId(images: WordImageOption[], preferredImageId?: string | null): string | null {
   return resolveSelectedImageId(images, preferredImageId);
 }
@@ -768,7 +778,7 @@ export function FillReviewDialog({
         if (!definition) {
           push(`${template.name}: слот ${slot.slotId} — определение пустое`, rowRef, template.key);
         }
-        if (slot.isPhotoDefinition) {
+        if (isEffectivePhotoDefinition(template, slot)) {
           const resolvedImageId = resolveSelectedImageId(current.availableImages, current.selectedImageId);
           if (!current.wordId) {
             push(
@@ -1049,7 +1059,7 @@ export function FillReviewDialog({
       const definition = (item.row.definition ?? "").trim();
       if (allRowsShowDuplicatesOnly && !allRowsDuplicateIndex.familyRowKeys.has(rowKey)) return false;
       if (allRowsShowErrorsOnly && !allRowsErrorRowKeys.has(rowKey)) return false;
-      if (allRowsShowPhotoOnly && !item.slot.isPhotoDefinition) return false;
+      if (allRowsShowPhotoOnly && !isEffectivePhotoDefinition(item.template, item.slot)) return false;
       if (!normalizedQuery) return true;
       return (
         word.toLocaleLowerCase().includes(normalizedQuery) || definition.toLocaleLowerCase().includes(normalizedQuery)
@@ -1067,7 +1077,7 @@ export function FillReviewDialog({
   const duplicateRowsCount = allRowsDuplicateIndex.rowKeys.size;
   const errorRowsCount = allRowsErrorRowKeys.size;
   const photoRowsCount = useMemo(
-    () => allTemplateRows.reduce((acc, item) => (item.slot.isPhotoDefinition ? acc + 1 : acc), 0),
+    () => allTemplateRows.reduce((acc, item) => (isEffectivePhotoDefinition(item.template, item.slot) ? acc + 1 : acc), 0),
     [allTemplateRows],
   );
   const handleReviewTabChange = useCallback((tab: ReviewListTab) => {
@@ -1731,7 +1741,7 @@ export function FillReviewDialog({
             )}
             <div className={cn("flex items-center gap-2", rowMetaClass)}>
               <span>{t("scanwordsReviewDefinitionLen", { count: row.definition.trim().length })}</span>
-              {slot.isPhotoDefinition && (
+              {isEffectivePhotoDefinition(template, slot) && (
                 <span
                   className="inline-flex items-center rounded border border-sky-500/40 bg-sky-500/10 p-0.5 text-sky-700 dark:text-sky-300"
                   role="img"
@@ -1886,7 +1896,7 @@ export function FillReviewDialog({
                 <TooltipContent>{t("editDefinition")}</TooltipContent>
               </Tooltip>
             </div>
-            {slot.isPhotoDefinition && (
+            {isEffectivePhotoDefinition(template, slot) && (
               <div className="rounded-md border border-sky-500/25 bg-sky-500/5 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-xs text-muted-foreground">

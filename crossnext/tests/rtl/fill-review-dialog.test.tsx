@@ -104,6 +104,105 @@ function makeReviewPayload(): FillReviewPayload {
   };
 }
 
+function makeSharedClusterReviewPayload(): FillReviewPayload {
+  return {
+    version: 1,
+    issue: {
+      issueId: "2",
+      editionId: 1,
+      editionCode: "E1",
+      issueLabel: "43",
+    },
+    options: {
+      style: "corel",
+      writeCrw: false,
+      usageStats: true,
+    },
+    templates: [
+      {
+        key: "tpl-shared",
+        name: "4",
+        sourceName: "4.fsh",
+        order: 0,
+        path: "sample/4.fsh",
+        language: "ru",
+        langId: 1,
+        grid: {
+          rows: 6,
+          cols: 6,
+          data: ["#####*", "#####*", "#####*", "#####*", "*↓#↓**", "*******"],
+          marker: "000000",
+          codes: Array.from({ length: 6 }, () => Array.from({ length: 6 }, () => 1)),
+        },
+        slots: [
+          {
+            slotId: 1,
+            r: 4,
+            c: 1,
+            dir: "down",
+            len: 2,
+            cells: [
+              [4, 1],
+              [5, 1],
+            ],
+            word: "АС",
+            wordId: "11",
+            opredId: null,
+            definition: "Якорный кластер",
+            definitionOptions: [{ opredId: null, text: "Якорный кластер", difficulty: null }],
+            isPhotoDefinition: true,
+            photoAreaBounds: { minRow: 0, minCol: 0, maxRow: 3, maxCol: 4 },
+            availableImages: [
+              {
+                id: "img-anchor",
+                wordId: "11",
+                fileName: "anchor.png",
+                mimeType: "image/png",
+                width: 500,
+                height: 400,
+                aspectRatio: 1.25,
+                url: "/api/dictionary/word-images/img-anchor",
+              },
+            ],
+            selectedImageId: "img-anchor",
+            intersections: [],
+            clueCell: { key: "3,1", row: 3, col: 1 },
+            startNumber: 1,
+          },
+          {
+            slotId: 2,
+            r: 4,
+            c: 3,
+            dir: "down",
+            len: 2,
+            cells: [
+              [4, 3],
+              [5, 3],
+            ],
+            word: "БД",
+            wordId: "12",
+            opredId: null,
+            definition: "Хвост",
+            definitionOptions: [{ opredId: null, text: "Хвост", difficulty: null }],
+            isPhotoDefinition: false,
+            photoAreaBounds: null,
+            availableImages: [],
+            selectedImageId: null,
+            intersections: [],
+            clueCell: { key: "4,2", row: 4, col: 2 },
+            startNumber: 2,
+          },
+        ],
+        clueGroups: [
+          { key: "3,1", row: 3, col: 1, slotIds: [1], areaCellCount: 20 },
+          { key: "4,2", row: 4, col: 2, slotIds: [2], areaCellCount: 1 },
+        ],
+        startPositions: [],
+      },
+    ],
+  };
+}
+
 describe("FillReviewDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -227,6 +326,90 @@ describe("FillReviewDialog", () => {
     expect(screen.getByRole("button", { name: "scanwordsReviewImageUpload" })).toBeInTheDocument();
     expect(screen.getByText("scanwordsReviewImageChoose")).toBeInTheDocument();
     expect(screen.getAllByAltText("cat.png")).toHaveLength(2);
+  });
+
+  it("does not block finalize on a non-photo tail slot without image", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/scanwords/fill-review-draft?jobId=job-tail" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({ available: false, rows: [] });
+      }
+      if (url === "/api/scanwords/fill-review-draft?jobId=job-tail" && init?.method === "DELETE") {
+        return jsonResponse({ available: true });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onFinalize = vi.fn().mockResolvedValue(undefined);
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-tail"
+        reviewData={makeSharedClusterReviewPayload()}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={onFinalize}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Якорный кластер")).toBeInTheDocument());
+    const finalizeButtons = screen.getAllByRole("button", { name: "scanwordsReviewFinalize" });
+    await userEvent.click(finalizeButtons[finalizeButtons.length - 1]);
+
+    await waitFor(() => expect(onFinalize).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("scanwordsReviewFinalizeConfirmTitle")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale photo flag on a tail slot when its clue area is a single cell", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/scanwords/fill-review-draft?jobId=job-stale-tail" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({ available: false, rows: [] });
+      }
+      if (url === "/api/scanwords/fill-review-draft?jobId=job-stale-tail" && init?.method === "DELETE") {
+        return jsonResponse({ available: true });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload = makeSharedClusterReviewPayload();
+    const tailSlot = payload.templates[0]?.slots[1];
+    if (!tailSlot) throw new Error("Missing tail slot fixture");
+    payload.templates[0]!.slots[1] = {
+      ...tailSlot,
+      isPhotoDefinition: true,
+      photoAreaBounds: { minRow: 0, minCol: 0, maxRow: 3, maxCol: 4 },
+    };
+
+    const onFinalize = vi.fn().mockResolvedValue(undefined);
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-stale-tail"
+        reviewData={payload}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={onFinalize}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Якорный кластер")).toBeInTheDocument());
+    expect(screen.queryByText("scanwordsReviewImageWordRequired")).not.toBeInTheDocument();
+
+    const finalizeButtons = screen.getAllByRole("button", { name: "scanwordsReviewFinalize" });
+    await userEvent.click(finalizeButtons[finalizeButtons.length - 1]);
+
+    await waitFor(() => expect(onFinalize).toHaveBeenCalledTimes(1));
   });
 
   it("allows typing into nested add-definition modal opened from fill review", async () => {

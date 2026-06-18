@@ -18,6 +18,7 @@ ENV
 - Required (runtime): DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL.
 - Required (seeding only): ADMIN_LOGIN, ADMIN_PASSWORD.
 - Optional: ADMIN_EMAIL (used to set email for the seeded admin user).
+- Optional for cross SVG export: `CROSS_SVG_PHOTO_CLUES_GRAYSCALE=1` to embed photo clues as grayscale raster images in generated SVGs.
 
 Migrations & Seeding
 

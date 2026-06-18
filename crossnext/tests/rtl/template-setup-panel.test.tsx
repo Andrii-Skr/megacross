@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ComponentProps, ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TemplateSetupPreviewTemplate, TemplateSetupTemplate } from "@/components/scanwords/workspace/model";
 import { TemplateSetupPanel } from "@/components/scanwords/workspace/TemplateSetupPanel";
 
@@ -10,6 +11,46 @@ vi.mock("next-intl", () => ({
 vi.mock("next/image", () => ({
   default: () => <span data-testid="next-image" />,
 }));
+
+vi.mock("@/components/ui/tooltip", () => ({
+  TooltipProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
+  TooltipContent: () => null,
+}));
+
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ open, children }: { open?: boolean; children: ReactNode }) => (open ? <div>{children}</div> : null),
+  DialogContent: ({ children }: { children: ReactNode }) => <div role="dialog">{children}</div>,
+  DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogTitle: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogDescription: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DialogFooter: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
+function renderPanel(props: ComponentProps<typeof TemplateSetupPanel>) {
+  return render(<TemplateSetupPanel {...props} />);
+}
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        items: [],
+        nextCursor: null,
+        images: [],
+      }),
+    })),
+  );
+});
 
 function makeTemplate(): TemplateSetupPreviewTemplate {
   return {
@@ -73,8 +114,15 @@ function makeTemplate(): TemplateSetupPreviewTemplate {
 }
 
 describe("TemplateSetupPanel", () => {
-  it("locks letters that come from already fixed intersecting slots", async () => {
-    const onFixedSlotChange = vi.fn();
+  it("keeps the current slot word visible while editing that same slot", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        items: [{ id: "word-1", word_text: "РАЗБЕГ" }],
+        nextCursor: null,
+      }),
+    } as Response);
+
     const template = makeTemplate();
     const templateSetup: TemplateSetupTemplate = {
       templateKey: "tpl-1",
@@ -82,93 +130,25 @@ describe("TemplateSetupPanel", () => {
       fixedSlots: [{ slotId: 1, wordId: "word-1", word: "РАЗБЕГ" }],
     };
 
-    render(
-      <TemplateSetupPanel
-        active
-        loading={false}
-        saving={false}
-        dirty={false}
-        error={null}
-        hasPreview
-        dictionaryLanguage="ru"
-        dictionaryReady
-        templates={[template]}
-        templateMap={new Map([["tpl-1", templateSetup]])}
-        onKeywordChange={vi.fn()}
-        onFixedSlotChange={onFixedSlotChange}
-        onFixedSlotClear={vi.fn()}
-        onSave={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Открыть 4\. ↓ 6/i }));
-
-    const dialog = screen.getByRole("dialog");
-    const inputs = within(dialog).getAllByRole("textbox");
-
-    expect(inputs).toHaveLength(6);
-    expect(inputs[0]).toHaveValue("Г");
-    expect(inputs[0]).toHaveAttribute("readonly");
-    expect(inputs[1]).not.toHaveAttribute("readonly");
-
-    fireEvent.change(inputs[0] as HTMLInputElement, { target: { value: "А" } });
-    expect(inputs[0]).toHaveValue("Г");
-
-    fireEvent.change(inputs[1] as HTMLInputElement, { target: { value: "О" } });
-    expect(inputs[1]).toHaveValue("О");
-    expect(onFixedSlotChange).not.toHaveBeenCalled();
-  });
-
-  it("shows the image section only for photo-definition slots", () => {
-    const template = makeTemplate();
-
-    const { rerender } = render(
-      <TemplateSetupPanel
-        active
-        loading={false}
-        saving={false}
-        dirty={false}
-        error={null}
-        hasPreview
-        dictionaryLanguage="ru"
-        dictionaryReady
-        templates={[template]}
-        templateMap={new Map()}
-        onKeywordChange={vi.fn()}
-        onFixedSlotChange={vi.fn()}
-        onFixedSlotClear={vi.fn()}
-        onSave={vi.fn()}
-      />,
-    );
+    renderPanel({
+      active: true,
+      loading: false,
+      error: null,
+      dictionaryFilter: null,
+      dictionaryLanguage: "ru",
+      dictionaryReady: true,
+      templates: [template],
+      templateMap: new Map([["tpl-1", templateSetup]]),
+      onKeywordChange: vi.fn(),
+      onFixedSlotChange: vi.fn(),
+      onFixedSlotClear: vi.fn(),
+    });
 
     fireEvent.click(screen.getByRole("button", { name: /Открыть 1\. → 6/i }));
-    let dialog = screen.getByRole("dialog");
-    expect(within(dialog).queryByText("scanwordsTemplateSetupImageSectionTitle")).not.toBeInTheDocument();
+    const dialog = screen.getByRole("dialog");
 
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "РАЗБЕГ" })).toBeInTheDocument());
     fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
-
-    rerender(
-      <TemplateSetupPanel
-        active
-        loading={false}
-        saving={false}
-        dirty={false}
-        error={null}
-        hasPreview
-        dictionaryLanguage="ru"
-        dictionaryReady
-        templates={[template]}
-        templateMap={new Map()}
-        onKeywordChange={vi.fn()}
-        onFixedSlotChange={vi.fn()}
-        onFixedSlotClear={vi.fn()}
-        onSave={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Открыть 4\. ↓ 6/i }));
-    dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText("scanwordsTemplateSetupImageSectionTitle")).toBeInTheDocument();
-    expect(within(dialog).getByText("scanwordsTemplateSetupImageWordRequired")).toBeInTheDocument();
   });
 });

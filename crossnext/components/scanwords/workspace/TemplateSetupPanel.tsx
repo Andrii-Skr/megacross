@@ -75,7 +75,7 @@ function buildOtpWord(value: string | null | undefined, len: number): string[] {
   return Array.from({ length: len }, (_, index) => chars[index] ?? "");
 }
 
-function buildLockedSlotLetters(
+export function buildLockedSlotLetters(
   template: TemplateSetupPreviewTemplate,
   fixedSlotMap: Map<number, TemplateSetupFixedSlot>,
 ): Map<number, Map<number, string>> {
@@ -109,7 +109,11 @@ function buildLockedSlotLetters(
   return lockedBySlotId;
 }
 
-function applyLockedLettersToWord(baseWord: string[], len: number, lockedLetters: Map<number, string>): string[] {
+export function applyLockedLettersToWord(
+  baseWord: string[],
+  len: number,
+  lockedLetters: Map<number, string>,
+): string[] {
   const next = Array.from({ length: len }, (_, index) => baseWord[index] ?? "");
   for (const [index, letter] of lockedLetters) {
     if (index < 0 || index >= len) continue;
@@ -118,7 +122,7 @@ function applyLockedLettersToWord(baseWord: string[], len: number, lockedLetters
   return next;
 }
 
-function wordMatchesLockedLetters(word: string, lockedLetters: Map<number, string>): boolean {
+export function wordMatchesLockedLetters(word: string, lockedLetters: Map<number, string>): boolean {
   const normalized = normalizeOtpLetters(word).join("");
   for (const [index, letter] of lockedLetters) {
     if (normalized[index] !== letter) return false;
@@ -228,6 +232,20 @@ function scoreCandidateWord(
     if (index > 0 && normalized[index - 1] && knownLetters.has(index - 1)) score += 1;
   }
   return score;
+}
+
+export function buildReservedWordIds(
+  templateMap: Map<string, TemplateSetupTemplate>,
+  editingWordId: string | null,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const template of templateMap.values()) {
+    for (const fixedSlot of template.fixedSlots) {
+      if (!fixedSlot.wordId || fixedSlot.wordId === editingWordId) continue;
+      ids.add(fixedSlot.wordId);
+    }
+  }
+  return ids;
 }
 
 function buildStartsByCell(startPositions: FillReviewStartPosition[]): Map<string, FillReviewStartPosition[]> {
@@ -371,6 +389,7 @@ export function TemplateSetupPanel({
   const editingSelectedImageId = editingFixedSlot?.imageId ?? null;
   const editingPhotoAreaBounds = editingSlot?.photoAreaBounds ?? null;
   const editingIsPhotoDefinition = editingSlot?.isPhotoDefinition === true;
+  const reservedWordIds = useMemo(() => buildReservedWordIds(templateMap, editingWordId), [editingWordId, templateMap]);
   const editingLockedLetters = useMemo(
     () => (editingSlot ? (lockedLettersBySlotId.get(editingSlot.slotId) ?? new Map<number, string>()) : new Map()),
     [editingSlot, lockedLettersBySlotId],
@@ -577,6 +596,7 @@ export function TemplateSetupPanel({
         }
 
         const items = matches
+          .filter((candidate) => !reservedWordIds.has(candidate.id))
           .slice()
           .sort((left, right) => {
             const scoreDiff =
@@ -611,6 +631,7 @@ export function TemplateSetupPanel({
       editingSlot,
       modalKnownLetters,
       modalSearchSeed,
+      reservedWordIds,
       t,
     ],
   );
