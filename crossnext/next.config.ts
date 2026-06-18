@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 
@@ -17,9 +19,19 @@ const securityHeaders = [
 ];
 
 const withNextIntl = createNextIntlPlugin("./i18n.ts");
+const projectRoot = dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = resolve(projectRoot, "..");
+const tailwindcssPath = fileURLToPath(new URL("./node_modules/tailwindcss", import.meta.url));
 
 const nextConfig: NextConfig = {
-  turbopack: {},
+  turbopack: {
+    // pnpm stores the real Next.js package under the workspace-level .pnpm store.
+    root: workspaceRoot,
+    resolveAlias: {
+      tailwindcss: tailwindcssPath,
+    },
+  },
+  outputFileTracingRoot: workspaceRoot,
   // Produce a minimal standalone server output for Docker runner stage
   output: "standalone",
   headers: async () => [

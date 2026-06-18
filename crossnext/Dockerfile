@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
   && rm -rf /var/lib/apt/lists/*
 COPY crossnext/package.json ./package.json
 COPY crossnext/pnpm-lock.yaml ./pnpm-lock.yaml
-COPY crossnext/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY crossnext/pnpm-config.yaml ./pnpm-workspace.yaml
 COPY packages/cross-clues /packages/cross-clues
 # Copy Prisma schema (folder-based schema)
 COPY crossnext/prisma/schema prisma/schema
