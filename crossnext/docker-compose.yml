@@ -37,7 +37,7 @@ services:
       CROSS_OUTPUT_DIR: /app/var/crosswords/out
       LOG_LEVEL: ${LOG_LEVEL:-info}
     entrypoint: ["/app/entrypoint.sh"]
-    command: ["node","server.js"]
+    command: ["node","app/server.js"]
     depends_on:
       db:
         condition: service_healthy

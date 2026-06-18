@@ -95,4 +95,4 @@ LABEL org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.version=$VERSION \
       org.opencontainers.image.title="crossnext" \
       org.opencontainers.image.description="Next.js + Prisma + Postgres"
-CMD ["node","server.js"]
+CMD ["node","app/server.js"]

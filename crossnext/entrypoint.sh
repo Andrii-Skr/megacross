@@ -113,9 +113,18 @@ if [ "${SEED_ON_START:-}" = "1" ] || [ "${SEED_ON_START:-}" = "true" ] || [ "${S
 fi
 
 log "Starting app: $*"
+# Next.js standalone output may be rooted either at /app/server.js
+# or at /app/app/server.js depending on the build context layout.
+if [ "${1:-}" = "node" ] && [ "${2:-}" = "server.js" ] && [ -f "/app/app/server.js" ]; then
+  shift 2
+  set -- node app/server.js "$@"
+fi
+
 # Harden Next.js App Router parsing against malformed `next-router-state-tree`
 # headers observed in production traffic.
-if [ "${1:-}" = "node" ] && [ "${2:-}" = "server.js" ] && [ -f "/app/sanitize-router-state-header.cjs" ]; then
-  set -- node --require /app/sanitize-router-state-header.cjs server.js
+if [ "${1:-}" = "node" ] && { [ "${2:-}" = "server.js" ] || [ "${2:-}" = "app/server.js" ]; } && [ -f "/app/sanitize-router-state-header.cjs" ]; then
+  SERVER_ENTRY="${2}"
+  shift 2
+  set -- node --require /app/sanitize-router-state-header.cjs "$SERVER_ENTRY" "$@"
 fi
 exec "$@"
