@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import type { LegendPayload, TooltipContentProps } from "recharts";
+import type { LegendPayload, TooltipContentProps, TooltipValueType } from "recharts";
 import * as RechartsPrimitive from "recharts";
 
 import { cn } from "@/lib/utils";
@@ -51,10 +51,16 @@ function ChartContainer({ config, className, children, style, ...props }: ChartC
 
 const ChartTooltip = RechartsPrimitive.Tooltip;
 const ChartLegend = RechartsPrimitive.Legend;
+type ChartTooltipName = string | number;
+type ChartTooltipFormatter = NonNullable<TooltipContentProps<TooltipValueType, ChartTooltipName>["formatter"]>;
+type ChartTooltipPayloadItem = NonNullable<TooltipContentProps<TooltipValueType, ChartTooltipName>["payload"]>[number];
 
 type ChartTooltipContentProps = React.HTMLAttributes<HTMLDivElement> &
   Partial<
-    Pick<TooltipContentProps<number, string>, "active" | "payload" | "label" | "formatter" | "labelFormatter">
+    Pick<
+      TooltipContentProps<TooltipValueType, ChartTooltipName>,
+      "active" | "payload" | "label" | "formatter" | "labelFormatter"
+    >
   > & {
     hideLabel?: boolean;
     hideIndicator?: boolean;
@@ -80,7 +86,7 @@ function ChartTooltipContent({
 
   if (!active || !payload?.length) return null;
 
-  const safePayload = payload ?? [];
+  const safePayload = (payload ?? []) as readonly ChartTooltipPayloadItem[];
 
   const rawLabel = (() => {
     if (labelKey) {
@@ -117,7 +123,9 @@ function ChartTooltipContent({
 
           const configItem = configKey ? config?.[configKey] : undefined;
           const indicatorColor = (typeof item.color === "string" && item.color) || configItem?.color || undefined;
-          const formattedResult = formatter ? formatter(item.value, item.name, item, index, safePayload) : item.value;
+          const formattedResult = formatter
+            ? (formatter as ChartTooltipFormatter)(item.value, item.name, item, index, safePayload)
+            : item.value;
           const formattedValue = Array.isArray(formattedResult) ? formattedResult[0] : formattedResult;
           const formattedName = Array.isArray(formattedResult) ? formattedResult[1] : null;
           const labelValue = formattedName ?? configItem?.label ?? item.name ?? configKey;
