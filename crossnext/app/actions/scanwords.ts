@@ -610,6 +610,7 @@ async function loadPreviewArrowAssets(): Promise<Record<number, PreviewArrowAsse
 async function resolvePreviewArrowBaseDir(): Promise<string> {
   const candidates = [
     path.join(process.cwd(), "cross-arrows"),
+    path.join(process.cwd(), "..", "cross-arrows"),
     path.join(process.cwd(), "..", "cross", "server", "src", "arrows"),
   ];
 
