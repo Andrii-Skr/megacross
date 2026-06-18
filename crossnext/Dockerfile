@@ -61,8 +61,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
   && corepack enable
 # build artifacts
 COPY --from=builder --chown=node:node /app/.next/standalone ./
-COPY --from=builder --chown=node:node /app/.next/static ./.next/static
-COPY --from=builder --chown=node:node /app/public ./public
+COPY --from=builder --chown=node:node /app/.next/static ./app/.next/static
+COPY --from=builder --chown=node:node /app/public ./app/public
 COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/prisma.config.ts ./prisma.config.ts
 COPY --chown=node:node cross/server/src/arrows ./cross-arrows
