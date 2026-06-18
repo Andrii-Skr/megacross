@@ -1,6 +1,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
+import { resolveDatabaseUrl } from "@/lib/resolveDatabaseUrl";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -10,8 +11,8 @@ declare global {
 // Prefer DATABASE_URL (Next/Prisma default). Fallback to DATABASE_URL_DEV for local/dev, or to PRISMA_FALLBACK_URL
 // when explicitly allowed (e.g., during Docker build).
 const fallbackUrl = process.env.PRISMA_FALLBACK_URL ?? "postgresql://prisma:prisma@localhost:5432/prisma?schema=public";
-
-const hasRealUrl = Boolean(process.env.DATABASE_URL ?? process.env.DATABASE_URL_DEV);
+const resolvedUrl = resolveDatabaseUrl();
+const hasRealUrl = Boolean(resolvedUrl && resolvedUrl !== fallbackUrl);
 const allowFallback = process.env.PRISMA_ALLOW_FALLBACK === "1";
 
 if (!hasRealUrl && !allowFallback) {
@@ -24,7 +25,7 @@ if (!hasRealUrl && allowFallback) {
   );
 }
 
-const datasourceUrl = process.env.DATABASE_URL ?? process.env.DATABASE_URL_DEV ?? fallbackUrl;
+const datasourceUrl = resolvedUrl ?? fallbackUrl;
 
 if (!datasourceUrl) {
   throw new Error("Set DATABASE_URL or DATABASE_URL_DEV to configure Prisma adapter.");

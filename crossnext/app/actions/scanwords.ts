@@ -322,6 +322,7 @@ const issueSvgSettingsSchema = z
     clueFontMinPt: z.number().min(SVG_FONT_PT_MIN).max(SVG_FONT_PT_MAX),
     clueGlyphWidthPct: z.number().int().min(SVG_TYPOGRAPHY_PERCENT_MIN).max(SVG_TYPOGRAPHY_PERCENT_MAX),
     clueLineHeightPct: z.number().int().min(SVG_TYPOGRAPHY_PERCENT_MIN).max(SVG_TYPOGRAPHY_PERCENT_MAX),
+    photoCluesGrayscale: z.boolean().default(true),
     fontId: z.string().min(1).nullable().optional(),
     systemFontFamily: z.string().trim().min(1).max(120).nullable().optional(),
   })
@@ -619,7 +620,7 @@ async function resolvePreviewArrowBaseDir(): Promise<string> {
       const stats = await stat(path.join(candidate, "01.svg"));
       if (stats.isFile()) return candidate;
     } catch {
-      continue;
+      // Try the next candidate directory.
     }
   }
 
@@ -702,6 +703,7 @@ function defaultIssueSvgSettings() {
     clueFontMinPt: DEFAULT_SVG_CLUE_FONT_MIN_PT,
     clueGlyphWidthPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
     clueLineHeightPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
+    photoCluesGrayscale: true,
     fontId: null as string | null,
     systemFontFamily: DEFAULT_SVG_SYSTEM_FONT_FAMILY,
   };
@@ -1519,6 +1521,7 @@ export async function getScanwordIssueSvgSettingsAction(input: z.infer<typeof is
         clueFontMinPt: number;
         clueGlyphWidthPct: number | null;
         clueLineHeightPct: number | null;
+        photoCluesGrayscale: boolean | null;
         fontId: bigint | null;
         systemFontFamily: string | null;
       }>
@@ -1528,6 +1531,7 @@ export async function getScanwordIssueSvgSettingsAction(input: z.infer<typeof is
         "clueFontMinPt",
         "clueGlyphWidthPct",
         "clueLineHeightPct",
+        "photoCluesGrayscale",
         "fontId",
         "systemFontFamily"
       FROM "public"."scanword_issue_svg_settings"
@@ -1541,6 +1545,7 @@ export async function getScanwordIssueSvgSettingsAction(input: z.infer<typeof is
       clueFontMinPt: Math.min(settings.clueFontMinPt, settings.clueFontBasePt),
       clueGlyphWidthPct: settings.clueGlyphWidthPct ?? DEFAULT_SVG_TYPOGRAPHY_PERCENT,
       clueLineHeightPct: settings.clueLineHeightPct ?? DEFAULT_SVG_TYPOGRAPHY_PERCENT,
+      photoCluesGrayscale: settings.photoCluesGrayscale ?? true,
       fontId: settings.fontId ? String(settings.fontId) : null,
       systemFontFamily: normalizeSystemFontFamily(settings.systemFontFamily),
     };
@@ -1568,6 +1573,7 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
     SVG_TYPOGRAPHY_PERCENT_MIN,
     Math.min(SVG_TYPOGRAPHY_PERCENT_MAX, Math.trunc(data.clueLineHeightPct)),
   );
+  const photoCluesGrayscale = data.photoCluesGrayscale !== false;
   const systemFontFamily = normalizeSystemFontFamily(data.systemFontFamily ?? DEFAULT_SVG_SYSTEM_FONT_FAMILY);
 
   if (fontId != null) {
@@ -1585,15 +1591,16 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
 
   await prisma.$executeRaw(Prisma.sql`
     INSERT INTO "public"."scanword_issue_svg_settings"
-      ("issueId", "clueFontBasePt", "clueFontMinPt", "clueGlyphWidthPct", "clueLineHeightPct", "fontId", "systemFontFamily", "updatedAt")
+      ("issueId", "clueFontBasePt", "clueFontMinPt", "clueGlyphWidthPct", "clueLineHeightPct", "photoCluesGrayscale", "fontId", "systemFontFamily", "updatedAt")
     VALUES
-      (${issueId}, ${clueFontBasePt}, ${clueFontMinPt}, ${clueGlyphWidthPct}, ${clueLineHeightPct}, ${fontId}, ${systemFontFamily}, NOW())
+      (${issueId}, ${clueFontBasePt}, ${clueFontMinPt}, ${clueGlyphWidthPct}, ${clueLineHeightPct}, ${photoCluesGrayscale}, ${fontId}, ${systemFontFamily}, NOW())
     ON CONFLICT ("issueId")
     DO UPDATE SET
       "clueFontBasePt" = EXCLUDED."clueFontBasePt",
       "clueFontMinPt" = EXCLUDED."clueFontMinPt",
       "clueGlyphWidthPct" = EXCLUDED."clueGlyphWidthPct",
       "clueLineHeightPct" = EXCLUDED."clueLineHeightPct",
+      "photoCluesGrayscale" = EXCLUDED."photoCluesGrayscale",
       "fontId" = EXCLUDED."fontId",
       "systemFontFamily" = EXCLUDED."systemFontFamily",
       "updatedAt" = NOW()
@@ -1605,6 +1612,7 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
       clueFontMinPt: number;
       clueGlyphWidthPct: number | null;
       clueLineHeightPct: number | null;
+      photoCluesGrayscale: boolean | null;
       fontId: bigint | null;
       systemFontFamily: string | null;
     }>
@@ -1614,6 +1622,7 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
       "clueFontMinPt",
       "clueGlyphWidthPct",
       "clueLineHeightPct",
+      "photoCluesGrayscale",
       "fontId",
       "systemFontFamily"
     FROM "public"."scanword_issue_svg_settings"
@@ -1630,6 +1639,7 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
     clueFontMinPt: settings.clueFontMinPt,
     clueGlyphWidthPct: settings.clueGlyphWidthPct ?? DEFAULT_SVG_TYPOGRAPHY_PERCENT,
     clueLineHeightPct: settings.clueLineHeightPct ?? DEFAULT_SVG_TYPOGRAPHY_PERCENT,
+    photoCluesGrayscale: settings.photoCluesGrayscale ?? true,
     fontId: settings.fontId ? String(settings.fontId) : null,
     systemFontFamily: normalizeSystemFontFamily(settings.systemFontFamily),
   };

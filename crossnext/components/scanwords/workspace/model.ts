@@ -258,6 +258,7 @@ export type FillSvgTypography = {
   clueFontMinPt: number;
   clueGlyphWidthPct: number;
   clueLineHeightPct: number;
+  photoCluesGrayscale: boolean;
   fontId: string | null;
   systemFontFamily: string;
 };
@@ -283,6 +284,7 @@ export type FillSettings = {
   clueFontMinPt: number;
   clueGlyphWidthPct: number;
   clueLineHeightPct: number;
+  svgPhotoCluesGrayscale: boolean;
   svgFontId: string | null;
   svgSystemFontFamily: string;
 };
@@ -295,6 +297,8 @@ export type FillSettingsInput = {
   clueFontMinPt?: number | string | null;
   clueGlyphWidthPct?: number | string | null;
   clueLineHeightPct?: number | string | null;
+  photoCluesGrayscale?: boolean | string | null;
+  svgPhotoCluesGrayscale?: boolean | string | null;
   fontId?: string | null;
   svgFontId?: string | null;
   systemFontFamily?: string | null;
@@ -448,6 +452,7 @@ export const DEFAULT_FILL_SETTINGS: FillSettings = {
   clueFontMinPt: DEFAULT_SVG_CLUE_FONT_MIN_PT,
   clueGlyphWidthPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
   clueLineHeightPct: DEFAULT_SVG_TYPOGRAPHY_PERCENT,
+  svgPhotoCluesGrayscale: true,
   svgFontId: null,
   svgSystemFontFamily: DEFAULT_SVG_SYSTEM_FONT_FAMILY,
 };
@@ -479,6 +484,16 @@ function normalizePositiveNumber(
   return Math.round(parsed * 1000) / 1000;
 }
 
+function normalizeBoolean(value: boolean | string | null | undefined, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
 export function normalizeFillSettings(input?: FillSettingsInput): FillSettings {
   const speed = input?.speedPreset;
   const speedPreset: FillSpeedPreset =
@@ -505,6 +520,12 @@ export function normalizeFillSettings(input?: FillSettingsInput): FillSettings {
     40,
     200,
   );
+  const svgPhotoCluesGrayscale = normalizeBoolean(
+    typeof input?.svgPhotoCluesGrayscale === "boolean" || typeof input?.svgPhotoCluesGrayscale === "string"
+      ? input.svgPhotoCluesGrayscale
+      : input?.photoCluesGrayscale,
+    DEFAULT_FILL_SETTINGS.svgPhotoCluesGrayscale,
+  );
   const svgFontIdRaw = typeof input?.svgFontId === "string" ? input.svgFontId : input?.fontId;
   const svgFontId = typeof svgFontIdRaw === "string" && svgFontIdRaw.trim().length > 0 ? svgFontIdRaw.trim() : null;
   const svgSystemFontFamilyRaw =
@@ -521,6 +542,7 @@ export function normalizeFillSettings(input?: FillSettingsInput): FillSettings {
     clueFontMinPt: Math.min(clueFontMinPtRaw, clueFontBasePt),
     clueGlyphWidthPct,
     clueLineHeightPct,
+    svgPhotoCluesGrayscale,
     svgFontId,
     svgSystemFontFamily,
   };

@@ -784,6 +784,13 @@ export function useScanwordFill({
     }));
   }, []);
 
+  const handleSvgPhotoCluesGrayscaleChange = useCallback((value: boolean) => {
+    setSettingsDraft((prev) => ({
+      ...prev,
+      svgPhotoCluesGrayscale: value,
+    }));
+  }, []);
+
   const handleSvgFontIdChange = useCallback((value: string) => {
     setSettingsDraft((prev) => ({
       ...prev,
@@ -855,6 +862,7 @@ export function useScanwordFill({
           clueFontMinPt: normalized.clueFontMinPt,
           clueGlyphWidthPct: normalized.clueGlyphWidthPct,
           clueLineHeightPct: normalized.clueLineHeightPct,
+          photoCluesGrayscale: normalized.svgPhotoCluesGrayscale,
           fontId: normalized.svgFontId,
           systemFontFamily: normalized.svgSystemFontFamily,
         }),
@@ -977,6 +985,7 @@ export function useScanwordFill({
                 clueFontMinPt: fillSettings.clueFontMinPt,
                 clueGlyphWidthPct: fillSettings.clueGlyphWidthPct,
                 clueLineHeightPct: fillSettings.clueLineHeightPct,
+                photoCluesGrayscale: fillSettings.svgPhotoCluesGrayscale,
                 fontId: fillSettings.svgFontId,
                 systemFontFamily: fillSettings.svgSystemFontFamily,
               },
@@ -1013,6 +1022,7 @@ export function useScanwordFill({
       fillSettings.clueFontMinPt,
       fillSettings.clueGlyphWidthPct,
       fillSettings.clueLineHeightPct,
+      fillSettings.svgPhotoCluesGrayscale,
       fillSettings.svgFontId,
       fillSettings.svgSystemFontFamily,
       normalizeFillJob,
@@ -1111,6 +1121,7 @@ export function useScanwordFill({
     handleClueFontMinPtChange,
     handleClueGlyphWidthPctChange,
     handleClueLineHeightPctChange,
+    handleSvgPhotoCluesGrayscaleChange,
     handleSvgFontIdChange,
     handleSvgSystemFontFamilyChange,
     handleUploadSvgFont,

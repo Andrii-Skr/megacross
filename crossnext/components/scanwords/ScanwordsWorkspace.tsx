@@ -301,6 +301,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
               onClueFontMinPtChange={fill.handleClueFontMinPtChange}
               onClueGlyphWidthPctChange={fill.handleClueGlyphWidthPctChange}
               onClueLineHeightPctChange={fill.handleClueLineHeightPctChange}
+              onSvgPhotoCluesGrayscaleChange={fill.handleSvgPhotoCluesGrayscaleChange}
               onSvgFontIdChange={fill.handleSvgFontIdChange}
               onSvgSystemFontFamilyChange={fill.handleSvgSystemFontFamilyChange}
               onUploadSvgFont={fill.handleUploadSvgFont}

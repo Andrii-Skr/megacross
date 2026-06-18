@@ -449,6 +449,7 @@ model scanword_issue_svg_settings {
   issueId          BigInt   @unique
   clueFontBasePt   Int      @default(9)
   clueFontMinPt    Int      @default(8)
+  photoCluesGrayscale Boolean @default(true)
   fontId           BigInt?
   systemFontFamily String   @default("Arial") @db.VarChar(120)
   createdAt        DateTime @default(now())

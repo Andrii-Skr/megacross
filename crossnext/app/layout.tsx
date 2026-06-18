@@ -64,7 +64,7 @@ export default async function RootLayout({
               </AuthProvider>
             </QueryProvider>
           </div>
-          <ReactGrabInitializer />
+          {process.env.NODE_ENV === "development" ? <ReactGrabInitializer /> : null}
           <Toaster richColors position="top-right" />
         </ThemeProvider>
       </body>

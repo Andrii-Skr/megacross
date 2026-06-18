@@ -6,6 +6,7 @@ describe("scanword fill settings", () => {
     expect(normalizeFillSettings(null)).toMatchObject({
       clueGlyphWidthPct: 80,
       clueLineHeightPct: 80,
+      svgPhotoCluesGrayscale: true,
     });
   });
 
@@ -49,6 +50,16 @@ describe("scanword fill settings", () => {
     ).toMatchObject({
       clueGlyphWidthPct: DEFAULT_FILL_SETTINGS.clueGlyphWidthPct,
       clueLineHeightPct: DEFAULT_FILL_SETTINGS.clueLineHeightPct,
+    });
+  });
+
+  it("normalizes photo clue mode from persisted values", () => {
+    expect(
+      normalizeFillSettings({
+        photoCluesGrayscale: false,
+      }),
+    ).toMatchObject({
+      svgPhotoCluesGrayscale: false,
     });
   });
 });

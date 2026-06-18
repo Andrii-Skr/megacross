@@ -4,11 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import sharp from "sharp";
-import {
-  buildEmbeddedImageHref,
-  isSvgPhotoCluesGrayscaleEnabled,
-  SVG_PHOTO_CLUES_GRAYSCALE_ENV,
-} from "./svgEmbeddedImage";
+import { buildEmbeddedImageHref } from "./svgEmbeddedImage";
 
 function decodeDataUri(dataUri: string): { mimeType: string; buffer: Buffer } {
   const match = /^data:([^;]+);base64,(.+)$/u.exec(dataUri);
@@ -117,11 +113,4 @@ test("buildEmbeddedImageHref leaves SVG payloads unchanged even when grayscale i
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-test("isSvgPhotoCluesGrayscaleEnabled recognizes truthy env values", () => {
-  assert.equal(isSvgPhotoCluesGrayscaleEnabled({ [SVG_PHOTO_CLUES_GRAYSCALE_ENV]: "1" }), true);
-  assert.equal(isSvgPhotoCluesGrayscaleEnabled({ [SVG_PHOTO_CLUES_GRAYSCALE_ENV]: "true" }), true);
-  assert.equal(isSvgPhotoCluesGrayscaleEnabled({ [SVG_PHOTO_CLUES_GRAYSCALE_ENV]: "off" }), false);
-  assert.equal(isSvgPhotoCluesGrayscaleEnabled({}), false);
 });

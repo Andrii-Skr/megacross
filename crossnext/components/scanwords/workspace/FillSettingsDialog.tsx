@@ -35,6 +35,7 @@ type FillSettingsDialogProps = {
   onClueFontMinPtChange: (value: number) => void;
   onClueGlyphWidthPctChange: (value: number) => void;
   onClueLineHeightPctChange: (value: number) => void;
+  onSvgPhotoCluesGrayscaleChange: (value: boolean) => void;
   onSvgFontIdChange: (value: string) => void;
   onSvgSystemFontFamilyChange: (value: string) => void;
   onUploadSvgFont: (file: File) => Promise<void>;
@@ -136,6 +137,7 @@ export function FillSettingsDialog({
   onClueFontMinPtChange,
   onClueGlyphWidthPctChange,
   onClueLineHeightPctChange,
+  onSvgPhotoCluesGrayscaleChange,
   onSvgFontIdChange,
   onSvgSystemFontFamilyChange,
   onUploadSvgFont,
@@ -255,6 +257,25 @@ export function FillSettingsDialog({
                   disabled={settingsSaving}
                   suffix="%"
                 />
+              </div>
+              <div className="grid gap-2">
+                <Label>{t("scanwordsSvgPhotoCluesModeLabel")}</Label>
+                <RadioGroup
+                  value={settingsDraft.svgPhotoCluesGrayscale ? "grayscale" : "color"}
+                  onValueChange={(value) => onSvgPhotoCluesGrayscaleChange(value === "grayscale")}
+                  className="grid gap-2 sm:grid-cols-2"
+                >
+                  <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+                    <RadioGroupItem id="scanwords-svg-photo-mode-grayscale" value="grayscale" />
+                    <Label htmlFor="scanwords-svg-photo-mode-grayscale">
+                      {t("scanwordsSvgPhotoCluesModeGrayscale")}
+                    </Label>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+                    <RadioGroupItem id="scanwords-svg-photo-mode-color" value="color" />
+                    <Label htmlFor="scanwords-svg-photo-mode-color">{t("scanwordsSvgPhotoCluesModeColor")}</Label>
+                  </div>
+                </RadioGroup>
               </div>
             </section>
 

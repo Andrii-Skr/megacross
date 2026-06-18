@@ -104,7 +104,6 @@ import {
 } from "./fillWordImageService";
 import {
   buildEmbeddedImageHref,
-  isSvgPhotoCluesGrayscaleEnabled,
   isTruthyEnv,
 } from "../utils/svgEmbeddedImage";
 import {
@@ -201,6 +200,7 @@ type FinalizeSvgTypographyInput = {
   clueFontMinPt?: unknown;
   clueGlyphWidthPct?: unknown;
   clueLineHeightPct?: unknown;
+  photoCluesGrayscale?: unknown;
   fontId?: unknown;
   systemFontFamily?: unknown;
 };
@@ -221,6 +221,7 @@ type ParsedFinalizeSvgTypography = {
   clueFontMinPt: number | null;
   clueGlyphWidthPct: number;
   clueLineHeightPct: number;
+  photoCluesGrayscale: boolean;
   fontId: bigint | null;
   systemFontFamily: string | null;
 };
@@ -230,6 +231,7 @@ type ResolvedFinalizeSvgTypography = {
   clueFontMinPt: number | null;
   clueGlyphWidthPct: number;
   clueLineHeightPct: number;
+  photoCluesGrayscale: boolean;
   fontFamily: string | null;
   fontFaceCss: string | null;
 };
@@ -2084,6 +2086,7 @@ function parseFinalizeSvgTypography(value: unknown): ParsedFinalizeSvgTypography
       clueFontMinPt: null,
       clueGlyphWidthPct: SVG_TYPOGRAPHY_PERCENT_DEFAULT,
       clueLineHeightPct: SVG_TYPOGRAPHY_PERCENT_DEFAULT,
+      photoCluesGrayscale: true,
       fontId: null,
       systemFontFamily: null,
     };
@@ -2099,11 +2102,14 @@ function parseFinalizeSvgTypography(value: unknown): ParsedFinalizeSvgTypography
     parseSvgTypographyPercentValue(raw.clueGlyphWidthPct) ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT;
   const clueLineHeightPct =
     parseSvgTypographyPercentValue(raw.clueLineHeightPct) ?? SVG_TYPOGRAPHY_PERCENT_DEFAULT;
+  const photoCluesGrayscale =
+    typeof raw.photoCluesGrayscale === "boolean" ? raw.photoCluesGrayscale : true;
   return {
     clueFontBasePt,
     clueFontMinPt,
     clueGlyphWidthPct,
     clueLineHeightPct,
+    photoCluesGrayscale,
     fontId: parseOptionalPositiveBigInt(raw.fontId),
     systemFontFamily: sanitizeSvgFontFamily(
       typeof raw.systemFontFamily === "string" ? raw.systemFontFamily : null
@@ -2215,6 +2221,7 @@ async function resolveFinalizeSvgTypography(
         : parsed.clueFontMinPt,
     clueGlyphWidthPct: parsed.clueGlyphWidthPct,
     clueLineHeightPct: parsed.clueLineHeightPct,
+    photoCluesGrayscale: parsed.photoCluesGrayscale,
     fontFamily,
     fontFaceCss,
   };
@@ -2866,7 +2873,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const slots = template.slots.map((slot) => convertReviewSlotToSlot(slot));
     const photoClues: Array<{ clueKey: string; href: string }> = [];
     const photoErrors: string[] = [];
-    const grayscalePhotoClues = isSvgPhotoCluesGrayscaleEnabled();
+    const grayscalePhotoClues = resolvedSvgTypography.photoCluesGrayscale;
     const clueGroupByKey = new Map((template.clueGroups ?? []).map((group) => [group.key, group]));
     const templateDir = path.join(issueDir, sanitizeName(template.name));
     mkdirSync(templateDir, { recursive: true });

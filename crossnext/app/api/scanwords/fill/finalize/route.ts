@@ -40,6 +40,7 @@ const svgTypographySchema = z
     clueFontMinPt: z.number().min(1).max(72),
     clueGlyphWidthPct: z.number().int().min(40).max(200).default(80),
     clueLineHeightPct: z.number().int().min(40).max(200).default(80),
+    photoCluesGrayscale: z.boolean().default(true),
     fontId: z.string().min(1).max(32).nullable().optional(),
     systemFontFamily: z.string().trim().min(1).max(120).nullable().optional(),
   })

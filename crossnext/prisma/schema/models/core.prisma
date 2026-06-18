@@ -248,6 +248,7 @@ model ScanwordIssueSvgSettings {
   clueFontMinPt     Float    @default(7.6)
   clueGlyphWidthPct Int      @default(80)
   clueLineHeightPct Int      @default(80)
+  photoCluesGrayscale Boolean @default(true)
   fontId            BigInt?
   systemFontFamily  String   @default("Arial") @db.VarChar(120)
   createdAt         DateTime @default(now())

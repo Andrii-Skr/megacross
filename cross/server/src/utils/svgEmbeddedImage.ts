@@ -2,8 +2,6 @@ import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import sharp from "sharp";
 
-export const SVG_PHOTO_CLUES_GRAYSCALE_ENV = "CROSS_SVG_PHOTO_CLUES_GRAYSCALE";
-
 const RASTER_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -23,10 +21,6 @@ export function isTruthyEnv(value: string | undefined): boolean {
   const normalized = value.trim().toLowerCase();
   if (!normalized) return false;
   return normalized !== "0" && normalized !== "false" && normalized !== "no" && normalized !== "off";
-}
-
-export function isSvgPhotoCluesGrayscaleEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isTruthyEnv(env[SVG_PHOTO_CLUES_GRAYSCALE_ENV]);
 }
 
 export function resolveImageMimeType(fileName: string, sourcePath: string): string {

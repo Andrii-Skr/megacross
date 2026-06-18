@@ -85,7 +85,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-app}
       CROSS_SAMPLES_DIR: /app/var/crosswords/sample
       CROSS_OUTPUT_DIR: /app/var/crosswords/out
-      CROSS_SVG_PHOTO_CLUES_GRAYSCALE: ${CROSS_SVG_PHOTO_CLUES_GRAYSCALE:-0}
       # Для production укажи домен crossnext через CROSS_ALLOWED_ORIGINS в .env.
       CROSS_ALLOWED_ORIGINS: ${CROSS_ALLOWED_ORIGINS:-http://localhost:3000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -193,7 +192,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-app}
       POSTGRES_DB: ${POSTGRES_DB:-app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}  # dev-only
-    # Вариант A: ПОРТЫ НЕ ПУБЛИКУЕМ
     volumes:
       - postgres_data_dev:/var/lib/postgresql/data
     healthcheck:
