@@ -144,6 +144,7 @@ import {
 } from "./fillJobRepository";
 import { buildAnswersOnlySvg } from "../../scripts/answer-only-svg";
 import { buildCrosswordSvg } from "../../scripts/crossword-svg";
+import { exportSvgFilesToEps } from "../utils/epsExport";
 
 type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
 
@@ -2945,6 +2946,11 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     writeFileSync(path.join(templateDir, "crossword.svg"), svg);
     writeFileSync(path.join(templateDir, "crossword-no-text.svg"), svgRaw);
     writeFileSync(path.join(templateDir, "crossword-answers.svg"), svgAnswers);
+    exportSvgFilesToEps([
+      path.join(templateDir, "crossword.svg"),
+      path.join(templateDir, "crossword-no-text.svg"),
+      path.join(templateDir, "crossword-answers.svg"),
+    ]);
     writeFileSync(path.join(templateDir, "used-words.txt"), usedWords);
 
     if (options.writeCrw && template.path) {

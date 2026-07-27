@@ -82,6 +82,7 @@ import { Grid, Slot }    from "../src/types";
 import { buildAnswersOnlySvg } from "./answer-only-svg";
 import { buildCrosswordSvg } from "./crossword-svg";
 import { CELL_STROKE_COLOR } from "./svg-theme";
+import { exportSvgFilesToEps } from "../src/utils/epsExport";
 
 const SAMPLE_DIR = "sample";
 const OUT_DIR    = "out";
@@ -1350,6 +1351,7 @@ const parsedCli = (() => {
         dict:    { type: "string",  short: "d" },
         template:{ type: "string",  short: "t" },
         style:   { type: "string" },
+        eps: { type: "boolean" },
         "no-defs": { type: "boolean" },
         "no-clues": { type: "boolean" },
         hardFirst: { type: "boolean" },
@@ -1464,6 +1466,7 @@ const keyword = normalizeCliKeyword(typeof values.keyword === "string" ? values.
 const keywordTemplateSelector = values.keywordTemplate ?? values["keyword-template"];
 const writeDefsJson = !values["no-defs"] && !values["no-clues"];
 const useCorelStyle = styleName === "corel";
+const writeEps = values.eps === true;
 if (!["default", "corel"].includes(styleName)) {
   console.warn(`Unknown SVG style "${values.style}", using default.`);
 }
@@ -2459,6 +2462,13 @@ if (!files.length) {
       writeFileSync(join(dstDir, "crossword.svg"), svg);
       writeFileSync(join(dstDir, "crossword-no-text.svg"), svgRaw);
       writeFileSync(join(dstDir, "crossword-answers.svg"), svgAnswers);
+      if (writeEps) {
+        exportSvgFilesToEps([
+          join(dstDir, "crossword.svg"),
+          join(dstDir, "crossword-no-text.svg"),
+          join(dstDir, "crossword-answers.svg"),
+        ]);
+      }
       writeFileSync(join(dstDir, "used-words.txt"), usedWords);
       if (writeDefsJson) {
         writeFileSync(join(dstDir, "definitions-down.json"), JSON.stringify(clues.down, null, 2));

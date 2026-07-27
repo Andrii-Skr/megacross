@@ -18,6 +18,7 @@ export const CLUE_EDGE_INSET_MM = 0.1;
 export const CLUE_TEXT_ASCENT_RATIO = 0.64;
 export const CLUE_TEXT_DESCENT_RATIO = 0.16;
 export const CLUE_PLAQUE_TEXT_INSET_MM = 1;
+export const CLUE_TEXT_WIDTH_SAFETY_FACTOR = 1.15;
 const MM_PER_PT = 25.4 / 72;
 const PX_PER_MM = 96 / 25.4;
 export const MIN_CLUE_FONT_SIZE = convertCluePtToSvgUnits(CLUE_FONT_MIN_PT, "default");
@@ -39,6 +40,12 @@ type WordSplitResult = {
 type WrapResult = {
   lines: string[];
   isValid: boolean;
+};
+
+type WrapToken = {
+  text: string;
+  separatorBefore: "" | " ";
+  isProtected: boolean;
 };
 
 type LayoutCandidate = {
@@ -118,6 +125,12 @@ function escapeXml(text: string): string {
 }
 
 const HYPHENATION_SEPARATOR = "\u00AD";
+const NON_BREAKING_SPACE = "\u00A0";
+const PROTECTED_INLINE_PATTERN = /\.{3,}|№(?:\u00A0)?\d+/gu;
+const PROTECTED_NUMBER_PATTERN = /^№(?:\u00A0)?\d+$/u;
+const LOWER_EXTENDING_GLYPH_PATTERN = /[УуДдФфЦцЩщрgjpqyQ]/u;
+const HIGH_GLYPH_PATTERN = /[А-ЯЁA-Z0-9№бйёdfhkl"]/u;
+const ADAPTIVE_LINE_HEIGHT_SCALE = 1;
 const QUOTE_NORMALIZATION_MAP: Record<string, string> = {
   "«": '"',
   "»": '"',
@@ -134,6 +147,74 @@ function normalizeDisplayPunctuation(text: string): string {
 
 function startsWithDisallowedLineBreakChar(text: string): boolean {
   return /^[ЬьЪъЫы]/u.test(text);
+}
+
+function normalizeWrapText(text: string): string {
+  return normalizeDisplayPunctuation(text)
+    .replace(/№[ \t\r\n\f\v]+(?=\d)/gu, `№${NON_BREAKING_SPACE}`)
+    .replace(/[ \t\r\n\f\v]+/g, " ")
+    .trim();
+}
+
+function isProtectedToken(text: string): boolean {
+  return /^\.{3,}$/u.test(text) || PROTECTED_NUMBER_PATTERN.test(text);
+}
+
+function tokenizeWrapText(text: string): WrapToken[] {
+  const clean = normalizeWrapText(text);
+  if (!clean) return [];
+
+  const tokens: WrapToken[] = [];
+  const chunks = clean.split(" ");
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    const chunk = chunks[chunkIndex] ?? "";
+    if (!chunk) continue;
+    let hasTokenInChunk = false;
+
+    const appendToken = (value: string): void => {
+      if (!value) return;
+      tokens.push({
+        text: value,
+        separatorBefore: hasTokenInChunk ? "" : tokens.length > 0 && chunkIndex > 0 ? " " : "",
+        isProtected: isProtectedToken(value),
+      });
+      hasTokenInChunk = true;
+    };
+
+    let offset = 0;
+    for (const match of chunk.matchAll(PROTECTED_INLINE_PATTERN)) {
+      const matchIndex = match.index ?? offset;
+      appendToken(chunk.slice(offset, matchIndex));
+      appendToken(match[0] ?? "");
+      offset = matchIndex + (match[0]?.length ?? 0);
+    }
+    appendToken(chunk.slice(offset));
+  }
+  return tokens;
+}
+
+function needsAdaptiveLineSpacing(upperLine: string, lowerLine: string): boolean {
+  return LOWER_EXTENDING_GLYPH_PATTERN.test(upperLine) && HIGH_GLYPH_PATTERN.test(lowerLine);
+}
+
+function resolveLineAdvances(lines: string[], fontSize: number, lineHeightScale: number): number[] {
+  const baseLineHeight = resolveLineHeight(fontSize, lineHeightScale);
+  const adaptiveLineHeight = fontSize * ADAPTIVE_LINE_HEIGHT_SCALE;
+  const advances: number[] = [];
+  for (let idx = 1; idx < lines.length; idx += 1) {
+    advances.push(
+      needsAdaptiveLineSpacing(lines[idx - 1] ?? "", lines[idx] ?? "")
+        ? Math.max(baseLineHeight, adaptiveLineHeight)
+        : baseLineHeight
+    );
+  }
+  return advances;
+}
+
+function resolveTextBlockHeight(lines: string[], fontSize: number, lineHeightScale: number): number {
+  const baseLineHeight = resolveLineHeight(fontSize, lineHeightScale);
+  if (lines.length <= 1) return baseLineHeight;
+  return baseLineHeight + resolveLineAdvances(lines, fontSize, lineHeightScale).reduce((sum, value) => sum + value, 0);
 }
 
 function splitLongWord(
@@ -325,14 +406,18 @@ function wrapText(
   glyphWidthScale: number,
   breakWords: boolean
 ): WrapResult {
-  const clean = normalizeDisplayPunctuation(text).replace(/\s+/g, " ").trim();
-  if (!clean) return { lines: [], isValid: true };
-  const words = clean.split(" ");
+  const tokens = tokenizeWrapText(text);
+  if (!tokens.length) return { lines: [], isValid: true };
   const lines: string[] = [];
   let line = "";
   let isValid = true;
 
-  const appendSplitWord = (word: string): void => {
+  const appendSplitWord = (word: string, isProtected: boolean): void => {
+    if (isProtected) {
+      line = word;
+      isValid = false;
+      return;
+    }
     const splitLines = splitWord(word, maxChars, availableWidth, fontSize, glyphWidthScale, breakWords);
     if (!splitLines.isValid) isValid = false;
     if (!splitLines.lines.length) return;
@@ -340,17 +425,18 @@ function wrapText(
     line = splitLines.lines[splitLines.lines.length - 1] ?? "";
   };
 
-  for (const word of words) {
+  for (const token of tokens) {
+    const word = token.text;
     if (!line) {
       if (!fitsLineWidth(word, availableWidth, fontSize, glyphWidthScale)) {
-        appendSplitWord(word);
+        appendSplitWord(word, token.isProtected);
         continue;
       }
       line = word;
       continue;
     }
 
-    const joinedLine = `${line} ${word}`;
+    const joinedLine = `${line}${token.separatorBefore}${word}`;
     if (fitsLineWidth(joinedLine, availableWidth, fontSize, glyphWidthScale)) {
       line = joinedLine;
       continue;
@@ -358,7 +444,7 @@ function wrapText(
 
     lines.push(line);
     if (!fitsLineWidth(word, availableWidth, fontSize, glyphWidthScale)) {
-      appendSplitWord(word);
+      appendSplitWord(word, token.isProtected);
     } else {
       line = word;
     }
@@ -472,6 +558,7 @@ export function renderClueText(
   const clusterPadding = Math.max(0, options.clusterPadding ?? 0);
   const clusterBorderWidth = Math.max(0, options.clusterBorderWidth ?? 0);
   const glyphWidthScale = normalizeScale(options.glyphWidthScale, CLUE_GLYPH_WIDTH_SCALE);
+  let effectiveGlyphWidthScale = glyphWidthScale;
   const lineHeightScale = normalizeScale(options.lineHeightScale, CLUE_LINE_HEIGHT_SCALE);
   const alignBottomLeft = textAlign === "bottom-left";
   const areaRects = resolveAreaRects(x, y, cell, options.areaCells, options.anchorCell);
@@ -484,7 +571,7 @@ export function renderClueText(
   const layoutHeight = Math.max(1, maxY - minY);
   const edgeInset = convertMmToSvgUnits(CLUE_EDGE_INSET_MM, mode);
   const padding = 1 + edgeInset;
-  const normalized = text.replace(/\s+/g, " ").trim();
+  const normalized = normalizeWrapText(text);
   const minFontSizeOverride = Number.isFinite(options.minFontSize)
     ? Math.max(1, Number(options.minFontSize))
     : null;
@@ -494,21 +581,31 @@ export function renderClueText(
   const textSafeRect =
     clusterFrame === "top-right" ? insetRect(safeRect, clusterPadding) : safeRect;
   const availableWidth = Math.max(1, textSafeRect.width);
+  const usesMultiCellWidthSafety = isMultiCellArea && backgroundAnchor !== "bottom-left";
+  const safeAvailableWidth = availableWidth / (usesMultiCellWidthSafety ? CLUE_TEXT_WIDTH_SAFETY_FACTOR : 1);
+  const wrappingWidth = usesMultiCellWidthSafety ? safeAvailableWidth : availableWidth;
   const availableHeight = Math.max(1, textSafeRect.height);
   let currentSize = Math.max(fontSize, minFontSize);
   let lineHeight = resolveLineHeight(currentSize, lineHeightScale);
-  let maxChars = Math.max(1, Math.floor(availableWidth / Math.max(1, currentSize * 0.3 * glyphWidthScale)));
+  let maxChars = Math.max(1, Math.floor(wrappingWidth / Math.max(1, currentSize * 0.3 * effectiveGlyphWidthScale)));
   let maxLinesByHeight = Math.max(1, Math.floor((availableHeight + 0.0001) / lineHeight));
-  let maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
-  let wrapResult = wrapText(normalized, maxChars, availableWidth, currentSize, glyphWidthScale, false);
+  let maxLines = Math.min(CLUE_MAX_LINES, maxLinesByHeight);
+  let wrapResult = wrapText(normalized, maxChars, wrappingWidth, currentSize, effectiveGlyphWidthScale, false);
   let lines = wrapResult.lines;
-  let lineWidths = lines.map((line) => estimateScaledLineWidth(line, currentSize, glyphWidthScale));
+  let lineWidths = lines.map((line) => estimateScaledLineWidth(line, currentSize, effectiveGlyphWidthScale));
 
-  const buildCandidate = (breakWords: boolean): LayoutCandidate => {
-    const candidateWrap = wrapText(normalized, maxChars, availableWidth, currentSize, glyphWidthScale, breakWords);
+  const buildCandidate = (breakWords: boolean, candidateWidth = wrappingWidth): LayoutCandidate => {
+    const candidateWrap = wrapText(
+      normalized,
+      maxChars,
+      candidateWidth,
+      currentSize,
+      effectiveGlyphWidthScale,
+      breakWords
+    );
     const candidateLines = candidateWrap.lines;
     const candidateWidths = candidateLines.map((line) =>
-      estimateScaledLineWidth(line, currentSize, glyphWidthScale)
+      estimateScaledLineWidth(line, currentSize, effectiveGlyphWidthScale)
     );
     return {
       breakWords,
@@ -521,23 +618,35 @@ export function renderClueText(
   const isCandidateValid = (candidate: LayoutCandidate): boolean =>
     candidate.wrapResult.isValid &&
     candidate.lines.length <= maxLines &&
-    candidate.lineWidths.every((width) => width <= availableWidth + 0.0001);
+    resolveTextBlockHeight(candidate.lines, currentSize, lineHeightScale) <= availableHeight + 0.0001 &&
+    candidate.lineWidths.every((width) => width <= safeAvailableWidth + 0.0001);
 
   const chooseCandidate = (): LayoutCandidate => {
     const plain = buildCandidate(false);
     const hyphenated = buildCandidate(true);
     const plainValid = isCandidateValid(plain);
     const hyphenatedValid = isCandidateValid(hyphenated);
-    if (plainValid) return plain;
+    const naturalPlain = usesMultiCellWidthSafety ? buildCandidate(false, availableWidth) : plain;
+    if (plainValid) {
+      const safetyAddsLine =
+        usesMultiCellWidthSafety &&
+        currentSize > minFontSize &&
+        plain.lines.length > naturalPlain.lines.length;
+      return safetyAddsLine ? naturalPlain : plain;
+    }
+    if (usesMultiCellWidthSafety && currentSize > minFontSize) return plain;
     if (hyphenatedValid) return hyphenated;
     return hyphenated.wrapResult.isValid ? hyphenated : plain;
   };
 
   const recalcLayout = () => {
     lineHeight = resolveLineHeight(currentSize, lineHeightScale);
-    maxChars = Math.max(1, Math.floor(availableWidth / Math.max(1, currentSize * 0.3 * glyphWidthScale)));
+    maxChars = Math.max(
+      1,
+      Math.floor(wrappingWidth / Math.max(1, currentSize * 0.3 * effectiveGlyphWidthScale))
+    );
     maxLinesByHeight = Math.max(1, Math.floor((availableHeight + 0.0001) / lineHeight));
-    maxLines = isMultiCellArea ? maxLinesByHeight : Math.min(CLUE_MAX_LINES, maxLinesByHeight);
+    maxLines = Math.min(CLUE_MAX_LINES, maxLinesByHeight);
     const chosen = chooseCandidate();
     wrapResult = chosen.wrapResult;
     lines = chosen.lines;
@@ -547,7 +656,8 @@ export function renderClueText(
   const linesFitBounds = () =>
     wrapResult.isValid &&
     lines.length <= maxLines &&
-    lineWidths.every((width) => width <= availableWidth + 0.0001);
+    resolveTextBlockHeight(lines, currentSize, lineHeightScale) <= availableHeight + 0.0001 &&
+    lineWidths.every((width) => width <= safeAvailableWidth + 0.0001);
 
   const shrinkUntil = (targetSize: number) => {
     while (!linesFitBounds() && currentSize > targetSize) {
@@ -557,8 +667,28 @@ export function renderClueText(
   };
   recalcLayout();
   if (!linesFitBounds()) shrinkUntil(minFontSize);
+  if (lines.length > CLUE_MAX_LINES) shrinkUntil(1);
 
-  const textBlockHeight = lineHeight * Math.max(1, lines.length);
+  if (!linesFitBounds()) {
+    const protectedTokens = tokenizeWrapText(normalized).filter((token) => token.isProtected);
+    const widestProtectedToken = protectedTokens.reduce(
+      (widest, token) => Math.max(widest, estimateTextWidth(token.text, currentSize)),
+      0
+    );
+    if (widestProtectedToken > 0) {
+      const requiredScale = Math.min(
+        effectiveGlyphWidthScale,
+        Math.max(0.01, (safeAvailableWidth - 0.001) / widestProtectedToken)
+      );
+      if (requiredScale < effectiveGlyphWidthScale) {
+        effectiveGlyphWidthScale = requiredScale;
+        recalcLayout();
+      }
+    }
+  }
+
+  const lineAdvances = resolveLineAdvances(lines, currentSize, lineHeightScale);
+  const textBlockHeight = resolveTextBlockHeight(lines, currentSize, lineHeightScale);
   const offsetY = Math.max(0, (availableHeight - textBlockHeight) / 2);
   const textTopY = textSafeRect.y + offsetY;
   const textBlockWidth = Math.max(1, ...lineWidths);
@@ -640,10 +770,12 @@ export function renderClueText(
     const visualHeight = ascent + descent;
     const lineTopOffset = Math.max(0, (lineHeight - visualHeight) / 2);
     const baseY = Math.round((textY + lineTopOffset + ascent) * 10) / 10;
-    const scaleTransform = buildUniformScaleTransform(textX, glyphWidthScale);
+    const scaleTransform = buildUniformScaleTransform(textX, effectiveGlyphWidthScale);
+    let cumulativeLineAdvance = 0;
     const textLines = lines
       .map((line, idx) => {
-        const lineY = Math.round((baseY + idx * lineHeight) * 10) / 10;
+        if (idx > 0) cumulativeLineAdvance += lineAdvances[idx - 1] ?? lineHeight;
+        const lineY = Math.round((baseY + cumulativeLineAdvance) * 10) / 10;
         return `<text x="${textX}" y="${lineY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="alphabetic" fill="${fill}">${escapeXml(line)}</text>`;
       })
       .join("");
@@ -655,11 +787,11 @@ export function renderClueText(
 
   const tspan = lines
     .map((line, idx) => {
-      const dy = idx === 0 ? 0 : lineHeight;
+      const dy = idx === 0 ? 0 : (lineAdvances[idx - 1] ?? lineHeight);
       return `<tspan x="${textX}" dy="${dy}">${escapeXml(line)}</tspan>`;
     })
     .join("");
-  const textNode = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="hanging" fill="${fill}"${buildUniformScaleTransform(textX, glyphWidthScale)}>${tspan}</text>`;
+  const textNode = `<text x="${textX}" y="${textY}" font-size="${currentSize}" text-anchor="${textAnchor}" dominant-baseline="hanging" fill="${fill}"${buildUniformScaleTransform(textX, effectiveGlyphWidthScale)}>${tspan}</text>`;
   const textSvg = useClip
     ? `<g clip-path="url(#${clipId})">${backgroundRect}${frameRect}${clusterFrameSvg}${textNode}</g>`
     : `<g>${backgroundRect}${frameRect}${clusterFrameSvg}${textNode}</g>`;

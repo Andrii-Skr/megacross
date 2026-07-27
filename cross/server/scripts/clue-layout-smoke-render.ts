@@ -6,6 +6,7 @@ import {
   CLUE_LINE_HEIGHT_SCALE,
   CLUE_TEXT_ASCENT_RATIO,
   CLUE_TEXT_DESCENT_RATIO,
+  CLUE_TEXT_WIDTH_SAFETY_FACTOR,
   convertCluePtToSvgUnits,
   renderClueText,
   resolveClueRenderLayout,
@@ -48,6 +49,13 @@ function extractTextYValues(text: string): number[] {
   return [...text.matchAll(/<text[^>]* y="([0-9.]+)"/g)]
     .map((match) => Number(match[1]))
     .filter((value) => Number.isFinite(value));
+}
+
+function extractHorizontalScale(text: string): number | null {
+  const match = text.match(/scale\(([0-9.]+) 1\)/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
 }
 
 function testRenderBottomLeftTextBlockForMultiCellArea(): void {
@@ -298,7 +306,7 @@ function testRenderClusterDefinitionFrameAndPadding(): void {
   assert.match(rendered.text, /text-anchor="start"/);
 }
 
-function testRenderMultiCellAreaCanUseMoreThanFourLines(): void {
+function testRenderMultiCellAreaUsesAtMostFourLines(): void {
   const rendered = renderClueText(
     0,
     0,
@@ -323,7 +331,7 @@ function testRenderMultiCellAreaCanUseMoreThanFourLines(): void {
     }
   );
   const lineCount = (rendered.text.match(/<tspan /g) ?? []).length;
-  assert.ok(lineCount > 4);
+  assert.ok(lineCount <= 4);
 }
 
 function testRenderDetachedClusterDoesNotExpandTailDefinition(): void {
@@ -346,11 +354,16 @@ function testRenderClueTextKeepsFullTailWhenLinesOverflow(): void {
     minFontSize: 8,
   });
   const sizes = extractFontSizes(rendered.text);
-  assert.equal(uniqueRounded(sizes)[0], 8);
+  const usedFontSize = uniqueRounded(sizes)[0] ?? 0;
+  assert.ok(usedFontSize > 0);
+  assert.ok(usedFontSize <= 8);
+  assert.ok((rendered.text.match(/<tspan /g) ?? []).length <= 4);
   assert.match(rendered.text, />склон-</);
   assert.match(rendered.text, />ность|>ность к</);
-  assert.match(rendered.text, /безде-/);
-  assert.match(rendered.text, />лью</);
+  assert.match(rendered.text, /безделью|безде-/);
+  if (/безде-/.test(rendered.text)) {
+    assert.match(rendered.text, />лью</);
+  }
 }
 
 function testRenderClueTextContinuesLastHyphenatedSegmentInCorel(): void {
@@ -430,6 +443,277 @@ function testRenderClueTextShrinksToKeepProperHyphenation(): void {
   assert.match(rendered.text, />несколько|>несколь-</);
 }
 
+function testRenderClueTextKeepsEllipsisRunAtomic(): void {
+  for (const mode of ["default", "corel"] as const) {
+    const standalone = renderClueText(0, 0, 30, 12, "текст...", `clip-ellipsis-standalone-${mode}`, "#000", {
+      mode,
+      areaCells: [
+        [0, 0],
+        [1, 0],
+      ],
+      anchorCell: [0, 0],
+      minFontSize: 12,
+    });
+    assert.deepEqual(extractTextValues(standalone.text), ["текст", "..."]);
+
+    const rendered = renderClueText(0, 0, 30, 12, "текст... ....", `clip-ellipsis-atomic-${mode}`, "#000", {
+      mode,
+      areaCells: [
+        [0, 0],
+        [1, 0],
+      ],
+      anchorCell: [0, 0],
+      minFontSize: 12,
+    });
+    const values = extractTextValues(rendered.text);
+    const ellipsisRuns = values.flatMap((value) => value.match(/\.{1,}/g) ?? []);
+    assert.deepEqual(ellipsisRuns, ["...", "...."]);
+    assert.doesNotMatch(rendered.text, />\.<|>\.\.</);
+    assert.doesNotMatch(rendered.text, /…/);
+  }
+}
+
+function testRenderClueTextKeepsNumberSignAndNumberAtomic(): void {
+  for (const mode of ["default", "corel"] as const) {
+    for (const source of ["текст №1", "текст № 1", "текст №1,"]) {
+      const rendered = renderClueText(0, 0, 30, 12, source, `clip-number-atomic-${mode}`, "#000", {
+        mode,
+        areaCells: [
+          [0, 0],
+          [1, 0],
+        ],
+        anchorCell: [0, 0],
+        minFontSize: 12,
+      });
+      const values = extractTextValues(rendered.text);
+      const numberLine = values.find((value) => value.includes("№"));
+      assert.ok(numberLine);
+      assert.match(numberLine, /^№(?:\u00A0)?1,?$/u);
+      assert.equal(values.includes("№"), false);
+      assert.equal(values.includes("1"), false);
+    }
+  }
+}
+
+function testRenderClueTextCompressesOversizedProtectedNumber(): void {
+  const rendered = renderClueText(0, 0, 30, 12, "№123456", "clip-number-protected-compression", "#000", {
+    mode: "default",
+    areaCells: [
+      [0, 0],
+      [1, 0],
+    ],
+    anchorCell: [0, 0],
+    minFontSize: 12,
+  });
+  const values = extractTextValues(rendered.text);
+  const horizontalScale = extractHorizontalScale(rendered.text);
+  assert.deepEqual(values, ["№123456"]);
+  assert.ok(horizontalScale !== null);
+  assert.ok(horizontalScale < CLUE_GLYPH_WIDTH_SCALE);
+}
+
+function testRenderClueTextUsesAdaptiveLineSpacing(): void {
+  const renderPair = (mode: "default" | "corel", text: string, clipId: string) =>
+    renderClueText(0, 0, 30, 12, text, clipId, "#000", {
+      mode,
+      areaCells: [
+        [0, 0],
+        [1, 0],
+      ],
+      anchorCell: [0, 0],
+      minFontSize: 12,
+    });
+
+  const riskyDefault = renderPair("default", "УУ ББ", "clip-adaptive-risky-default");
+  const regularDefault = renderPair("default", "АА ББ", "clip-adaptive-regular-default");
+  assert.equal(Math.round((firstNonZeroDy(riskyDefault.text) ?? 0) * 1000) / 1000, 12);
+  assert.equal(
+    Math.round((firstNonZeroDy(regularDefault.text) ?? 0) * 1000) / 1000,
+    Math.round(12 * CLUE_LINE_HEIGHT_SCALE * 1000) / 1000
+  );
+
+  const roomyDefault = renderClueText(0, 0, 30, 12, "УУ ББ", "clip-adaptive-roomy-default", "#000", {
+    mode: "default",
+    areaCells: [
+      [0, 0],
+      [1, 0],
+    ],
+    anchorCell: [0, 0],
+    minFontSize: 12,
+    lineHeightScale: 1,
+  });
+  assert.equal(firstNonZeroDy(roomyDefault.text), 12);
+
+  for (const [text, clipId] of [
+    ["ддд йй", "clip-adaptive-de-yot"],
+    ["ррр йй", "clip-adaptive-er-yot"],
+  ]) {
+    const rendered = renderPair("default", text, clipId);
+    assert.equal(firstNonZeroDy(rendered.text), 12);
+  }
+
+  const riskyCorelY = extractTextYValues(renderPair("corel", "УУ ББ", "clip-adaptive-risky-corel").text);
+  const regularCorelY = extractTextYValues(renderPair("corel", "АА ББ", "clip-adaptive-regular-corel").text);
+  assert.equal(
+    Math.round(((riskyCorelY[1] ?? 0) - (riskyCorelY[0] ?? 0)) * 1000) / 1000,
+    12
+  );
+  assert.equal(
+    Math.round(((regularCorelY[1] ?? 0) - (regularCorelY[0] ?? 0)) * 1000) / 1000,
+    Math.round(12 * CLUE_LINE_HEIGHT_SCALE * 1000) / 1000
+  );
+
+  for (const [text, riskyAdvanceIndex] of [
+    ["роман Драйзера", 0],
+    ["левый приток Волги", 1],
+  ] as const) {
+    const rendered = renderClueText(0, 0, 30, 12, text, `clip-adaptive-real-${riskyAdvanceIndex}`, "#000", {
+      mode: "default",
+      minFontSize: 8,
+      glyphWidthScale: 1,
+      lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
+    });
+    const usedFontSize = extractFontSizes(rendered.text)[0] ?? 0;
+    const advances = [...rendered.text.matchAll(/<tspan[^>]*dy="([0-9.]+)"/g)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    assert.equal(Math.round((advances[riskyAdvanceIndex] ?? 0) * 1000) / 1000, usedFontSize);
+  }
+
+  const healerDefinition = renderClueText(
+    0,
+    0,
+    30,
+    12,
+    "врач, ведаю- щий едой больных",
+    "clip-adaptive-healer-definition",
+    "#000",
+    {
+      mode: "default",
+      areaCells: [
+        [0, 0],
+        [0, 1],
+        [1, 0],
+        [1, 1],
+      ],
+      anchorCell: [0, 0],
+      minFontSize: 8,
+      glyphWidthScale: 1,
+      lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
+    }
+  );
+  const healerFontSize = extractFontSizes(healerDefinition.text)[0] ?? 0;
+  const healerAdvances = [...healerDefinition.text.matchAll(/<tspan[^>]*dy="([0-9.]+)"/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  assert.deepEqual(extractTextValues(healerDefinition.text), ["врач,", "ведаю-", "щий едой", "больных"]);
+  assert.equal(healerAdvances[1], healerFontSize);
+
+  const quotedDefinition = renderClueText(
+    0,
+    0,
+    30,
+    12,
+    'модель "Мицубиси"',
+    "clip-adaptive-closing-quote",
+    "#000",
+    {
+      mode: "default",
+      areaCells: [
+        [0, 0],
+        [0, 1],
+        [1, 0],
+        [1, 1],
+      ],
+      anchorCell: [0, 0],
+      minFontSize: 12,
+      glyphWidthScale: 1,
+      lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
+    }
+  );
+  const quotedFontSize = extractFontSizes(quotedDefinition.text)[0] ?? 0;
+  const quotedLines = extractTextValues(quotedDefinition.text);
+  const quotedAdvances = [...quotedDefinition.text.matchAll(/<tspan[^>]*dy="([0-9.]+)"/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  assert.match(quotedLines[quotedLines.length - 1] ?? "", /^си(?:&quot;|")$/u);
+  assert.equal(quotedAdvances[quotedAdvances.length - 1], quotedFontSize);
+}
+
+function testRenderClueTextLimitsDefinitionsToFourLines(): void {
+  for (const mode of ["default", "corel"] as const) {
+    for (const text of ["др. серебряная монета арабов", "подземный народ ... белоглазая"]) {
+      const rendered = renderClueText(0, 0, 30, 12, text, `clip-four-lines-${mode}-${text.length}`, "#000", {
+        mode,
+        areaCells: [
+          [0, 0],
+          [0, 1],
+          [1, 0],
+          [1, 1],
+        ],
+        anchorCell: [0, 0],
+        minFontSize: 12,
+        glyphWidthScale: 1,
+        lineHeightScale: CLUE_LINE_HEIGHT_SCALE,
+      });
+      const values = extractTextValues(rendered.text);
+      const usedFontSize = extractFontSizes(rendered.text)[0] ?? 12;
+      assert.ok(values.length <= 4);
+      assert.ok(usedFontSize < 12);
+      assert.match(values.join(" "), /арабов|белоглазая|белогла-.*зая/u);
+    }
+  }
+}
+
+function testRenderClueTextKeepsWideMultiCellLinesAwayFromBorders(): void {
+  for (const [text, expectedLines] of [
+    ["король триллера ... Кинг", ["король", "триллера", "... Кинг"]],
+    ["миф. сын Велеса", ["миф. сын", "Велеса"]],
+  ] as const) {
+    const rendered = renderClueText(0, 0, 30, 12, text, `clip-wide-safe-${text.length}`, "#000", {
+      mode: "default",
+      areaCells: [
+        [0, 0],
+        [0, 1],
+        [1, 0],
+        [1, 1],
+      ],
+      anchorCell: [0, 0],
+      minFontSize: 8,
+      glyphWidthScale: 1,
+    });
+    const values = extractTextValues(rendered.text);
+    const usedFontSize = extractFontSizes(rendered.text)[0] ?? 12;
+    const edgeInset = (96 / 25.4) * 0.1;
+    const availableWidth = 60 - (1 + edgeInset) * 2;
+    assert.deepEqual(values, expectedLines);
+    assert.ok(usedFontSize < 12);
+    for (const line of values) {
+      const guardedWidth = estimateTextWidth(line, usedFontSize) * CLUE_TEXT_WIDTH_SAFETY_FACTOR;
+      assert.ok(guardedWidth <= availableWidth + 0.001);
+    }
+  }
+}
+
+function testRenderClueTextAdaptiveSpacingStillFitsHeight(): void {
+  const rendered = renderClueText(0, 0, 30, 12, "УУ ББ УУ", "clip-adaptive-height", "#000", {
+    mode: "default",
+    minFontSize: 8,
+  });
+  const sizes = extractFontSizes(rendered.text);
+  const usedFontSize = sizes[0] ?? 12;
+  const yMatch = rendered.text.match(/<text[^>]* y="([0-9.]+)"/);
+  const textTop = Number(yMatch?.[1] ?? Number.NaN);
+  const dyValues = [...rendered.text.matchAll(/<tspan[^>]*dy="([0-9.]+)"/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const textBlockHeight = usedFontSize * CLUE_LINE_HEIGHT_SCALE + dyValues.reduce((sum, value) => sum + value, 0);
+  const edgeInset = (96 / 25.4) * 0.1;
+  const safeBottom = 30 - (1 + edgeInset);
+  assert.ok(Number.isFinite(textTop));
+  assert.ok(textTop + textBlockHeight <= safeBottom + 0.001);
+}
+
 function testResolveClueRenderLayoutIgnoresDetachedClusterCells(): void {
   const resolved = resolveClueRenderLayout({
     areaCells: [[0, 3]],
@@ -497,7 +781,7 @@ export function runClueRenderSmokeSuite(): void {
   testRenderClueTextRespectsSafeInsetForWideCorelWord();
   testRenderClueTextRespectsSafeInsetForWideDefaultWord();
   testRenderClusterDefinitionFrameAndPadding();
-  testRenderMultiCellAreaCanUseMoreThanFourLines();
+  testRenderMultiCellAreaUsesAtMostFourLines();
   testRenderDetachedClusterDoesNotExpandTailDefinition();
   testRenderClueTextKeepsFullTailWhenLinesOverflow();
   testRenderClueTextContinuesLastHyphenatedSegmentInCorel();
@@ -506,6 +790,13 @@ export function runClueRenderSmokeSuite(): void {
   testRenderClueTextNormalizesNonAsciiHyphenBeforeWrap();
   testRenderClueTextSplitsTooLongLeftPartBeforeHyphen();
   testRenderClueTextShrinksToKeepProperHyphenation();
+  testRenderClueTextKeepsEllipsisRunAtomic();
+  testRenderClueTextKeepsNumberSignAndNumberAtomic();
+  testRenderClueTextCompressesOversizedProtectedNumber();
+  testRenderClueTextUsesAdaptiveLineSpacing();
+  testRenderClueTextLimitsDefinitionsToFourLines();
+  testRenderClueTextKeepsWideMultiCellLinesAwayFromBorders();
+  testRenderClueTextAdaptiveSpacingStillFitsHeight();
   testResolveClueRenderLayoutIgnoresDetachedClusterCells();
   testResolveClueRenderLayoutKeepsExpandedAnchorAreaBottomLeft();
   testResolveClueRenderLayoutUsesClusterFrameForSingleAnchorWithAttachedCluster();

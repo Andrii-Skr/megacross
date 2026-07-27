@@ -12,6 +12,7 @@ import { buildClueEntries } from "../src/utils/clues";
 import { buildCrw } from "../src/utils/writeCrw";
 import { buildAnswersOnlySvg } from "./answer-only-svg";
 import { buildCrosswordSvg } from "./crossword-svg";
+import { exportSvgFilesToEps } from "../src/utils/epsExport";
 
 /* ---------- CLI ---------- */
 const { values, positionals } = parseArgs({
@@ -22,6 +23,7 @@ const { values, positionals } = parseArgs({
     dict: { type: "string", short: "d" },
     template: { type: "string", short: "t" },
     style: { type: "string" },
+    eps: { type: "boolean" },
     "no-defs": { type: "boolean" },
     "no-clues": { type: "boolean" },
   },
@@ -35,6 +37,7 @@ const dictPath = values.dict ?? "";
 const templatePath = values.template ?? inFile;
 const styleName = (values.style ?? "default").toLowerCase();
 const useCorelStyle = styleName === "corel";
+const writeEps = values.eps === true;
 if (!["default", "corel"].includes(styleName)) {
   console.warn(`Unknown SVG style "${values.style}", using default.`);
 }
@@ -47,7 +50,7 @@ function isTruthyEnv(value: string | undefined): boolean {
 }
 
 if (!inFile) {
-  console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle] [--crw] [--dict <path>] [--template <path>] [--style corel] [--no-defs|--no-clues]");
+  console.error("Usage: pnpm run fill-export -- --file <path.fsh> [--shuffle] [--crw] [--eps] [--dict <path>] [--template <path>] [--style corel] [--no-defs|--no-clues]");
   process.exit(1);
 }
 
@@ -91,6 +94,13 @@ if (!inFile) {
   writeFileSync("out/crossword.svg", svg);
   writeFileSync("out/crossword-no-text.svg", svgRaw);
   writeFileSync("out/crossword-answers.svg", svgAnswers);
+  if (writeEps) {
+    exportSvgFilesToEps([
+      "out/crossword.svg",
+      "out/crossword-no-text.svg",
+      "out/crossword-answers.svg",
+    ]);
+  }
   writeFileSync("out/used-words.txt", used);
   if (writeDefsJson) {
     writeFileSync("out/definitions-down.json", JSON.stringify(clues.down, null, 2));
@@ -112,6 +122,7 @@ if (!inFile) {
   const totalSec = ((Date.now() - startedAt) / 1000).toFixed(2);
   console.log("✔ SVG  → out/crossword.svg");
   console.log("✔ SVG  → out/crossword-answers.svg");
+  if (writeEps) console.log("✔ EPS  → out/crossword*.eps");
   console.log("✔ words→ out/used-words.txt");
   console.log(`✔ timing → time=${totalSec}s solve=${solveSec}s`);
 })();

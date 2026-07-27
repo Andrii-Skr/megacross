@@ -264,7 +264,7 @@ function runRegenerationMergeSmoke() {
 function runFinalizeInvariantSmoke() {
   const template = makeReviewTemplate("tpl-1", "1", "КОТ", "Очень длинное определение для проверки лимита", 0);
   const neighbor = makeReviewTemplate("tpl-2", "2", "КОТ", "Сосед", 1);
-  const stateResult = buildFinalSlotState(template.slots[0], null);
+  const stateResult = buildFinalSlotState(template, template.slots[0], null);
   const states = new Map([[template.slots[0].slotId, stateResult.state]]);
   const words = collectTemplateWords(states);
   const neighborWords = new Map<string, Map<string, number>>([["tpl-2", new Map([["КОТ", 1]])]]);

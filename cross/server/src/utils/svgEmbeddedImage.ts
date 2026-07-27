@@ -47,7 +47,7 @@ export function resolveImageMimeType(fileName: string, sourcePath: string): stri
 }
 
 function isFinitePositive(value: number | undefined): value is number {
-  return Number.isFinite(value) && value > 0;
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 async function cropRasterBufferToAspectRatio(

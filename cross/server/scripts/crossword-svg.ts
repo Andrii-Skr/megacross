@@ -38,7 +38,7 @@ const DEFAULT_TYPE0_OUTER_STROKE_MM = 2;
 const DEFAULT_KEYWORD_STROKE_MM = 0.75;
 const DEFAULT_TYPE0_OUTER_STROKE_COLOR = "#B2B3B3";
 const DEFAULT_TYPE0_BLOCK_FILL = "#B2B3B3";
-const DEFAULT_TYPE0_NUMBER_TEXT_FILL = "#2B2A29";
+const DEFAULT_TYPE0_NUMBER_TEXT_FILL = "#000000";
 const DEFAULT_DEBUG_CLUSTER_COLOR = "#FFB3B3";
 
 export type CrosswordSvgStyle = "default" | "corel";
@@ -272,6 +272,8 @@ export function buildCrosswordSvg(
   const clueDefs: string[] = [];
   const photoLayer: string[] = [];
   const photoRawLayer: string[] = [];
+  const photoFrameLayer: string[] = [];
+  const photoFrameRawLayer: string[] = [];
   const clueLayer: string[] = [];
   const clueRawLayer: string[] = [];
   const borderLayer: string[] = [];
@@ -332,13 +334,16 @@ export function buildCrosswordSvg(
           if (photoHref) {
             const bounds = buildAreaBounds(definitionAreaCells);
             if (bounds) {
-              const imageX = gridOffsetX + bounds.minCol * cell + strokeWidth;
-              const imageY = gridOffsetY + bounds.minRow * cell + strokeWidth;
-              const imageWidth = (bounds.maxCol - bounds.minCol + 1) * cell - strokeWidth * 2;
-              const imageHeight = (bounds.maxRow - bounds.minRow + 1) * cell - strokeWidth * 2;
+              const imageX = gridOffsetX + bounds.minCol * cell;
+              const imageY = gridOffsetY + bounds.minRow * cell;
+              const imageWidth = (bounds.maxCol - bounds.minCol + 1) * cell;
+              const imageHeight = (bounds.maxRow - bounds.minRow + 1) * cell;
               const imageTag = `<image href="${escapeXmlAttr(photoHref)}" x="${imageX}" y="${imageY}" width="${imageWidth}" height="${imageHeight}" preserveAspectRatio="xMidYMid slice"/>`;
+              const imageFrame = `<rect x="${imageX}" y="${imageY}" width="${imageWidth}" height="${imageHeight}" fill="none" stroke="${cellStrokeColor}" stroke-width="${strokeWidth}"/>`;
               photoLayer.push(imageTag);
               photoRawLayer.push(imageTag);
+              photoFrameLayer.push(imageFrame);
+              photoFrameRawLayer.push(imageFrame);
             }
           }
           const clipId = `clue-${row}-${col}`;
@@ -440,8 +445,8 @@ export function buildCrosswordSvg(
     }
   }
 
-  svgParts.push(...borderLayer, ...photoLayer, ...clueLayer);
-  svgRawParts.push(...borderRawLayer, ...photoRawLayer, ...clueRawLayer);
+  svgParts.push(...borderLayer, ...photoLayer, ...photoFrameLayer, ...clueLayer);
+  svgRawParts.push(...borderRawLayer, ...photoRawLayer, ...photoFrameRawLayer, ...clueRawLayer);
   if (outerContourLayer.length) {
     svgParts.splice(1, 0, ...outerContourLayer);
     svgRawParts.splice(1, 0, ...outerContourLayer);

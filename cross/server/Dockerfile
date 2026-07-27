@@ -31,6 +31,8 @@ RUN --mount=type=cache,id=cross-cargo-registry,target=/root/.cargo/registry \
 
 FROM base AS runner
 ENV NODE_ENV=production PORT=3001
+RUN apt-get update && apt-get install -y --no-install-recommends epstool ghostscript inkscape fonts-liberation \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY cross/server/. .
 COPY packages/cross-clues /packages/cross-clues

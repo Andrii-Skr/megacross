@@ -854,8 +854,14 @@ function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
   );
   assert.ok(textIndex >= 0, "expected definition text in svg");
   assert.ok(imageIndex < textIndex, "expected image layer before definition plaque");
+  assert.match(
+    svg,
+    /<image href="data:image\/jpeg;base64,QUJDRA==" x="31" y="1" width="60" height="60" preserveAspectRatio="xMidYMid slice"\/>/,
+  );
+  const photoFrame = '<rect x="31" y="1" width="60" height="60" fill="none" stroke="#000000" stroke-width="2"/>';
+  assert.ok(svg.indexOf(photoFrame, imageIndex) > imageIndex, "expected frame over the photo edge");
   assert.match(svg, /<rect x="31" y="[0-9.]+" width="60" height="[0-9.]+" fill="#fff"\/>/);
-  assert.match(svg, /<rect x="32" y="[0-9.]+" width="58" height="[0-9.]+" fill="none" stroke="#2B2A29" stroke-width="2"\/>/);
+  assert.match(svg, /<rect x="32" y="[0-9.]+" width="58" height="[0-9.]+" fill="none" stroke="#000000" stroke-width="2"\/>/);
   assert.match(svg, /<text x="61" y="[0-9.]+" font-size="12" text-anchor="middle"/);
 }
 
