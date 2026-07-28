@@ -17,6 +17,7 @@ const draftRowSchema = z.object({
   wordId: z.string().min(1).max(32).nullable(),
   opredId: z.string().min(1).max(32).nullable(),
   imageId: z.string().min(1).max(32).nullable().optional(),
+  bookmarked: z.boolean().optional().default(false),
 });
 
 const putSchema = z.object({

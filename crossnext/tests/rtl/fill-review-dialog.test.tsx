@@ -6,12 +6,31 @@ import { AddDefinitionModal } from "@/components/dictionary/AddDefinitionModal";
 import { FillReviewDialog } from "@/components/scanwords/workspace/FillReviewDialog";
 import type { FillReviewPayload } from "@/components/scanwords/workspace/model";
 
+const { virtuosoScrollToIndexMock } = vi.hoisted(() => ({
+  virtuosoScrollToIndexMock: vi.fn(),
+}));
+
 vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
 }));
 
 vi.mock("react-virtuoso", () => ({
-  Virtuoso: () => null,
+  Virtuoso: ({
+    data = [],
+    itemContent,
+    ref,
+  }: {
+    data?: unknown[];
+    itemContent: (index: number, item: unknown) => ReactNode;
+    ref?: { current: { scrollToIndex: typeof virtuosoScrollToIndexMock } | null };
+  }) => {
+    if (ref) {
+      Object.assign(ref, {
+        current: { scrollToIndex: virtuosoScrollToIndexMock },
+      });
+    }
+    return data.length > 0 ? itemContent(0, data[0]) : null;
+  },
 }));
 
 vi.mock("react-rnd", () => ({
@@ -328,6 +347,163 @@ describe("FillReviewDialog", () => {
     expect(screen.getAllByAltText("cat.png")).toHaveLength(2);
   });
 
+  it("renders a compact proofreading list and persists row bookmarks", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/api/scanwords/fill-review-draft?jobId=job-proofreading" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse({ available: false, rows: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload = makeReviewPayload();
+    const firstSlot = payload.templates[0]?.slots[0];
+    if (!firstSlot) throw new Error("Missing review slot fixture");
+    firstSlot.isPhotoDefinition = true;
+    firstSlot.photoAreaBounds = { minRow: 0, minCol: 0, maxRow: 0, maxCol: 1 };
+    firstSlot.availableImages = [
+      {
+        id: "img-proofreading",
+        wordId: "10",
+        fileName: "proofreading.png",
+        mimeType: "image/png",
+        width: 200,
+        height: 100,
+        aspectRatio: 2,
+        url: "/api/dictionary/word-images/img-proofreading",
+      },
+    ];
+    firstSlot.selectedImageId = "img-proofreading";
+
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-proofreading"
+        reviewData={payload}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={vi.fn().mockResolvedValue(undefined)}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Кот")).toBeInTheDocument());
+    const proofreadingTab = screen.getByRole("button", { name: "scanwordsReviewTabProofreading" });
+    await userEvent.click(proofreadingTab);
+
+    expect(screen.queryByText("scanwordsReviewWordTemplate")).not.toBeInTheDocument();
+    expect(screen.queryByText("scanwordsReviewDefinitionLen")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "scanwordsReviewImageUpload" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "new" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "addDefinition" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "editDefinition" })).toBeInTheDocument();
+    expect(proofreadingTab.parentElement?.parentElement).toHaveClass("sticky", "-top-6");
+    expect(screen.getByText("word").closest("table")).toHaveClass("sticky", "top-6");
+
+    await userEvent.click(screen.getByRole("button", { name: "scanwordsReviewAddBookmark" }));
+    expect(screen.getByRole("button", { name: "scanwordsReviewRemoveBookmark" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await waitFor(
+      () => {
+        const raw = window.localStorage.getItem("scanwords:fillReviewDraft:job-proofreading");
+        expect(raw).not.toBeNull();
+        const draft = JSON.parse(raw ?? "{}") as { rows?: Array<{ bookmarked?: boolean }> };
+        expect(draft.rows?.[0]?.bookmarked).toBe(true);
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  it("cycles through bookmarks in the current list order", async () => {
+    window.localStorage.setItem(
+      "scanwords:fillReviewDraft:job-bookmark-navigation",
+      JSON.stringify({
+        version: 2,
+        rows: [
+          {
+            templateKey: "tpl-shared",
+            slotId: 1,
+            word: "АС",
+            definition: "Якорный кластер",
+            wordId: "11",
+            opredId: null,
+            imageId: "img-anchor",
+            bookmarked: true,
+          },
+          {
+            templateKey: "tpl-shared",
+            slotId: 2,
+            word: "БД",
+            definition: "Хвост",
+            wordId: "12",
+            opredId: null,
+            imageId: null,
+            bookmarked: true,
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (
+          url === "/api/scanwords/fill-review-draft?jobId=job-bookmark-navigation" &&
+          (!init?.method || init.method === "GET")
+        ) {
+          return jsonResponse({ available: false, rows: [] });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-bookmark-navigation"
+        reviewData={makeSharedClusterReviewPayload()}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={vi.fn().mockResolvedValue(undefined)}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Якорный кластер")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "scanwordsReviewTabProofreading" }));
+    const navigateButton = screen.getByRole("button", { name: "scanwordsReviewGoToBookmark" });
+
+    await userEvent.click(navigateButton);
+    await userEvent.click(navigateButton);
+    await userEvent.click(navigateButton);
+
+    expect(virtuosoScrollToIndexMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ index: 0, align: "center" }),
+    );
+    expect(virtuosoScrollToIndexMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ index: 1, align: "center" }),
+    );
+    expect(virtuosoScrollToIndexMock).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ index: 0, align: "center" }),
+    );
+  });
+
   it("does not block finalize on a non-photo tail slot without image", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
@@ -379,9 +555,10 @@ describe("FillReviewDialog", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const payload = makeSharedClusterReviewPayload();
-    const tailSlot = payload.templates[0]?.slots[1];
-    if (!tailSlot) throw new Error("Missing tail slot fixture");
-    payload.templates[0]!.slots[1] = {
+    const firstTemplate = payload.templates[0];
+    const tailSlot = firstTemplate?.slots[1];
+    if (!firstTemplate || !tailSlot) throw new Error("Missing tail slot fixture");
+    firstTemplate.slots[1] = {
       ...tailSlot,
       isPhotoDefinition: true,
       photoAreaBounds: { minRow: 0, minCol: 0, maxRow: 3, maxCol: 4 },

@@ -3,6 +3,7 @@ import type { FillReviewPayload } from "@/components/scanwords/workspace/model";
 import {
   buildEditableTemplateStates,
   buildFinalizePayload,
+  buildPersistedRows,
   buildSlotFixedLetters,
   buildSlotIntersectionMask,
   mapPersistedRowsByTemplate,
@@ -130,6 +131,7 @@ describe("review draft state helpers", () => {
         wordId: "100",
         opredId: "600",
         imageId: "700",
+        bookmarked: true,
       },
     ]);
     const editable = buildEditableTemplateStates(payload.templates, mapPersistedRowsByTemplate(rows));
@@ -145,6 +147,7 @@ describe("review draft state helpers", () => {
           wordId: "100",
           opredId: "600",
           selectedImageId: "700",
+          bookmarked: true,
         },
       ],
     });
@@ -155,6 +158,24 @@ describe("review draft state helpers", () => {
       key: "tpl-2",
       slots: [{ slotId: 11, word: "ЛИСА", definition: "Лиса" }],
     });
+  });
+
+  it("persists a bookmark even when the word and definition are unchanged", () => {
+    const payload = makeReviewPayload();
+    const editable = buildEditableTemplateStates(payload.templates);
+    const firstSlot = editable[0]?.slots[0];
+    if (!firstSlot) throw new Error("Missing editable slot fixture");
+    firstSlot.bookmarked = true;
+
+    expect(
+      buildPersistedRows(payload.templates, Object.fromEntries(editable.map((item) => [item.key, item.slots]))),
+    ).toEqual([
+      expect.objectContaining({
+        templateKey: "tpl-1",
+        slotId: 10,
+        bookmarked: true,
+      }),
+    ]);
   });
 
   it("builds finalize payload for all templates and normalizes limits", () => {
@@ -172,6 +193,7 @@ describe("review draft state helpers", () => {
             definitionOptions: [],
             availableImages: [],
             selectedImageId: "700",
+            bookmarked: false,
           },
         ],
         "tpl-2": [
@@ -184,6 +206,7 @@ describe("review draft state helpers", () => {
             definitionOptions: [],
             availableImages: [],
             selectedImageId: null,
+            bookmarked: false,
           },
         ],
       },

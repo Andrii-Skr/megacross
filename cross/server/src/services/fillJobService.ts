@@ -617,35 +617,65 @@ async function selectWordsAndDefinitionsForEdition(
   const wordIds = rows.map((row) => row.id);
   const opredIds = rows.flatMap((row) => row.opred_v.map((opred) => opred.id));
 
-  const [editionWordStats, editionOpredStats] = params.preferUsageStats
-    ? await Promise.all([
-        wordIds.length
-          ? prisma.edition_word_stat.findMany({
-              where: {
-                editionId: params.editionId,
-                wordId: { in: wordIds },
-              },
-              select: {
-                wordId: true,
-                useCount: true,
-              },
-            })
-          : Promise.resolve([]),
-        opredIds.length
-          ? prisma.edition_opred_stat.findMany({
-              where: {
-                editionId: params.editionId,
-                opredId: { in: opredIds },
-              },
-              select: {
-                opredId: true,
-                useCount: true,
-              },
-            })
-          : Promise.resolve([]),
-      ])
-    : [[], []];
+  const [editionWordStats, editionOpredStats, allDefinitions] = await Promise.all([
+    params.preferUsageStats
+      ? wordIds.length
+        ? prisma.edition_word_stat.findMany({
+            where: {
+              editionId: params.editionId,
+              wordId: { in: wordIds },
+            },
+            select: {
+              wordId: true,
+              useCount: true,
+            },
+          })
+        : Promise.resolve([])
+      : Promise.resolve([]),
+    params.preferUsageStats
+      ? opredIds.length
+        ? prisma.edition_opred_stat.findMany({
+            where: {
+              editionId: params.editionId,
+              opredId: { in: opredIds },
+            },
+            select: {
+              opredId: true,
+              useCount: true,
+            },
+          })
+        : Promise.resolve([])
+      : Promise.resolve([]),
+    prisma.opred_v.findMany({
+      where: {
+        word_id: { in: wordIds },
+        langId: params.langId,
+        is_deleted: false,
+        text_opr: { not: "" },
+        OR: [{ end_date: null }, { end_date: { gte: new Date() } }],
+      },
+      orderBy: { id: "asc" },
+      select: {
+        id: true,
+        word_id: true,
+        text_opr: true,
+      },
+    }),
+  ]);
 
+  const allDefinitionsByWordId = new Map<bigint, ReviewDefinitionOption[]>();
+  for (const definition of allDefinitions) {
+    const text = normalizeDefinitionText(definition.text_opr);
+    if (!text) continue;
+    const list = allDefinitionsByWordId.get(definition.word_id) ?? [];
+    list.push({ opredId: String(definition.id), text });
+    allDefinitionsByWordId.set(definition.word_id, list);
+  }
+
+  /*
+   * Keep the initially selected definition constrained by the fill template, but
+   * expose every active definition for the selected word in the review dropdown.
+   */
   const wordUseCount = new Map<bigint, number>();
   for (const row of editionWordStats) {
     wordUseCount.set(row.wordId, row.useCount);
@@ -673,16 +703,10 @@ async function selectWordsAndDefinitionsForEdition(
     const bestWord = pickBestWordCandidate(candidates, wordUseCount);
     if (!bestWord) continue;
     const bestOpred = pickBestOpred(bestWord.opred_v, opredUseCount, params.usedDefinitions);
-    const definitions = bestWord.opred_v
-      .map((item) => ({
-        opredId: item.id,
-        text: item.text_opr.trim(),
-      }))
-      .filter((item) => item.text.length > 0)
-      .map((item) => ({
-        opredId: item.opredId,
-        text: item.text,
-      }));
+    const definitions = (allDefinitionsByWordId.get(bestWord.id) ?? []).map((item) => ({
+      opredId: item.opredId == null ? null : BigInt(item.opredId),
+      text: item.text,
+    }));
     selected.set(word, {
       wordId: bestWord.id,
       opredId: bestOpred?.id ?? null,

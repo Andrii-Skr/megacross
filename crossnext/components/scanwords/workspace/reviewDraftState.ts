@@ -17,6 +17,7 @@ export type PersistedReviewRow = {
   wordId: string | null;
   opredId: string | null;
   imageId: string | null;
+  bookmarked: boolean;
 };
 
 export type EditableReviewSlotState = {
@@ -28,6 +29,7 @@ export type EditableReviewSlotState = {
   definitionOptions: FillReviewDefinitionOption[];
   availableImages: WordImageOption[];
   selectedImageId: string | null;
+  bookmarked: boolean;
 };
 
 export type EditableReviewTemplateState = {
@@ -145,6 +147,7 @@ export function buildInitialTemplateState(template: FillReviewTemplate): Editabl
     definitionOptions: normalizeDefinitionOptions(slot.definitionOptions),
     availableImages: Array.isArray(slot.availableImages) ? slot.availableImages : [],
     selectedImageId: slot.selectedImageId ?? null,
+    bookmarked: false,
   }));
 }
 
@@ -179,6 +182,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
     wordId?: unknown;
     opredId?: unknown;
     imageId?: unknown;
+    bookmarked?: unknown;
   };
   if (typeof row.templateKey !== "string" || !row.templateKey) return null;
   const slotId = typeof row.slotId === "number" ? row.slotId : Number.NaN;
@@ -188,6 +192,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
   const wordId = typeof row.wordId === "string" && row.wordId.length > 0 ? row.wordId : null;
   const opredId = typeof row.opredId === "string" && row.opredId.length > 0 ? row.opredId : null;
   const imageId = typeof row.imageId === "string" && row.imageId.length > 0 ? row.imageId : null;
+  const bookmarked = row.bookmarked === true;
   return {
     templateKey: row.templateKey,
     slotId,
@@ -196,6 +201,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
     wordId,
     opredId,
     imageId,
+    bookmarked,
   };
 }
 
@@ -253,6 +259,7 @@ export function mergeTemplateStateWithDraft(
       wordId: draft.wordId ?? null,
       opredId: draft.opredId ?? null,
       selectedImageId: draft.imageId ?? initialRow.selectedImageId ?? null,
+      bookmarked: draft.bookmarked,
       definitionOptions: nextDefinitionOptions,
     };
   });
@@ -290,12 +297,14 @@ export function buildPersistedRows(
       const initialOpredId = initialRow.opredId ?? null;
       const currentImageId = currentRow.selectedImageId ?? null;
       const initialImageId = initialRow.selectedImageId ?? null;
+      const bookmarked = currentRow.bookmarked === true;
       const unchanged =
         currentWord === initialWord &&
         currentWordId === initialWordId &&
         currentDefinition === initialDefinition &&
         currentOpredId === initialOpredId &&
-        currentImageId === initialImageId;
+        currentImageId === initialImageId &&
+        !bookmarked;
       if (unchanged) continue;
       rows.push({
         templateKey: template.key,
@@ -305,6 +314,7 @@ export function buildPersistedRows(
         wordId: currentWordId,
         opredId: currentOpredId,
         imageId: currentImageId,
+        bookmarked,
       });
     }
   }

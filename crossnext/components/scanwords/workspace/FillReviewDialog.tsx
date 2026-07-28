@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  Bookmark,
   CircleAlert,
   CircleCheckBig,
   CirclePlus,
@@ -14,7 +15,7 @@ import {
 import NextImage from "next/image";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Virtuoso } from "react-virtuoso";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { toast } from "sonner";
 import { type AddDefinitionCreatedPayload, AddDefinitionModal } from "@/components/dictionary/AddDefinitionModal";
 import { EditDefinitionModal } from "@/components/dictionary/EditDefinitionModal";
@@ -125,7 +126,7 @@ type FillReviewDialogProps = {
   }) => Promise<FillMaskCandidate[]>;
 };
 
-type ReviewListTab = "byTemplate" | "all";
+type ReviewListTab = "byTemplate" | "all" | "proofreading";
 type ReviewListSortField = "word" | "definition";
 type ReviewListSortDirection = "asc" | "desc";
 
@@ -459,6 +460,8 @@ export function FillReviewDialog({
   const draftStorageDisabledRef = useRef(false);
   const draftRemoteEnabledRef = useRef(false);
   const draftPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reviewListRef = useRef<VirtuosoHandle | null>(null);
+  const lastNavigatedBookmarkKeyRef = useRef<string | null>(null);
   const moderationCreatedRef = useRef<{
     newWords: Set<string>;
     newDefinitions: Set<string>;
@@ -940,12 +943,12 @@ export function FillReviewDialog({
   ]);
 
   const validationMessagesForCurrentView = useMemo(() => {
-    if (reviewTab === "all") return validation.messages;
+    if (reviewTab !== "byTemplate") return validation.messages;
     if (!selectedTemplate) return validation.messages;
     return validation.templateMessages.get(selectedTemplate.key) ?? [];
   }, [reviewTab, selectedTemplate, validation.messages, validation.templateMessages]);
   const visibleValidationMessages = useMemo(() => {
-    if (reviewTab !== "all") return validationMessagesForCurrentView;
+    if (reviewTab === "byTemplate") return validationMessagesForCurrentView;
     return validationMessagesForCurrentView.slice(0, ALL_TAB_ERRORS_LIMIT);
   }, [reviewTab, validationMessagesForCurrentView]);
   const hiddenValidationMessagesCount = Math.max(
@@ -1059,7 +1062,9 @@ export function FillReviewDialog({
       const definition = (item.row.definition ?? "").trim();
       if (allRowsShowDuplicatesOnly && !allRowsDuplicateIndex.familyRowKeys.has(rowKey)) return false;
       if (allRowsShowErrorsOnly && !allRowsErrorRowKeys.has(rowKey)) return false;
-      if (allRowsShowPhotoOnly && !isEffectivePhotoDefinition(item.template, item.slot)) return false;
+      if (reviewTab === "all" && allRowsShowPhotoOnly && !isEffectivePhotoDefinition(item.template, item.slot)) {
+        return false;
+      }
       if (!normalizedQuery) return true;
       return (
         word.toLocaleLowerCase().includes(normalizedQuery) || definition.toLocaleLowerCase().includes(normalizedQuery)
@@ -1073,16 +1078,44 @@ export function FillReviewDialog({
     allRowsShowErrorsOnly,
     allRowsShowPhotoOnly,
     allTemplateRows,
+    reviewTab,
   ]);
   const duplicateRowsCount = allRowsDuplicateIndex.rowKeys.size;
   const errorRowsCount = allRowsErrorRowKeys.size;
   const photoRowsCount = useMemo(
-    () => allTemplateRows.reduce((acc, item) => (isEffectivePhotoDefinition(item.template, item.slot) ? acc + 1 : acc), 0),
+    () =>
+      allTemplateRows.reduce((acc, item) => (isEffectivePhotoDefinition(item.template, item.slot) ? acc + 1 : acc), 0),
     [allTemplateRows],
   );
+  const visibleBookmarkedRowIndexes = useMemo(() => {
+    const indexes: number[] = [];
+    for (let index = 0; index < filteredAllTemplateRows.length; index += 1) {
+      if (filteredAllTemplateRows[index]?.row.bookmarked) indexes.push(index);
+    }
+    return indexes;
+  }, [filteredAllTemplateRows]);
   const handleReviewTabChange = useCallback((tab: ReviewListTab) => {
+    if (tab !== "proofreading") lastNavigatedBookmarkKeyRef.current = null;
     setReviewTab(tab);
   }, []);
+  const navigateToNextBookmark = useCallback(() => {
+    if (visibleBookmarkedRowIndexes.length === 0) return;
+    const previousKey = lastNavigatedBookmarkKeyRef.current;
+    const previousPosition = visibleBookmarkedRowIndexes.findIndex((index) => {
+      const item = filteredAllTemplateRows[index];
+      return item ? keyForRow(item.template.key, item.slot.slotId) === previousKey : false;
+    });
+    const nextPosition = (previousPosition + 1) % visibleBookmarkedRowIndexes.length;
+    const nextIndex = visibleBookmarkedRowIndexes[nextPosition] ?? visibleBookmarkedRowIndexes[0];
+    const nextItem = nextIndex == null ? null : filteredAllTemplateRows[nextIndex];
+    if (nextIndex == null || !nextItem) return;
+    lastNavigatedBookmarkKeyRef.current = keyForRow(nextItem.template.key, nextItem.slot.slotId);
+    reviewListRef.current?.scrollToIndex({
+      index: nextIndex,
+      align: "center",
+      behavior: "smooth",
+    });
+  }, [filteredAllTemplateRows, visibleBookmarkedRowIndexes]);
   const toggleAllRowsSort = useCallback(
     (field: ReviewListSortField) => {
       if (allRowsSortField === field) {
@@ -1500,21 +1533,26 @@ export function FillReviewDialog({
     row,
     showTemplateName,
     highlightDuplicate = false,
+    compact = false,
   }: {
     template: FillReviewTemplate;
     slot: FillReviewSlot;
     row: EditableSlot;
     showTemplateName: boolean;
     highlightDuplicate?: boolean;
+    compact?: boolean;
   }) => {
     const rowKey = keyForRow(template.key, slot.slotId);
     const isCandidateLoading = candidateLoadingKey === rowKey;
     const rowHasError = (validation.rowMessages.get(rowKey)?.length ?? 0) > 0;
-    const rowHighlightClass = rowHasError
-      ? "bg-destructive/15 [box-shadow:inset_4px_0_0_hsl(var(--destructive))]"
-      : highlightDuplicate
-        ? "bg-orange-500/10"
-        : "";
+    const rowHighlightClass = cn(
+      rowHasError
+        ? "bg-destructive/15 [box-shadow:inset_4px_0_0_hsl(var(--destructive))]"
+        : highlightDuplicate
+          ? "bg-orange-500/10"
+          : "",
+      compact && row.bookmarked && !rowHasError && "bg-amber-500/10 [box-shadow:inset_3px_0_0_rgb(245_158_11)]",
+    );
     const rowMetaClass = rowHasError ? "text-[11px] font-medium text-destructive" : "text-[11px] text-muted-foreground";
     const candidates = candidateMap[rowKey] ?? [];
     const wordOptions = buildWordOptions(row, candidates);
@@ -1552,9 +1590,15 @@ export function FillReviewDialog({
 
     return (
       <tr key={rowKey} className={rowHighlightClass}>
-        <td className={cn("align-top px-2 py-2", showTemplateName && "w-[280px] min-w-[280px]")}>
-          <div className="grid gap-2">
-            {showTemplateName && (
+        <td
+          className={cn(
+            "align-top px-2",
+            compact ? "w-[260px] min-w-[260px] py-1" : "py-2",
+            showTemplateName && "w-[280px] min-w-[280px]",
+          )}
+        >
+          <div className={cn("grid", compact ? "gap-0" : "gap-2")}>
+            {showTemplateName && !compact && (
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>{t("scanwordsReviewWordTemplate", { name: template.sourceName ?? template.name })}</span>
                 {rowHasError && (
@@ -1573,10 +1617,42 @@ export function FillReviewDialog({
                 )}
               </div>
             )}
-            <div className={rowMetaClass}>
-              #{slot.slotId} · {slot.dir} · {slot.r}:{slot.c} · {t("scanwordsReviewLength", { count: slot.len })}
-            </div>
+            {!compact && (
+              <div className={rowMetaClass}>
+                #{slot.slotId} · {slot.dir} · {slot.r}:{slot.c} · {t("scanwordsReviewLength", { count: slot.len })}
+              </div>
+            )}
             <div className="flex items-center gap-2">
+              {compact && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className={cn(
+                        "size-7 shrink-0",
+                        row.bookmarked
+                          ? "text-amber-600 hover:text-amber-700 dark:text-amber-400"
+                          : "text-muted-foreground",
+                      )}
+                      onClick={() =>
+                        updateSlot(template.key, slot.slotId, (prev) => ({
+                          ...prev,
+                          bookmarked: !prev.bookmarked,
+                        }))
+                      }
+                      aria-label={row.bookmarked ? t("scanwordsReviewRemoveBookmark") : t("scanwordsReviewAddBookmark")}
+                      aria-pressed={row.bookmarked}
+                    >
+                      <Bookmark className={cn("size-4", row.bookmarked && "fill-current")} aria-hidden />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {row.bookmarked ? t("scanwordsReviewRemoveBookmark") : t("scanwordsReviewAddBookmark")}
+                  </TooltipContent>
+                </Tooltip>
+              )}
               <Select
                 value={selectedWordValue ?? ""}
                 disabled={isCandidateLoading || finalizing || submitting}
@@ -1613,7 +1689,8 @@ export function FillReviewDialog({
               >
                 <SelectTrigger
                   className={cn(
-                    "h-8 w-full px-2 text-sm",
+                    "w-full px-2 text-sm",
+                    compact ? "h-7" : "h-8",
                     rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
                   )}
                 >
@@ -1690,7 +1767,7 @@ export function FillReviewDialog({
                     type="button"
                     size="icon"
                     variant="outline"
-                    className="size-8 shrink-0"
+                    className={cn("shrink-0", compact ? "size-7" : "size-8")}
                     onClick={() => {
                       const mask = buildMask(template, slot);
                       const fixedLetters = Array.from(mask)
@@ -1718,9 +1795,9 @@ export function FillReviewDialog({
             </div>
           </div>
         </td>
-        <td className="align-top px-2 py-2">
-          <div className="grid gap-2">
-            {showTemplateName && (
+        <td className={cn("align-top px-2", compact ? "py-1" : "py-2")}>
+          <div className={cn("grid", compact ? "gap-0" : "gap-2")}>
+            {showTemplateName && !compact && (
               <div aria-hidden className="invisible flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>{t("scanwordsReviewWordTemplate", { name: template.sourceName ?? template.name })}</span>
                 {rowHasError && (
@@ -1739,19 +1816,21 @@ export function FillReviewDialog({
                 )}
               </div>
             )}
-            <div className={cn("flex items-center gap-2", rowMetaClass)}>
-              <span>{t("scanwordsReviewDefinitionLen", { count: row.definition.trim().length })}</span>
-              {isEffectivePhotoDefinition(template, slot) && (
-                <span
-                  className="inline-flex items-center rounded border border-sky-500/40 bg-sky-500/10 p-0.5 text-sky-700 dark:text-sky-300"
-                  role="img"
-                  title={t("scanwordsReviewPhotoDefinition")}
-                  aria-label={t("scanwordsReviewPhotoDefinition")}
-                >
-                  <Image className="size-3" aria-hidden />
-                </span>
-              )}
-            </div>
+            {!compact && (
+              <div className={cn("flex items-center gap-2", rowMetaClass)}>
+                <span>{t("scanwordsReviewDefinitionLen", { count: row.definition.trim().length })}</span>
+                {isEffectivePhotoDefinition(template, slot) && (
+                  <span
+                    className="inline-flex items-center rounded border border-sky-500/40 bg-sky-500/10 p-0.5 text-sky-700 dark:text-sky-300"
+                    role="img"
+                    title={t("scanwordsReviewPhotoDefinition")}
+                    aria-label={t("scanwordsReviewPhotoDefinition")}
+                  >
+                    <Image className="size-3" aria-hidden />
+                  </span>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <Select
                 value={selectedDefIndexByText >= 0 ? String(selectedDefIndexByText) : ""}
@@ -1771,7 +1850,8 @@ export function FillReviewDialog({
               >
                 <SelectTrigger
                   className={cn(
-                    "h-auto min-h-8 w-full items-start px-2 py-1 text-sm",
+                    "h-auto w-full items-start px-2 text-sm",
+                    compact ? "min-h-7 py-0.5" : "min-h-8 py-1",
                     rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
                   )}
                 >
@@ -1838,7 +1918,7 @@ export function FillReviewDialog({
                     type="button"
                     size="icon"
                     variant="outline"
-                    className="size-8 shrink-0"
+                    className={cn("shrink-0", compact ? "size-7" : "size-8")}
                     onClick={(event) => {
                       if (!row.wordId) return;
                       const buttonRect = event.currentTarget.getBoundingClientRect();
@@ -1875,7 +1955,7 @@ export function FillReviewDialog({
                     type="button"
                     size="icon"
                     variant="outline"
-                    className="size-8 shrink-0"
+                    className={cn("shrink-0", compact ? "size-7" : "size-8")}
                     onClick={() => {
                       if (!row.opredId || !row.wordId) return;
                       setDefinitionEditTarget({
@@ -1896,7 +1976,7 @@ export function FillReviewDialog({
                 <TooltipContent>{t("editDefinition")}</TooltipContent>
               </Tooltip>
             </div>
-            {isEffectivePhotoDefinition(template, slot) && (
+            {!compact && isEffectivePhotoDefinition(template, slot) && (
               <div className="rounded-md border border-sky-500/25 bg-sky-500/5 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-xs text-muted-foreground">
@@ -2061,8 +2141,8 @@ export function FillReviewDialog({
             {!reviewLoading && !reviewData && <div className="text-sm text-muted-foreground">{t("noData")}</div>}
             {!reviewLoading && reviewData && (
               <div className="grid gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="inline-flex items-center rounded-md border p-0.5">
+                <div className="sticky -top-6 z-30 -mx-1 flex h-12 flex-nowrap items-center gap-2 border-b bg-background px-1">
+                  <div className="inline-flex shrink-0 items-center rounded-md border p-0.5">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
@@ -2091,21 +2171,54 @@ export function FillReviewDialog({
                       </TooltipTrigger>
                       <TooltipContent>{t("scanwordsReviewTabAll")}</TooltipContent>
                     </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={reviewTab === "proofreading" ? "secondary" : "ghost"}
+                          className="h-7 px-2 text-xs"
+                          onClick={() => handleReviewTabChange("proofreading")}
+                        >
+                          {t("scanwordsReviewTabProofreading")}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t("scanwordsReviewTabProofreading")}</TooltipContent>
+                    </Tooltip>
                   </div>
 
-                  {reviewTab === "all" && (
-                    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                  {reviewTab !== "byTemplate" && (
+                    <div className="flex min-w-0 flex-1 flex-nowrap items-center justify-end gap-2 overflow-x-auto">
+                      {reviewTab === "proofreading" && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 shrink-0 gap-1.5 px-2 text-xs"
+                          onClick={navigateToNextBookmark}
+                          disabled={
+                            reviewLoading || finalizing || submitting || visibleBookmarkedRowIndexes.length === 0
+                          }
+                        >
+                          <Bookmark className="size-3.5 fill-current" aria-hidden />
+                          <span>
+                            {t("scanwordsReviewGoToBookmark", {
+                              count: visibleBookmarkedRowIndexes.length,
+                            })}
+                          </span>
+                        </Button>
+                      )}
                       <Input
                         value={allRowsSearchQuery}
                         onChange={(event) => setAllRowsSearchQuery(event.target.value)}
                         placeholder={t("scanwordsReviewSearchPlaceholder")}
                         aria-label={t("scanwordsReviewSearchAria")}
-                        className="h-8 min-w-[220px] sm:w-[300px]"
+                        className="h-8 w-[220px] shrink-0"
                         disabled={reviewLoading || finalizing || submitting}
                       />
                       <label
                         htmlFor="scanwords-review-show-duplicates-only"
-                        className="inline-flex items-center gap-2 text-xs text-muted-foreground"
+                        className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-muted-foreground"
                       >
                         <Checkbox
                           id="scanwords-review-show-duplicates-only"
@@ -2118,7 +2231,7 @@ export function FillReviewDialog({
                       </label>
                       <label
                         htmlFor="scanwords-review-show-errors-only"
-                        className="inline-flex items-center gap-2 text-xs text-muted-foreground"
+                        className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-muted-foreground"
                       >
                         <Checkbox
                           id="scanwords-review-show-errors-only"
@@ -2129,19 +2242,21 @@ export function FillReviewDialog({
                         />
                         <span>{t("scanwordsReviewShowErrorsOnly", { count: errorRowsCount })}</span>
                       </label>
-                      <label
-                        htmlFor="scanwords-review-show-photo-only"
-                        className="inline-flex items-center gap-2 text-xs text-muted-foreground"
-                      >
-                        <Checkbox
-                          id="scanwords-review-show-photo-only"
-                          checked={allRowsShowPhotoOnly}
-                          onChange={(event) => setAllRowsShowPhotoOnly(event.target.checked)}
-                          disabled={reviewLoading || finalizing || submitting}
-                          aria-label={t("scanwordsReviewShowPhotoOnlyAria")}
-                        />
-                        <span>{t("scanwordsReviewShowPhotoOnly", { count: photoRowsCount })}</span>
-                      </label>
+                      {reviewTab === "all" && (
+                        <label
+                          htmlFor="scanwords-review-show-photo-only"
+                          className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-muted-foreground"
+                        >
+                          <Checkbox
+                            id="scanwords-review-show-photo-only"
+                            checked={allRowsShowPhotoOnly}
+                            onChange={(event) => setAllRowsShowPhotoOnly(event.target.checked)}
+                            disabled={reviewLoading || finalizing || submitting}
+                            aria-label={t("scanwordsReviewShowPhotoOnlyAria")}
+                          />
+                          <span>{t("scanwordsReviewShowPhotoOnly", { count: photoRowsCount })}</span>
+                        </label>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2211,12 +2326,12 @@ export function FillReviewDialog({
                 )}
 
                 {reviewTab === "byTemplate" && selectedTemplate && (
-                  <div className="overflow-x-auto rounded border">
+                  <div className="overflow-x-clip rounded border">
                     <table className="w-full text-xs">
                       <thead className="bg-muted/40 text-left">
                         <tr>
-                          <th className="px-2 py-2 font-medium">{t("word")}</th>
-                          <th className="px-2 py-2 font-medium">{t("definition")}</th>
+                          <th className="sticky top-6 z-20 bg-muted px-2 py-2 font-medium">{t("word")}</th>
+                          <th className="sticky top-6 z-20 bg-muted px-2 py-2 font-medium">{t("definition")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2235,12 +2350,19 @@ export function FillReviewDialog({
                   </div>
                 )}
 
-                {reviewTab === "all" && (
-                  <div className="overflow-x-auto rounded border">
-                    <table className="w-full text-xs">
+                {reviewTab !== "byTemplate" && (
+                  <div className="overflow-x-clip rounded border">
+                    <table className="sticky top-6 z-20 w-full bg-background text-xs">
                       <thead className="bg-muted/40 text-left">
                         <tr>
-                          <th className="w-[280px] min-w-[280px] px-2 py-2 font-medium">
+                          <th
+                            className={cn(
+                              "px-2 font-medium",
+                              reviewTab === "proofreading"
+                                ? "w-[260px] min-w-[260px] py-1.5"
+                                : "w-[280px] min-w-[280px] py-2",
+                            )}
+                          >
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button
@@ -2265,7 +2387,7 @@ export function FillReviewDialog({
                               <TooltipContent>{t("word")}</TooltipContent>
                             </Tooltip>
                           </th>
-                          <th className="px-2 py-2 font-medium">
+                          <th className={cn("px-2 font-medium", reviewTab === "proofreading" ? "py-1.5" : "py-2")}>
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button
@@ -2297,6 +2419,7 @@ export function FillReviewDialog({
                       <div className="px-2 py-4 text-xs text-muted-foreground">{t("noData")}</div>
                     ) : (
                       <Virtuoso
+                        ref={reviewListRef}
                         data={filteredAllTemplateRows}
                         initialItemCount={Math.min(filteredAllTemplateRows.length, 120)}
                         customScrollParent={dialogScrollParent ?? undefined}
@@ -2314,8 +2437,9 @@ export function FillReviewDialog({
                                   template: item.template,
                                   slot: item.slot,
                                   row: item.row,
-                                  showTemplateName: true,
+                                  showTemplateName: reviewTab === "all",
                                   highlightDuplicate: allRowsDuplicateIndex.rowKeys.has(rowKey),
+                                  compact: reviewTab === "proofreading",
                                 })}
                               </tbody>
                             </table>
@@ -2325,7 +2449,7 @@ export function FillReviewDialog({
                     )}
                   </div>
                 )}
-                {reviewTab === "all" && (
+                {reviewTab !== "byTemplate" && (
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                     <span>
                       {t("scanwordsReviewRowsShown", {
