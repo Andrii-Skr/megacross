@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isPhotoImageRatioAllowed } from "@megacross/cross-clues";
 import { Prisma, prisma } from "../db/prisma";
 import type { SolveFailInfo, SolveProgress } from "../utils/solver";
 import {
@@ -1845,21 +1846,13 @@ function escapeLikeChar(value: string): string {
   return value.replace(/[%_\\]/g, (char) => `\\${char}`);
 }
 
-function computeAspectRatio(width: number, height: number): number {
-  if (!(width > 0) || !(height > 0)) return 0;
-  return width / height;
-}
-
 function matchesPhotoAreaRatio(
   image: { width: number; height: number },
   bounds: { minRow: number; minCol: number; maxRow: number; maxCol: number },
 ): boolean {
   const areaWidth = bounds.maxCol - bounds.minCol + 1;
   const areaHeight = bounds.maxRow - bounds.minRow + 1;
-  const imageRatio = computeAspectRatio(image.width, image.height);
-  const areaRatio = computeAspectRatio(areaWidth, areaHeight);
-  if (!(imageRatio > 0) || !(areaRatio > 0)) return false;
-  return Math.abs(imageRatio - areaRatio) / areaRatio <= 0.08;
+  return isPhotoImageRatioAllowed(image, { width: areaWidth, height: areaHeight });
 }
 
 async function findWordsByMask(

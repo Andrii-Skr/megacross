@@ -28,6 +28,58 @@ export type PhotoAreaBounds = {
   maxCol: number;
 };
 
+export type PhotoAreaSize = {
+  width: number;
+  height: number;
+};
+
+export type PhotoImageDimensions = {
+  width: number;
+  height: number;
+};
+
+export const PHOTO_IMAGE_RATIO_TOLERANCE = 0.08;
+export const PHOTO_IMAGE_RECOMMENDED_LONG_SIDES = [500, 700, 1000] as const;
+
+export function getPhotoAreaSize(bounds: PhotoAreaBounds | null | undefined): PhotoAreaSize | null {
+  if (!bounds) return null;
+  const width = bounds.maxCol - bounds.minCol + 1;
+  const height = bounds.maxRow - bounds.minRow + 1;
+  if (!(width > 0) || !(height > 0)) return null;
+  return { width, height };
+}
+
+function computePhotoAspectRatio(dimensions: PhotoImageDimensions): number {
+  if (!(dimensions.width > 0) || !(dimensions.height > 0)) return 0;
+  return dimensions.width / dimensions.height;
+}
+
+export function isPhotoImageRatioAllowed(
+  image: PhotoImageDimensions,
+  target: PhotoAreaSize,
+  tolerance = PHOTO_IMAGE_RATIO_TOLERANCE,
+): boolean {
+  const imageRatio = computePhotoAspectRatio(image);
+  const targetRatio = computePhotoAspectRatio(target);
+  if (!(imageRatio > 0) || !(targetRatio > 0) || !(tolerance >= 0)) return false;
+  return Math.abs(imageRatio - targetRatio) / targetRatio <= tolerance + 1e-12;
+}
+
+export function buildPhotoImageResolutionRecommendations(
+  target: PhotoAreaSize,
+  longSides: readonly number[] = PHOTO_IMAGE_RECOMMENDED_LONG_SIDES,
+): PhotoImageDimensions[] {
+  if (!(target.width > 0) || !(target.height > 0)) return [];
+  return longSides.flatMap((rawLongSide) => {
+    const longSide = Math.trunc(rawLongSide);
+    if (!(longSide > 0)) return [];
+    if (target.width >= target.height) {
+      return [{ width: longSide, height: Math.max(1, Math.round((longSide * target.height) / target.width)) }];
+    }
+    return [{ width: Math.max(1, Math.round((longSide * target.width) / target.height)), height: longSide }];
+  });
+}
+
 export const CLUE_MAP: Record<number, Array<{ cluePos: number; dirKey: number }>> = {
   0x01: [{ cluePos: 2, dirKey: 8 }],
   0x02: [{ cluePos: 1, dirKey: 8 }],
@@ -860,16 +912,17 @@ export function buildClueLayouts(
 export function buildPhotoAreaBoundsBySlotId(
   grid: Grid,
   slots: Slot[],
-  solved: string[],
-  definitions: Map<string, string>,
-  options: {
+  _solved: string[],
+  _definitions: Map<string, string>,
+  _options: {
     anchorFromSlotIdsWhenNoDefinitions?: boolean;
   } = {},
 ): Map<number, PhotoAreaBounds> {
-  const layoutOptions =
-    options.anchorFromSlotIdsWhenNoDefinitions === true ? { anchorFromSlotIdsWhenNoDefinitions: true } : {};
-  const clues = buildClueLayouts(grid, slots, solved, definitions, layoutOptions);
-  const photoClues = buildClueLayouts(grid, slots, solved, definitions, {
+  const layoutOptions = { anchorFromSlotIdsWhenNoDefinitions: true } as const;
+  const geometryRows = grid.data;
+  const noDefinitions = new Map<string, string>();
+  const clues = buildClueLayouts(grid, slots, geometryRows, noDefinitions, layoutOptions);
+  const photoClues = buildClueLayouts(grid, slots, geometryRows, noDefinitions, {
     expand02Area: true,
     ...layoutOptions,
   });

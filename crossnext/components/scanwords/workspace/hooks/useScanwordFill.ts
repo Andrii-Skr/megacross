@@ -47,6 +47,102 @@ const DEFINITIONS_DIFFICULTY_BATCH_SIZE = 5000;
 const FILL_START_TIMEOUT_MS = 15_000;
 const HTTP_STATUS_MESSAGE_RE = /^HTTP\s+\d{3}$/i;
 
+export function localizeFillError(error: string | null | undefined, t: TranslateFn): string | null {
+  if (!error) return null;
+  const raw = String(error).trim();
+  if (!raw) return null;
+  const normalized = raw.toLowerCase();
+
+  if (normalized === "no-solution") return t("scanwordsFillErrorNoSolution");
+  if (normalized === "forward-check") return t("scanwordsFillErrorForwardCheck");
+  if (normalized === "zero-pick") return t("scanwordsFillErrorZeroPick");
+  if (normalized === "aborted (maxms)") return t("scanwordsFillErrorTimeLimit");
+  if (normalized === "aborted (maxnodes)") return t("scanwordsFillErrorNodeLimit");
+  if (normalized.startsWith("aborted")) return t("scanwordsFillErrorAborted");
+
+  const exactKey = {
+    "invalid-template-setup": "scanwordsFillErrorInvalidTemplateSetup",
+    "invalid template": "scanwordsFillErrorInvalidTemplate",
+    "template file not found": "scanwordsFillErrorTemplateFileNotFound",
+    "no valid templates to fill": "scanwordsFillErrorNoValidTemplates",
+    "no templates were solved": "scanwordsFillErrorNoTemplatesSolved",
+    "issue not found": "scanwordsFillErrorIssueNotFound",
+    "filter template is not set for this issue": "scanwordsFillErrorFilterTemplateNotSet",
+    "filter template not found": "scanwordsFillErrorFilterTemplateNotFound",
+    "no uploaded templates for this issue": "scanwordsFillErrorNoUploadedTemplates",
+    "uploaded template files not found on disk": "scanwordsFillErrorUploadedFilesMissing",
+    "dictionary is empty for selected template": "scanwordsFillErrorDictionaryEmpty",
+    "failed to create or load fill job": "scanwordsFillErrorJobUnavailable",
+    "template is not available for regeneration": "scanwordsFillErrorTemplateUnavailable",
+  }[normalized];
+  if (exactKey) return t(exactKey);
+
+  let match = raw.match(/^Template (.+): fixed slot (\d+) was not found$/i);
+  if (match) return t("scanwordsFillErrorFixedSlotNotFound", { template: match[1], slot: match[2] });
+
+  match = raw.match(/^Template (.+): fixed word (.+) does not match slot length (\d+)$/i);
+  if (match) {
+    return t("scanwordsFillErrorFixedWordLength", {
+      template: match[1],
+      word: match[2],
+      length: match[3],
+    });
+  }
+
+  match = raw.match(/^Template (.+): fixed word (.+) is not available in dictionary$/i);
+  if (match) return t("scanwordsFillErrorFixedWordMissing", { template: match[1], word: match[2] });
+
+  match = raw.match(/^Template (.+): fixed words conflict at cell \((\d+),(\d+)\)$/i);
+  if (match) {
+    return t("scanwordsFillErrorFixedWordsConflict", {
+      template: match[1],
+      row: match[2],
+      column: match[3],
+    });
+  }
+
+  match = raw.match(/^Template (.+): fixed letters make slot (\d+) unsatisfiable$/i);
+  if (match) return t("scanwordsFillErrorFixedLetters", { template: match[1], slot: match[2] });
+
+  match = raw.match(/^Template (.+): keyword (.+) is longer than available letter cells$/i);
+  if (match) return t("scanwordsFillErrorKeywordTooLong", { template: match[1], keyword: match[2] });
+
+  match = raw.match(/^Template (.+): keyword (.+) requires (\d+) distinct source words$/i);
+  if (match) {
+    return t("scanwordsFillErrorKeywordSources", {
+      template: match[1],
+      keyword: match[2],
+      count: match[3],
+    });
+  }
+
+  match = raw.match(/^Template (.+): keyword (.+) cannot be embedded into the template$/i);
+  if (match) return t("scanwordsFillErrorKeywordPlacement", { template: match[1], keyword: match[2] });
+
+  if (
+    normalized.startsWith("native csp solver is not available") ||
+    normalized.startsWith("native dlx solver is not available")
+  ) {
+    return t("scanwordsFillErrorSolverUnavailable");
+  }
+
+  if (
+    normalized.startsWith("unknown direction byte") ||
+    normalized.startsWith("unexpected byte") ||
+    normalized.startsWith("truncated marker") ||
+    normalized.startsWith("bad dimensions from marker") ||
+    normalized === "file is not shablon format" ||
+    normalized.startsWith("unsupported template type") ||
+    normalized.startsWith("bad row count") ||
+    normalized.startsWith("row ") ||
+    normalized.startsWith("invalid char")
+  ) {
+    return t("scanwordsFillErrorInvalidTemplate");
+  }
+
+  return t("scanwordsFillErrorUnknownDetails", { error: raw });
+}
+
 export function buildFillOverrides(fillSettings: FillSettings, selectedTemplateId: number | null): FillOverrides {
   const normalized = normalizeFillSettings(fillSettings);
   const preset = SPEED_PRESETS[normalized.speedPreset];
@@ -702,23 +798,7 @@ export function useScanwordFill({
     [t],
   );
 
-  const templateErrorText = useCallback(
-    (error?: string | null) => {
-      if (!error) return null;
-      const raw = String(error);
-      const normalized = raw.trim().toLowerCase();
-      if (normalized === "no-solution") return t("scanwordsFillErrorNoSolution");
-      if (normalized === "forward-check") return t("scanwordsFillErrorForwardCheck");
-      if (normalized === "zero-pick") return t("scanwordsFillErrorZeroPick");
-      if (normalized.startsWith("aborted")) {
-        const match = raw.match(/\(([^)]+)\)/);
-        const reason = match?.[1]?.trim();
-        return reason ? t("scanwordsFillErrorAbortedReason", { reason }) : t("scanwordsFillErrorAborted");
-      }
-      return raw;
-    },
-    [t],
-  );
+  const templateErrorText = useCallback((error?: string | null) => localizeFillError(error, t), [t]);
 
   const handleSettingsOpen = useCallback(() => {
     setSettingsDraft(fillSettings);
@@ -930,7 +1010,8 @@ export function useScanwordFill({
     } catch (err) {
       const { status } = getActionErrorMeta(err);
       const apiMessage = extractApiErrorMessage(err);
-      const message = status === 403 ? t("forbidden") : (apiMessage ?? t("scanwordsFillStartError"));
+      const message =
+        status === 403 ? t("forbidden") : (localizeFillError(apiMessage, t) ?? t("scanwordsFillStartError"));
       setFillError(message);
       toast.error(message);
     } finally {
@@ -1006,7 +1087,8 @@ export function useScanwordFill({
       } catch (err) {
         const { status } = getActionErrorMeta(err);
         const apiMessage = extractApiErrorMessage(err);
-        const message = status === 403 ? t("forbidden") : (apiMessage ?? t("scanwordsReviewFinalizeError"));
+        const message =
+          status === 403 ? t("forbidden") : (localizeFillError(apiMessage, t) ?? t("scanwordsReviewFinalizeError"));
         setReviewError(message);
         toast.error(message);
         throw err;
@@ -1066,7 +1148,8 @@ export function useScanwordFill({
       } catch (err) {
         const { status } = getActionErrorMeta(err);
         const apiMessage = extractApiErrorMessage(err);
-        const message = status === 403 ? t("forbidden") : (apiMessage ?? t("scanwordsTemplateRegenerateError"));
+        const message =
+          status === 403 ? t("forbidden") : (localizeFillError(apiMessage, t) ?? t("scanwordsTemplateRegenerateError"));
         setReviewError(message);
         toast.error(message);
         throw err;

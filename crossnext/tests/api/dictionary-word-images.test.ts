@@ -4,9 +4,13 @@ import { GET, POST } from "../../app/api/dictionary/word/[id]/images/route";
 import { prisma, resetMocks, setAuthed } from "../mocks";
 import { makeCtx, makePrismaKnownError, readJson } from "./_utils";
 
+const { sharpMetadataMock } = vi.hoisted(() => ({
+  sharpMetadataMock: vi.fn(),
+}));
+
 vi.mock("sharp", () => ({
   default: vi.fn(() => ({
-    metadata: vi.fn().mockResolvedValue({ width: 300, height: 100 }),
+    metadata: sharpMetadataMock,
   })),
 }));
 
@@ -15,6 +19,7 @@ describe("/api/dictionary/word/[id]/images", () => {
     resetMocks();
     setAuthed({ id: "17", role: "ADMIN" });
     vi.clearAllMocks();
+    sharpMetadataMock.mockResolvedValue({ width: 300, height: 100 });
   });
 
   it("lists word images", async () => {
@@ -70,10 +75,59 @@ describe("/api/dictionary/word/[id]/images", () => {
     } as Request;
 
     const res = await POST(req, makeCtx({ id: "10" }));
-    const { status, json } = await readJson<{ errorCode: string }>(res);
+    const { status, json } = await readJson<{
+      errorCode: string;
+      details: {
+        imageWidth: number;
+        imageHeight: number;
+        targetWidth: number;
+        targetHeight: number;
+        tolerancePercent: number;
+      };
+    }>(res);
 
     expect(status).toBe(422);
     expect(json.errorCode).toBe("UPLOAD_IMAGE_BAD_RATIO");
+    expect(json.details).toEqual({
+      imageWidth: 300,
+      imageHeight: 100,
+      targetWidth: 1,
+      targetHeight: 1,
+      tolerancePercent: 8,
+    });
+    expect(prisma.scanwordWordImage.findUnique).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [500, 500],
+    [510, 500],
+  ])("accepts a %sx%s upload for a square photo area", async (width, height) => {
+    sharpMetadataMock.mockResolvedValue({ width, height });
+    prisma.word_v.findFirst.mockResolvedValue({ id: 10n });
+    prisma.scanwordWordImage.findUnique.mockResolvedValue({
+      id: 5n,
+      wordId: 10n,
+      fileName: "cat.png",
+      mimeType: "image/png",
+      width,
+      height,
+      aspectRatio: width / height,
+    });
+
+    const form = new FormData();
+    const file = new File([new Uint8Array([1, 2, 3])], "cat.png", { type: "image/png" });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: async () => new Uint8Array([1, 2, 3]).buffer,
+    });
+    form.append("file", file);
+    form.append("targetWidth", "4");
+    form.append("targetHeight", "4");
+
+    const res = await POST({ formData: async () => form } as Request, makeCtx({ id: "10" }));
+    const { status, json } = await readJson<{ image: { width: number; height: number } }>(res);
+
+    expect(status).toBe(200);
+    expect(json.image).toEqual(expect.objectContaining({ width, height }));
   });
 
   it("deletes stored word image", async () => {

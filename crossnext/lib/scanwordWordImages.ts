@@ -1,17 +1,15 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isPhotoImageRatioAllowed, PHOTO_IMAGE_RATIO_TOLERANCE, type PhotoAreaSize } from "@megacross/cross-clues";
 import { Prisma } from "@prisma/client";
 
 export const SCANWORD_WORD_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-export const SCANWORD_WORD_IMAGE_RATIO_TOLERANCE = 0.08;
+export const SCANWORD_WORD_IMAGE_RATIO_TOLERANCE = PHOTO_IMAGE_RATIO_TOLERANCE;
 export const SCANWORD_WORD_IMAGES_NOT_READY_MESSAGE =
   "Word image storage is not ready. Apply database migrations and try again.";
 
-export type WordImageTargetBounds = {
-  width: number;
-  height: number;
-};
+export type WordImageTargetBounds = PhotoAreaSize;
 
 export function sanitizeUploadFileName(name: string) {
   const base = path
@@ -93,10 +91,7 @@ export function isAspectRatioAllowed(
   image: { width: number; height: number },
   targetBounds: WordImageTargetBounds,
 ): boolean {
-  const imageRatio = computeImageAspectRatio(image.width, image.height);
-  const targetRatio = computeImageAspectRatio(targetBounds.width, targetBounds.height);
-  if (!(imageRatio > 0) || !(targetRatio > 0)) return false;
-  return Math.abs(imageRatio - targetRatio) / targetRatio <= SCANWORD_WORD_IMAGE_RATIO_TOLERANCE;
+  return isPhotoImageRatioAllowed(image, targetBounds);
 }
 
 export async function safeUnlink(filePath: string) {

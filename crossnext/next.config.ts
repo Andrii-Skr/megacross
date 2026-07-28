@@ -1,5 +1,5 @@
-import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { PHOTO_IMAGE_RATIO_TOLERANCE } from "@megacross/cross-clues";
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
@@ -22,8 +23,8 @@ import {
 } from "@/lib/scanwordWordImages";
 import { getNumericUserId } from "@/lib/user";
 
-function error(status: number, message: string, errorCode: string) {
-  return NextResponse.json({ success: false, message, errorCode }, { status });
+function error(status: number, message: string, errorCode: string, details?: Record<string, number>) {
+  return NextResponse.json({ success: false, message, errorCode, ...(details ? { details } : {}) }, { status });
 }
 
 function toImageDto(image: {
@@ -166,7 +167,13 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     height: typeof targetHeight === "string" ? targetHeight : null,
   });
   if (targetBounds && !isAspectRatioAllowed({ width, height }, targetBounds)) {
-    return error(422, "Image aspect ratio does not match the cluster area", "UPLOAD_IMAGE_BAD_RATIO");
+    return error(422, "Image aspect ratio does not match the cluster area", "UPLOAD_IMAGE_BAD_RATIO", {
+      imageWidth: width,
+      imageHeight: height,
+      targetWidth: targetBounds.width,
+      targetHeight: targetBounds.height,
+      tolerancePercent: PHOTO_IMAGE_RATIO_TOLERANCE * 100,
+    });
   }
 
   const sha256 = sha256Hex(bytes);

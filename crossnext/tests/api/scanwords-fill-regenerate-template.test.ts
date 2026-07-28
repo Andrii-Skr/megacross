@@ -188,6 +188,7 @@ describe("/api/scanwords/fill/regenerate-template", () => {
               wordId: "501",
               opredId: "601",
               imageId: "img-2",
+              bookmarked: false,
             },
           ],
         },

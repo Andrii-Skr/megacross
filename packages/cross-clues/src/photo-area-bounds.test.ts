@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildPhotoAreaBoundsBySlotId } from "./index";
+import {
+  buildPhotoAreaBoundsBySlotId,
+  buildPhotoImageResolutionRecommendations,
+  isPhotoImageRatioAllowed,
+} from "./index";
 import { DIRS, type Grid, type Slot } from "./types";
 
 function createCodes(rows: number, cols: number, value = 0x01): number[][] {
@@ -70,6 +74,57 @@ describe("buildPhotoAreaBoundsBySlotId", () => {
     expect(photoBoundsBySlotId.has(2)).toBe(false);
   });
 
+  it("keeps photo ownership and bounds stable when definition text becomes available", () => {
+    const data = ["#####*", "#####*", "#####*", "#####*", "*↓#↓**", "*******"];
+    const codes = createCodes(6, 6, 0x01);
+    for (let row = 0; row < 4; row += 1) {
+      for (let col = 0; col < 5; col += 1) {
+        codes[row][col] = 0x02;
+      }
+    }
+    codes[4][2] = 0x02;
+    codes[4][3] = 0x03;
+    const grid = buildGrid(data, codes);
+    const slots: Slot[] = [
+      {
+        id: 1,
+        r: 4,
+        c: 1,
+        dir: DIRS.down,
+        len: 2,
+        cells: [
+          [4, 1],
+          [5, 1],
+        ],
+      },
+      {
+        id: 2,
+        r: 4,
+        c: 3,
+        dir: DIRS.down,
+        len: 2,
+        cells: [
+          [4, 3],
+          [5, 3],
+        ],
+      },
+    ];
+    const solved = ["#####*", "#####*", "#####*", "#####*", "*A#B**", "*C*D**"];
+
+    const beforeDefinitions = buildPhotoAreaBoundsBySlotId(grid, slots, grid.data, new Map());
+    const afterDefinitions = buildPhotoAreaBoundsBySlotId(
+      grid,
+      slots,
+      solved,
+      new Map([
+        ["AC", "Большая область"],
+        ["BD", "Хвост"],
+      ]),
+    );
+
+    expect(afterDefinitions).toEqual(beforeDefinitions);
+  });
+
   it("does not switch anchor when shared-cluster slots come in reverse order", () => {
     const data = ["#####*", "#####*", "#####*", "#####*", "*↓#↓**", "*******"];
     const codes = createCodes(6, 6, 0x01);
@@ -118,5 +173,27 @@ describe("buildPhotoAreaBoundsBySlotId", () => {
       maxCol: 4,
     });
     expect(photoBoundsBySlotId.has(12)).toBe(false);
+  });
+});
+
+describe("photo image dimensions", () => {
+  it("uses the shared eight-percent aspect-ratio tolerance", () => {
+    expect(isPhotoImageRatioAllowed({ width: 500, height: 500 }, { width: 4, height: 4 })).toBe(true);
+    expect(isPhotoImageRatioAllowed({ width: 510, height: 500 }, { width: 4, height: 4 })).toBe(true);
+    expect(isPhotoImageRatioAllowed({ width: 540, height: 500 }, { width: 4, height: 4 })).toBe(true);
+    expect(isPhotoImageRatioAllowed({ width: 541, height: 500 }, { width: 4, height: 4 })).toBe(false);
+  });
+
+  it("builds square and rectangular resolution recommendations", () => {
+    expect(buildPhotoImageResolutionRecommendations({ width: 4, height: 4 })).toEqual([
+      { width: 500, height: 500 },
+      { width: 700, height: 700 },
+      { width: 1000, height: 1000 },
+    ]);
+    expect(buildPhotoImageResolutionRecommendations({ width: 4, height: 3 })).toEqual([
+      { width: 500, height: 375 },
+      { width: 700, height: 525 },
+      { width: 1000, height: 750 },
+    ]);
   });
 });

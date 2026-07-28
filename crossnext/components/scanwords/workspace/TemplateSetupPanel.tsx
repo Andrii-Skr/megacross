@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  buildPhotoImageResolutionRecommendations,
+  getPhotoAreaSize,
+  isPhotoImageRatioAllowed,
+  PHOTO_IMAGE_RATIO_TOLERANCE,
+} from "@megacross/cross-clues";
 import { ChevronLeft, ChevronRight, KeyRound, Loader2, Radar, Trash2 } from "lucide-react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
@@ -299,6 +305,7 @@ export function TemplateSetupPanel({
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalImages, setModalImages] = useState<WordImageOption[]>([]);
+  const [modalImagesLoadedWordId, setModalImagesLoadedWordId] = useState<string | null>(null);
   const [modalImagesLoading, setModalImagesLoading] = useState(false);
   const [modalImageBusy, setModalImageBusy] = useState(false);
   const [modalImageError, setModalImageError] = useState<string | null>(null);
@@ -388,6 +395,17 @@ export function TemplateSetupPanel({
   const editingWordId = editingFixedSlot?.wordId ?? null;
   const editingSelectedImageId = editingFixedSlot?.imageId ?? null;
   const editingPhotoAreaBounds = editingSlot?.photoAreaBounds ?? null;
+  const editingPhotoAreaSize = useMemo(() => getPhotoAreaSize(editingPhotoAreaBounds), [editingPhotoAreaBounds]);
+  const editingImageResolutionRecommendations = useMemo(
+    () => (editingPhotoAreaSize ? buildPhotoImageResolutionRecommendations(editingPhotoAreaSize) : []),
+    [editingPhotoAreaSize],
+  );
+  const compatibleModalImageIds = useMemo(() => {
+    if (!editingPhotoAreaSize) return new Set<string>();
+    return new Set(
+      modalImages.filter((image) => isPhotoImageRatioAllowed(image, editingPhotoAreaSize)).map((image) => image.id),
+    );
+  }, [editingPhotoAreaSize, modalImages]);
   const editingIsPhotoDefinition = editingSlot?.isPhotoDefinition === true;
   const reservedWordIds = useMemo(() => buildReservedWordIds(templateMap, editingWordId), [editingWordId, templateMap]);
   const editingLockedLetters = useMemo(
@@ -399,12 +417,12 @@ export function TemplateSetupPanel({
   const modalSearchSeed = useMemo(() => buildSearchSeed(modalWord), [modalWord]);
   const dictionaryFilterCacheKey = useMemo(() => buildDictionaryFilterCacheKey(dictionaryFilter), [dictionaryFilter]);
   const resolvedEditingImageId = useMemo(() => {
-    if (modalImages.length === 0) return null;
-    if (editingSelectedImageId && modalImages.some((image) => image.id === editingSelectedImageId)) {
+    if (compatibleModalImageIds.size === 0) return null;
+    if (editingSelectedImageId && compatibleModalImageIds.has(editingSelectedImageId)) {
       return editingSelectedImageId;
     }
-    return modalImages[0]?.id ?? null;
-  }, [editingSelectedImageId, modalImages]);
+    return modalImages.find((image) => compatibleModalImageIds.has(image.id))?.id ?? null;
+  }, [compatibleModalImageIds, editingSelectedImageId, modalImages]);
   const activeSearchSeed = useMemo(
     () => (modalSearchAllowEmpty ? null : modalSearchSeed),
     [modalSearchAllowEmpty, modalSearchSeed],
@@ -489,6 +507,7 @@ export function TemplateSetupPanel({
     setModalError(null);
     setModalLoading(false);
     setModalImages([]);
+    setModalImagesLoadedWordId(null);
     setModalImagesLoading(false);
     setModalImageBusy(false);
     setModalImageError(null);
@@ -674,6 +693,7 @@ export function TemplateSetupPanel({
   const refreshModalImages = useCallback(
     async (wordId: string) => {
       setModalImagesLoading(true);
+      setModalImagesLoadedWordId(null);
       setModalImageError(null);
       try {
         const response = await fetch(`/api/dictionary/word/${encodeURIComponent(wordId)}/images`, {
@@ -689,8 +709,10 @@ export function TemplateSetupPanel({
           );
         }
         setModalImages(Array.isArray(payload.images) ? payload.images : []);
+        setModalImagesLoadedWordId(wordId);
       } catch (error) {
         setModalImages([]);
+        setModalImagesLoadedWordId(null);
         setModalImageError(error instanceof Error ? error.message : t("scanwordsTemplateSetupImageLoadError"));
       } finally {
         setModalImagesLoading(false);
@@ -702,6 +724,7 @@ export function TemplateSetupPanel({
   useEffect(() => {
     if (!modalOpen || !editingWordId || !editingIsPhotoDefinition) {
       setModalImages((current) => (current.length > 0 ? [] : current));
+      setModalImagesLoadedWordId(null);
       setModalImagesLoading(false);
       setModalImageError(null);
       return;
@@ -710,12 +733,27 @@ export function TemplateSetupPanel({
   }, [editingIsPhotoDefinition, editingWordId, modalOpen, refreshModalImages]);
 
   useEffect(() => {
-    if (!selectedTemplate || !editingFixedSlot || resolvedEditingImageId === editingSelectedImageId) return;
+    if (
+      !selectedTemplate ||
+      !editingFixedSlot ||
+      modalImagesLoadedWordId !== editingWordId ||
+      resolvedEditingImageId === editingSelectedImageId
+    ) {
+      return;
+    }
     onFixedSlotChange(selectedTemplate.key, {
       ...editingFixedSlot,
       imageId: resolvedEditingImageId,
     });
-  }, [editingFixedSlot, editingSelectedImageId, onFixedSlotChange, resolvedEditingImageId, selectedTemplate]);
+  }, [
+    editingFixedSlot,
+    editingSelectedImageId,
+    editingWordId,
+    modalImagesLoadedWordId,
+    onFixedSlotChange,
+    resolvedEditingImageId,
+    selectedTemplate,
+  ]);
 
   const handleModalImageUpload = useCallback(
     async (file: File) => {
@@ -733,8 +771,35 @@ export function TemplateSetupPanel({
           method: "POST",
           body: formData,
         });
-        const payload = (await response.json().catch(() => ({}))) as { message?: string };
+        const payload = (await response.json().catch(() => ({}))) as {
+          message?: string;
+          errorCode?: string;
+          details?: {
+            imageWidth?: number;
+            imageHeight?: number;
+            targetWidth?: number;
+            targetHeight?: number;
+            tolerancePercent?: number;
+          };
+        };
         if (!response.ok) {
+          if (
+            payload.errorCode === "UPLOAD_IMAGE_BAD_RATIO" &&
+            payload.details?.imageWidth &&
+            payload.details.imageHeight &&
+            payload.details.targetWidth &&
+            payload.details.targetHeight
+          ) {
+            throw new Error(
+              t("scanwordsTemplateSetupImageBadRatio", {
+                imageWidth: payload.details.imageWidth,
+                imageHeight: payload.details.imageHeight,
+                targetWidth: payload.details.targetWidth,
+                targetHeight: payload.details.targetHeight,
+                tolerance: payload.details.tolerancePercent ?? PHOTO_IMAGE_RATIO_TOLERANCE * 100,
+              }),
+            );
+          }
           throw new Error(
             typeof payload.message === "string" && payload.message.trim().length > 0
               ? payload.message
@@ -788,12 +853,13 @@ export function TemplateSetupPanel({
   const handleModalImageSelect = useCallback(
     (imageId: string | null) => {
       if (!selectedTemplate || !editingFixedSlot) return;
+      if (imageId !== null && !compatibleModalImageIds.has(imageId)) return;
       onFixedSlotChange(selectedTemplate.key, {
         ...editingFixedSlot,
         imageId,
       });
     },
-    [editingFixedSlot, onFixedSlotChange, selectedTemplate],
+    [compatibleModalImageIds, editingFixedSlot, onFixedSlotChange, selectedTemplate],
   );
 
   const applyOtpInput = useCallback(
@@ -924,8 +990,11 @@ export function TemplateSetupPanel({
       </Dialog>
 
       <Dialog open={modalOpen} onOpenChange={(next) => (!next ? closeSlotEditor() : null)}>
-        <DialogContent className="sm:max-w-xl" aria-describedby={undefined}>
-          <DialogHeader>
+        <DialogContent
+          className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-xl"
+          aria-describedby={undefined}
+        >
+          <DialogHeader className="shrink-0 pr-6">
             <DialogTitle>{editingSlot ? `Слот ${slotLabel(editingSlot)}` : "Выбор слова"}</DialogTitle>
             <DialogDescription>
               Введите хотя бы две буквы. Ниже автоматически появятся словарные слова подходящей длины и с учетом
@@ -933,287 +1002,324 @@ export function TemplateSetupPanel({
             </DialogDescription>
           </DialogHeader>
 
-          {editingSlot && (
-            <div className="grid gap-4">
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <Badge variant="outline">{slotLabel(editingSlot)}</Badge>
-                <span>
-                  Старт: ({editingSlot.r + 1}, {editingSlot.c + 1})
-                </span>
-                {editingFixedSlot ? <Badge variant="secondary">{editingFixedSlot.word}</Badge> : null}
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                {Array.from({ length: editingSlot.len }, (_, index) =>
-                  (() => {
-                    const isLocked = editingLockedLetters.has(index);
-                    return (
-                      <Input
-                        key={`${editingSlot.slotId}:${index}`}
-                        ref={(node) => {
-                          otpRefs.current[index] = node;
-                        }}
-                        value={modalWord[index] ?? ""}
-                        onChange={(event) => {
-                          const value = event.currentTarget.value;
-                          applyOtpInput(index, value);
-                        }}
-                        onKeyDown={(event) => handleOtpKeyDown(index, event)}
-                        className={cn(
-                          "h-11 w-11 text-center text-base font-semibold uppercase",
-                          isLocked ? "border-sky-400 bg-sky-50 text-sky-900" : "",
-                        )}
-                        autoComplete="off"
-                        inputMode="text"
-                        maxLength={1}
-                        readOnly={isLocked}
-                        aria-readonly={isLocked}
-                      />
-                    );
-                  })(),
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                {modalLoading ? (
-                  <span className="inline-flex items-center gap-2">
-                    <Loader2 className="size-4 animate-spin" />
-                    {t("scanwordsTemplateSetupSearching")}
+          <div
+            data-slot="template-setup-slot-scroll"
+            className="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1"
+          >
+            {editingSlot && (
+              <div className="grid gap-4">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <Badge variant="outline">{slotLabel(editingSlot)}</Badge>
+                  <span>
+                    Старт: ({editingSlot.r + 1}, {editingSlot.c + 1})
                   </span>
-                ) : modalKnownLetters.size < AUTOCOMPLETE_MIN_LETTERS ? (
-                  <span>{t("scanwordsTemplateSetupTypeMore", { count: AUTOCOMPLETE_MIN_LETTERS })}</span>
-                ) : modalCandidates.length > 0 ? (
-                  <span>{t("scanwordsTemplateSetupSuggestionsFound", { count: modalCandidates.length })}</span>
-                ) : null}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      className="size-8"
-                      disabled={!dictionaryReady || modalLoading}
-                      onClick={() => void searchModalWord({ allowEmpty: true })}
-                    >
-                      <Radar className="size-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{t("scanwordsTemplateSetupFindAll")}</TooltipContent>
-                </Tooltip>
-                {editingFixedSlot && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => {
-                      if (!selectedTemplate) return;
-                      onFixedSlotClear(selectedTemplate.key, editingSlot.slotId);
-                      closeSlotEditor();
-                    }}
-                  >
-                    <Trash2 className="mr-2 size-4" />
-                    Очистить слот
-                  </Button>
-                )}
-              </div>
-
-              {modalError && <p className="text-sm text-destructive">{modalError}</p>}
-
-              {modalCandidates.length > 0 && (
-                <div className="relative">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="absolute inset-y-1 left-0 z-10 h-auto w-9 rounded-full px-0 shadow-sm"
-                    disabled={modalCandidatesPage === 0}
-                    onClick={() => setModalCandidatesPage((current) => Math.max(0, current - 1))}
-                  >
-                    <ChevronLeft className="size-4" />
-                  </Button>
-
-                  <div className="min-w-0 px-11">
-                    <div
-                      className="grid grid-cols-4 content-start gap-2 overflow-hidden"
-                      style={{
-                        minHeight: `calc(${AUTOCOMPLETE_ROWS_VISIBLE} * 2.25rem + ${(AUTOCOMPLETE_ROWS_VISIBLE - 1) * 0.5}rem)`,
-                      }}
-                    >
-                      {pagedModalCandidates.map((candidate) => (
-                        <Button
-                          key={candidate.id}
-                          type="button"
-                          variant={editingFixedSlot?.wordId === candidate.id ? "secondary" : "outline"}
-                          onClick={() => {
-                            if (!selectedTemplate) return;
-                            if (!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)) {
-                              setModalError("Слово не подходит по уже заполненным пересечениям.");
-                              return;
-                            }
-                            onFixedSlotChange(selectedTemplate.key, {
-                              slotId: editingSlot.slotId,
-                              wordId: candidate.id,
-                              word: candidate.word_text,
-                              imageId: null,
-                            });
-                            setModalWord(
-                              applyLockedLettersToWord(
-                                buildOtpWord(candidate.word_text, editingSlot.len),
-                                editingSlot.len,
-                                editingLockedLetters,
-                              ),
-                            );
-                            setModalImageError(null);
-                            if (!editingIsPhotoDefinition) {
-                              closeSlotEditor();
-                            }
-                          }}
-                          disabled={!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)}
-                        >
-                          {candidate.word_text}
-                        </Button>
-                      ))}
-                    </div>
-                    {modalCandidatesPageCount > 1 && (
-                      <div className="mt-2 text-center text-xs text-muted-foreground">
-                        {modalCandidatesPage + 1} / {modalCandidatesPageCount}
-                      </div>
-                    )}
-                  </div>
-
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="absolute inset-y-1 right-0 z-10 h-auto w-9 rounded-full px-0 shadow-sm"
-                    disabled={!hasNextCandidatesPage || modalLoading}
-                    onClick={() => void handleNextCandidatesPage()}
-                  >
-                    <ChevronRight className="size-4" />
-                  </Button>
+                  {editingFixedSlot ? <Badge variant="secondary">{editingFixedSlot.word}</Badge> : null}
                 </div>
-              )}
 
-              {editingIsPhotoDefinition && (
-                <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium">{t("scanwordsTemplateSetupImageSectionTitle")}</div>
-                      <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageHint")}</div>
-                    </div>
-                    <div>
-                      <input
-                        id="template-setup-word-image-upload"
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp,image/gif"
-                        className="hidden"
-                        disabled={!editingWordId || modalImageBusy}
-                        onChange={(event) => {
-                          const file = event.currentTarget.files?.[0];
-                          event.currentTarget.value = "";
-                          if (!file) return;
-                          void handleModalImageUpload(file);
-                        }}
-                      />
+                <div className="flex flex-wrap gap-2">
+                  {Array.from({ length: editingSlot.len }, (_, index) =>
+                    (() => {
+                      const isLocked = editingLockedLetters.has(index);
+                      return (
+                        <Input
+                          key={`${editingSlot.slotId}:${index}`}
+                          ref={(node) => {
+                            otpRefs.current[index] = node;
+                          }}
+                          value={modalWord[index] ?? ""}
+                          onChange={(event) => {
+                            const value = event.currentTarget.value;
+                            applyOtpInput(index, value);
+                          }}
+                          onKeyDown={(event) => handleOtpKeyDown(index, event)}
+                          className={cn(
+                            "h-11 w-11 text-center text-base font-semibold uppercase",
+                            isLocked ? "border-sky-400 bg-sky-50 text-sky-900" : "",
+                          )}
+                          autoComplete="off"
+                          inputMode="text"
+                          maxLength={1}
+                          readOnly={isLocked}
+                          aria-readonly={isLocked}
+                        />
+                      );
+                    })(),
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  {modalLoading ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="size-4 animate-spin" />
+                      {t("scanwordsTemplateSetupSearching")}
+                    </span>
+                  ) : modalKnownLetters.size < AUTOCOMPLETE_MIN_LETTERS ? (
+                    <span>{t("scanwordsTemplateSetupTypeMore", { count: AUTOCOMPLETE_MIN_LETTERS })}</span>
+                  ) : modalCandidates.length > 0 ? (
+                    <span>{t("scanwordsTemplateSetupSuggestionsFound", { count: modalCandidates.length })}</span>
+                  ) : null}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
                       <Button
                         type="button"
                         variant="outline"
-                        size="sm"
-                        disabled={!editingWordId || modalImageBusy}
-                        onClick={() => {
-                          const input = document.getElementById(
-                            "template-setup-word-image-upload",
-                          ) as HTMLInputElement | null;
-                          input?.click();
+                        size="icon"
+                        className="size-8"
+                        disabled={!dictionaryReady || modalLoading}
+                        onClick={() => void searchModalWord({ allowEmpty: true })}
+                      >
+                        <Radar className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("scanwordsTemplateSetupFindAll")}</TooltipContent>
+                  </Tooltip>
+                  {editingFixedSlot && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        if (!selectedTemplate) return;
+                        onFixedSlotClear(selectedTemplate.key, editingSlot.slotId);
+                        closeSlotEditor();
+                      }}
+                    >
+                      <Trash2 className="mr-2 size-4" />
+                      Очистить слот
+                    </Button>
+                  )}
+                </div>
+
+                {modalError && <p className="text-sm text-destructive">{modalError}</p>}
+
+                {modalCandidates.length > 0 && (
+                  <div className="relative">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="absolute inset-y-1 left-0 z-10 h-auto w-9 rounded-full px-0 shadow-sm"
+                      disabled={modalCandidatesPage === 0}
+                      onClick={() => setModalCandidatesPage((current) => Math.max(0, current - 1))}
+                    >
+                      <ChevronLeft className="size-4" />
+                    </Button>
+
+                    <div className="min-w-0 px-11">
+                      <div
+                        className="grid grid-cols-4 content-start gap-2 overflow-hidden"
+                        style={{
+                          minHeight: `calc(${AUTOCOMPLETE_ROWS_VISIBLE} * 2.25rem + ${(AUTOCOMPLETE_ROWS_VISIBLE - 1) * 0.5}rem)`,
                         }}
                       >
-                        {modalImageBusy ? t("loading") : t("scanwordsReviewImageUpload")}
-                      </Button>
+                        {pagedModalCandidates.map((candidate) => (
+                          <Button
+                            key={candidate.id}
+                            type="button"
+                            variant={editingFixedSlot?.wordId === candidate.id ? "secondary" : "outline"}
+                            onClick={() => {
+                              if (!selectedTemplate) return;
+                              if (!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)) {
+                                setModalError("Слово не подходит по уже заполненным пересечениям.");
+                                return;
+                              }
+                              onFixedSlotChange(selectedTemplate.key, {
+                                slotId: editingSlot.slotId,
+                                wordId: candidate.id,
+                                word: candidate.word_text,
+                                imageId: null,
+                              });
+                              setModalWord(
+                                applyLockedLettersToWord(
+                                  buildOtpWord(candidate.word_text, editingSlot.len),
+                                  editingSlot.len,
+                                  editingLockedLetters,
+                                ),
+                              );
+                              setModalImageError(null);
+                              if (!editingIsPhotoDefinition) {
+                                closeSlotEditor();
+                              }
+                            }}
+                            disabled={!wordMatchesLockedLetters(candidate.word_text, editingLockedLetters)}
+                          >
+                            {candidate.word_text}
+                          </Button>
+                        ))}
+                      </div>
+                      {modalCandidatesPageCount > 1 && (
+                        <div className="mt-2 text-center text-xs text-muted-foreground">
+                          {modalCandidatesPage + 1} / {modalCandidatesPageCount}
+                        </div>
+                      )}
                     </div>
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="absolute inset-y-1 right-0 z-10 h-auto w-9 rounded-full px-0 shadow-sm"
+                      disabled={!hasNextCandidatesPage || modalLoading}
+                      onClick={() => void handleNextCandidatesPage()}
+                    >
+                      <ChevronRight className="size-4" />
+                    </Button>
                   </div>
+                )}
 
-                  {!editingWordId && (
-                    <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageWordRequired")}</div>
-                  )}
-
-                  {modalImagesLoading && <div className="text-xs text-muted-foreground">{t("loading")}</div>}
-
-                  {editingWordId && !modalImagesLoading && modalImages.length === 0 && (
-                    <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageEmpty")}</div>
-                  )}
-
-                  {modalImages.length > 0 && (
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {modalImages.map((image) => (
-                        <div
-                          key={image.id}
-                          className={cn(
-                            "grid min-h-0 gap-2 rounded border bg-background p-2",
-                            resolvedEditingImageId === image.id ? "border-sky-500 bg-sky-500/10" : "border-border",
-                          )}
+                {editingIsPhotoDefinition && (
+                  <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
+                    {editingPhotoAreaSize && (
+                      <div className="grid gap-1 rounded-md border border-sky-500/25 bg-sky-500/5 p-2 text-xs">
+                        <div>
+                          {t("scanwordsTemplateSetupImageRequirements", {
+                            width: editingPhotoAreaSize.width,
+                            height: editingPhotoAreaSize.height,
+                            tolerance: PHOTO_IMAGE_RATIO_TOLERANCE * 100,
+                          })}
+                        </div>
+                        <div className="text-muted-foreground">
+                          {t("scanwordsTemplateSetupImageRecommended", {
+                            resolutions: editingImageResolutionRecommendations
+                              .map((size) => `${size.width}×${size.height}`)
+                              .join(", "),
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">{t("scanwordsTemplateSetupImageSectionTitle")}</div>
+                        <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageHint")}</div>
+                      </div>
+                      <div>
+                        <input
+                          id="template-setup-word-image-upload"
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/gif"
+                          className="hidden"
+                          disabled={!editingWordId || modalImageBusy}
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            event.currentTarget.value = "";
+                            if (!file) return;
+                            void handleModalImageUpload(file);
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!editingWordId || modalImageBusy}
+                          onClick={() => {
+                            const input = document.getElementById(
+                              "template-setup-word-image-upload",
+                            ) as HTMLInputElement | null;
+                            input?.click();
+                          }}
                         >
-                          <button
-                            type="button"
-                            className="overflow-hidden rounded border bg-background"
-                            onClick={() => handleModalImageSelect(image.id)}
-                            disabled={modalImageBusy}
-                          >
-                            <Image
-                              src={image.url}
-                              alt={image.fileName}
-                              width={image.width}
-                              height={image.height}
-                              className="h-24 w-full object-contain"
-                              unoptimized
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            className={cn(
-                              "min-w-0 text-left text-xs leading-snug",
-                              resolvedEditingImageId === image.id
-                                ? "font-medium text-foreground"
-                                : "text-muted-foreground",
-                            )}
-                            onClick={() => handleModalImageSelect(image.id)}
-                            disabled={modalImageBusy}
-                          >
-                            <span className="block break-all">{image.fileName}</span>
-                            <span className="mt-1 block">
-                              {t("scanwordsTemplateSetupImageMeta", { width: image.width, height: image.height })}
-                            </span>
-                          </button>
-                          <div className="flex items-center justify-between gap-2">
-                            <span
+                          {modalImageBusy ? t("loading") : t("scanwordsReviewImageUpload")}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {!editingWordId && (
+                      <div className="text-xs text-muted-foreground">
+                        {t("scanwordsTemplateSetupImageWordRequired")}
+                      </div>
+                    )}
+
+                    {modalImagesLoading && <div className="text-xs text-muted-foreground">{t("loading")}</div>}
+
+                    {editingWordId && !modalImagesLoading && modalImages.length === 0 && (
+                      <div className="text-xs text-muted-foreground">{t("scanwordsTemplateSetupImageEmpty")}</div>
+                    )}
+
+                    {modalImages.length > 0 && (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {modalImages.map((image) => {
+                          const compatible = compatibleModalImageIds.has(image.id);
+                          return (
+                            <div
+                              key={image.id}
                               className={cn(
-                                "text-[11px]",
-                                resolvedEditingImageId === image.id
-                                  ? "text-sky-600 dark:text-sky-300"
-                                  : "text-transparent",
+                                "grid min-h-0 gap-2 rounded border bg-background p-2",
+                                resolvedEditingImageId === image.id ? "border-sky-500 bg-sky-500/10" : "border-border",
+                                !compatible && "opacity-65",
                               )}
                             >
-                              {t("scanwordsTemplateSetupImageSelected")}
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="ml-auto h-7 shrink-0 px-2 text-destructive"
-                              onClick={() => void handleModalImageDelete(image.id)}
-                              disabled={modalImageBusy}
-                            >
-                              {t("delete")}
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                              <button
+                                type="button"
+                                className="overflow-hidden rounded border bg-background disabled:cursor-not-allowed"
+                                onClick={() => handleModalImageSelect(image.id)}
+                                disabled={modalImageBusy || !compatible}
+                              >
+                                <Image
+                                  src={image.url}
+                                  alt={image.fileName}
+                                  width={image.width}
+                                  height={image.height}
+                                  className="h-24 w-full object-contain"
+                                  unoptimized
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                className={cn(
+                                  "min-w-0 text-left text-xs leading-snug disabled:cursor-not-allowed",
+                                  resolvedEditingImageId === image.id
+                                    ? "font-medium text-foreground"
+                                    : "text-muted-foreground",
+                                )}
+                                onClick={() => handleModalImageSelect(image.id)}
+                                disabled={modalImageBusy || !compatible}
+                              >
+                                <span className="block break-all">{image.fileName}</span>
+                                <span className="mt-1 block">
+                                  {t("scanwordsTemplateSetupImageMeta", { width: image.width, height: image.height })}
+                                </span>
+                                {!compatible && editingPhotoAreaSize && (
+                                  <span className="mt-1 block text-destructive">
+                                    {t("scanwordsTemplateSetupImageIncompatible", {
+                                      width: editingPhotoAreaSize.width,
+                                      height: editingPhotoAreaSize.height,
+                                    })}
+                                  </span>
+                                )}
+                              </button>
+                              <div className="flex items-center justify-between gap-2">
+                                <span
+                                  className={cn(
+                                    "text-[11px]",
+                                    resolvedEditingImageId === image.id
+                                      ? "text-sky-600 dark:text-sky-300"
+                                      : "text-transparent",
+                                  )}
+                                >
+                                  {t("scanwordsTemplateSetupImageSelected")}
+                                </span>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="ml-auto h-7 shrink-0 px-2 text-destructive"
+                                  onClick={() => void handleModalImageDelete(image.id)}
+                                  disabled={modalImageBusy}
+                                >
+                                  {t("delete")}
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
 
-                  {modalImageError && <div className="text-xs text-destructive">{modalImageError}</div>}
-                </div>
-              )}
-            </div>
-          )}
+                    {modalImageError && <div className="text-xs text-destructive">{modalImageError}</div>}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button type="button" variant="outline" onClick={closeSlotEditor}>
               Закрыть
             </Button>

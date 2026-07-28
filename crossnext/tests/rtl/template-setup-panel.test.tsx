@@ -21,7 +21,11 @@ vi.mock("@/components/ui/tooltip", () => ({
 
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open?: boolean; children: ReactNode }) => (open ? <div>{children}</div> : null),
-  DialogContent: ({ children }: { children: ReactNode }) => <div role="dialog">{children}</div>,
+  DialogContent: ({ children, className }: { children: ReactNode; className?: string }) => (
+    <div role="dialog" className={className}>
+      {children}
+    </div>
+  ),
   DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DialogDescription: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -150,5 +154,97 @@ describe("TemplateSetupPanel", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "РАЗБЕГ" })).toBeInTheDocument());
     fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+  });
+
+  it("shows photo requirements and replaces an incompatible saved image with a compatible one", async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/dictionary/word/word-photo/images")) {
+        return {
+          ok: true,
+          json: async () => ({
+            images: [
+              {
+                id: "bad-image",
+                wordId: "word-photo",
+                fileName: "bad.png",
+                mimeType: "image/png",
+                width: 700,
+                height: 350,
+                aspectRatio: 2,
+                url: "/api/dictionary/word-images/bad-image",
+              },
+              {
+                id: "good-image",
+                wordId: "word-photo",
+                fileName: "good.png",
+                mimeType: "image/png",
+                width: 510,
+                height: 500,
+                aspectRatio: 1.02,
+                url: "/api/dictionary/word-images/good-image",
+              },
+            ],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ items: [], nextCursor: null }),
+      } as Response;
+    });
+
+    const template = makeTemplate();
+    const onFixedSlotChange = vi.fn();
+    renderPanel({
+      active: true,
+      loading: false,
+      error: null,
+      dictionaryFilter: null,
+      dictionaryLanguage: "ru",
+      dictionaryReady: true,
+      templates: [template],
+      templateMap: new Map([
+        [
+          "tpl-1",
+          {
+            templateKey: "tpl-1",
+            keyword: null,
+            fixedSlots: [
+              {
+                slotId: 4,
+                wordId: "word-photo",
+                word: "ГОРОДА",
+                imageId: "bad-image",
+              },
+            ],
+          },
+        ],
+      ]),
+      onKeywordChange: vi.fn(),
+      onFixedSlotChange,
+      onFixedSlotClear: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Открыть 4\. ↓ 6/i }));
+    const dialog = screen.getByRole("dialog");
+
+    expect(dialog).toHaveClass("max-h-[calc(100dvh-2rem)]", "overflow-hidden");
+    expect(dialog.querySelector('[data-slot="template-setup-slot-scroll"]')).toHaveClass("min-h-0", "overflow-y-auto");
+    expect(within(dialog).getByText("scanwordsTemplateSetupImageRequirements")).toBeInTheDocument();
+    expect(within(dialog).getByText("scanwordsTemplateSetupImageRecommended")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(onFixedSlotChange).toHaveBeenCalledWith(
+        "tpl-1",
+        expect.objectContaining({ slotId: 4, imageId: "good-image" }),
+      );
+    });
+
+    const incompatibleImageButton = within(dialog).getByRole("button", {
+      name: /bad\.png.*scanwordsTemplateSetupImageIncompatible/i,
+    });
+    expect(incompatibleImageButton).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: /good\.png/i })).toBeEnabled();
   });
 });

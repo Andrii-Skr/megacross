@@ -182,7 +182,7 @@ export function GenerationPanel({
                     {t("scanwordsFillTemplateLabel", { name: fillJob.currentTemplate })}
                   </div>
                 )}
-                {fillJob.error && <div className="text-destructive">{fillJob.error}</div>}
+                {fillJob.error && <div className="text-destructive">{templateErrorText(fillJob.error)}</div>}
                 {archiveUrl && (
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                     <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">

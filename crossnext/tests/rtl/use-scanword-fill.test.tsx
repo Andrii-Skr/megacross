@@ -1,6 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { buildFillOverrides, useScanwordFill } from "@/components/scanwords/workspace/hooks/useScanwordFill";
+import {
+  buildFillOverrides,
+  localizeFillError,
+  useScanwordFill,
+} from "@/components/scanwords/workspace/hooks/useScanwordFill";
 import { DEFAULT_FILL_SETTINGS } from "@/components/scanwords/workspace/model";
 
 const mocked = vi.hoisted(() => ({
@@ -330,5 +334,25 @@ describe("useScanwordFill", () => {
       requireNative: true,
       filterTemplateId: 9,
     });
+  });
+
+  it("maps generator error codes and parameterized messages to translations", () => {
+    const translate = ((key: string, values?: Record<string, string>) =>
+      values ? `${key}:${JSON.stringify(values)}` : key) as never;
+
+    expect(localizeFillError("No templates were solved", translate)).toBe("scanwordsFillErrorNoTemplatesSolved");
+    expect(localizeFillError("aborted (maxMs)", translate)).toBe("scanwordsFillErrorTimeLimit");
+    expect(localizeFillError("Template 12: fixed word КОТ is not available in dictionary", translate)).toBe(
+      'scanwordsFillErrorFixedWordMissing:{"template":"12","word":"КОТ"}',
+    );
+  });
+
+  it("keeps unknown upstream error details under a localized heading", () => {
+    const translate = ((key: string, values?: Record<string, string>) =>
+      key === "scanwordsFillErrorUnknownDetails" ? `Ошибка генерации: ${values?.error}` : key) as never;
+
+    expect(localizeFillError("Unexpected internal solver failure", translate)).toBe(
+      "Ошибка генерации: Unexpected internal solver failure",
+    );
   });
 });
