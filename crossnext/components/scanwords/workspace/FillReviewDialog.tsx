@@ -1546,11 +1546,7 @@ export function FillReviewDialog({
     const isCandidateLoading = candidateLoadingKey === rowKey;
     const rowHasError = (validation.rowMessages.get(rowKey)?.length ?? 0) > 0;
     const rowHighlightClass = cn(
-      rowHasError
-        ? "bg-destructive/15 [box-shadow:inset_4px_0_0_hsl(var(--destructive))]"
-        : highlightDuplicate
-          ? "bg-orange-500/10"
-          : "",
+      rowHasError ? "fill-review-error-row-bg" : highlightDuplicate ? "bg-orange-500/10" : "",
       compact && row.bookmarked && !rowHasError && "bg-amber-500/10 [box-shadow:inset_3px_0_0_rgb(245_158_11)]",
     );
     const rowMetaClass = rowHasError ? "text-[11px] font-medium text-destructive" : "text-[11px] text-muted-foreground";
@@ -2305,12 +2301,12 @@ export function FillReviewDialog({
                 )}
 
                 {error && (
-                  <div className="rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                  <div className="fill-review-error-panel-bg rounded border border-destructive/40 p-2 text-xs text-destructive">
                     {error}
                   </div>
                 )}
                 {visibleValidationMessages.length > 0 && (
-                  <div className="rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                  <div className="fill-review-error-panel-bg rounded border border-destructive/40 p-2 text-xs text-destructive">
                     <div className="font-medium">{t("scanwordsReviewErrorsTitle")}</div>
                     <ul className="mt-1 grid gap-1">
                       {visibleValidationMessages.map((message) => (

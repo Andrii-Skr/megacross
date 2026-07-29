@@ -173,6 +173,29 @@
   }
 }
 
+/*
+ * Chrome 109 cannot use Tailwind 4's color-mix() override, so custom theme
+ * opacity utilities fall back to an opaque destructive color. Keep only the
+ * fill-review error backgrounds in broadly supported RGB syntax.
+ */
+.fill-review-error-row-bg {
+  background-color: rgb(230 44 43 / 0.15);
+  box-shadow: inset 4px 0 0 rgb(230 44 43);
+}
+
+.fill-review-error-panel-bg {
+  background-color: rgb(230 44 43 / 0.05);
+}
+
+.dark .fill-review-error-row-bg {
+  background-color: rgb(255 101 104 / 0.15);
+  box-shadow: inset 4px 0 0 rgb(255 101 104);
+}
+
+.dark .fill-review-error-panel-bg {
+  background-color: rgb(255 101 104 / 0.05);
+}
+
 /* Mobile portrait typography tweaks for dictionary list */
 @media (max-width: 640px) and (orientation: portrait) {
   .dict-word-text,
