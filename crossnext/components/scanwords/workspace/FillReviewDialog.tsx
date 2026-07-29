@@ -1546,7 +1546,11 @@ export function FillReviewDialog({
     const isCandidateLoading = candidateLoadingKey === rowKey;
     const rowHasError = (validation.rowMessages.get(rowKey)?.length ?? 0) > 0;
     const rowHighlightClass = cn(
-      rowHasError ? "fill-review-error-row" : highlightDuplicate ? "bg-orange-500/10" : "",
+      rowHasError
+        ? "bg-destructive/15 [box-shadow:inset_4px_0_0_hsl(var(--destructive))]"
+        : highlightDuplicate
+          ? "bg-orange-500/10"
+          : "",
       compact && row.bookmarked && !rowHasError && "bg-amber-500/10 [box-shadow:inset_3px_0_0_rgb(245_158_11)]",
     );
     const rowMetaClass = rowHasError ? "text-[11px] font-medium text-destructive" : "text-[11px] text-muted-foreground";
@@ -1687,7 +1691,7 @@ export function FillReviewDialog({
                   className={cn(
                     "w-full px-2 text-sm",
                     compact ? "h-7" : "h-8",
-                    rowHasError && "fill-review-error-control ring-1",
+                    rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
                   )}
                 >
                   {isCandidateLoading ? (
@@ -1848,7 +1852,7 @@ export function FillReviewDialog({
                   className={cn(
                     "h-auto w-full items-start px-2 text-sm",
                     compact ? "min-h-7 py-0.5" : "min-h-8 py-1",
-                    rowHasError && "fill-review-error-control ring-1",
+                    rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
                   )}
                 >
                   {isCandidateLoading ? (
@@ -2301,10 +2305,12 @@ export function FillReviewDialog({
                 )}
 
                 {error && (
-                  <div className="fill-review-error-panel rounded border p-2 text-xs text-destructive">{error}</div>
+                  <div className="rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                    {error}
+                  </div>
                 )}
                 {visibleValidationMessages.length > 0 && (
-                  <div className="fill-review-error-panel rounded border p-2 text-xs text-destructive">
+                  <div className="rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
                     <div className="font-medium">{t("scanwordsReviewErrorsTitle")}</div>
                     <ul className="mt-1 grid gap-1">
                       {visibleValidationMessages.map((message) => (
@@ -2312,7 +2318,7 @@ export function FillReviewDialog({
                       ))}
                     </ul>
                     {hiddenValidationMessagesCount > 0 && (
-                      <div className="fill-review-error-detail mt-1 text-[11px]">
+                      <div className="mt-1 text-[11px] text-destructive/80">
                         {t("scanwordsReviewErrorsMore", { count: hiddenValidationMessagesCount })}
                       </div>
                     )}
@@ -2322,7 +2328,7 @@ export function FillReviewDialog({
                 {reviewTab === "byTemplate" && selectedTemplate && (
                   <div className="overflow-x-clip rounded border">
                     <table className="w-full text-xs">
-                      <thead className="fill-review-muted-header text-left">
+                      <thead className="bg-muted/40 text-left">
                         <tr>
                           <th className="sticky top-6 z-20 bg-muted px-2 py-2 font-medium">{t("word")}</th>
                           <th className="sticky top-6 z-20 bg-muted px-2 py-2 font-medium">{t("definition")}</th>
@@ -2347,7 +2353,7 @@ export function FillReviewDialog({
                 {reviewTab !== "byTemplate" && (
                   <div className="overflow-x-clip rounded border">
                     <table className="sticky top-6 z-20 w-full bg-background text-xs">
-                      <thead className="fill-review-muted-header text-left">
+                      <thead className="bg-muted/40 text-left">
                         <tr>
                           <th
                             className={cn(

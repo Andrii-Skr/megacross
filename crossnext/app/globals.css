@@ -173,52 +173,6 @@
   }
 }
 
-.fill-review-error-row {
-  background-color: rgb(230 44 43 / 0.15);
-  box-shadow: inset 4px 0 0 rgb(230 44 43);
-}
-
-.fill-review-error-control {
-  border-color: rgb(230 44 43 / 0.6);
-  --tw-ring-color: rgb(230 44 43 / 0.3);
-}
-
-.fill-review-error-panel {
-  border-color: rgb(230 44 43 / 0.4);
-  background-color: rgb(230 44 43 / 0.05);
-}
-
-.fill-review-error-detail {
-  color: rgb(230 44 43 / 0.8);
-}
-
-.fill-review-muted-header {
-  background-color: rgb(230 236 242 / 0.4);
-}
-
-.dark .fill-review-error-row {
-  background-color: rgb(255 101 104 / 0.15);
-  box-shadow: inset 4px 0 0 rgb(255 101 104);
-}
-
-.dark .fill-review-error-control {
-  border-color: rgb(255 101 104 / 0.6);
-  --tw-ring-color: rgb(255 101 104 / 0.3);
-}
-
-.dark .fill-review-error-panel {
-  border-color: rgb(255 101 104 / 0.4);
-  background-color: rgb(255 101 104 / 0.05);
-}
-
-.dark .fill-review-error-detail {
-  color: rgb(255 101 104 / 0.8);
-}
-
-.dark .fill-review-muted-header {
-  background-color: rgb(38 38 38 / 0.4);
-}
-
 /* Mobile portrait typography tweaks for dictionary list */
 @media (max-width: 640px) and (orientation: portrait) {
   .dict-word-text,
