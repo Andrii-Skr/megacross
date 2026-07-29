@@ -777,7 +777,7 @@ export function AddDefinitionModal({
                                 return {
                                   key: field.id,
                                   node: (
-                                    <div className="rounded-md border p-3 space-y-3 bg-muted/20">
+                                    <div className="rounded-md border p-3 space-y-3 bg-[rgb(var(--muted-rgb)/0.2)]">
                                       <div className="flex items-center justify-between">
                                         <span className="text-sm font-medium">
                                           {t("definition")} #{idx + 1}

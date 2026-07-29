@@ -278,7 +278,7 @@ export function ExpiredDefinitionsClient({
           </form>
         </div>
         {(shouldShowSelectAllBanner || selectAllAcrossFilter) && (
-          <div className="rounded-md border bg-muted/30 p-3 text-xs space-y-2">
+          <div className="rounded-md border bg-[rgb(var(--muted-rgb)/0.3)] p-3 text-xs space-y-2">
             {!selectAllAcrossFilter ? (
               <>
                 <p>{t("expiredSelectionPage", { count: f.number(checkedVisibleCount) })}</p>

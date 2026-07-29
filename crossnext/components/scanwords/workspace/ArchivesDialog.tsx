@@ -78,7 +78,7 @@ export function ArchivesDialog({
                 ? `${crossApiBase}/api/fill/${item.id}/archive?file=${encodeURIComponent(item.archiveFileName)}`
                 : `${crossApiBase}/api/fill/${item.id}/archive`;
               return (
-                <li key={item.archiveKey} className="rounded-md border bg-muted/20 p-2">
+                <li key={item.archiveKey} className="rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-2">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="grid gap-1 text-xs">
                       <div className="font-medium">{t("scanwordsFillArchiveItemTitle", { id: item.id })}</div>

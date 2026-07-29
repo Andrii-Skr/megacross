@@ -331,7 +331,7 @@ export function ScanwordsClient({ editions }: { editions: Edition[] }) {
   return (
     <>
       <div className="mx-auto w-[min(1400px,calc(100vw-2rem))] py-6">
-        <div className="relative rounded-2xl border bg-background/80 shadow-sm">
+        <div className="relative rounded-2xl border bg-[rgb(var(--background-rgb)/0.8)] shadow-sm">
           <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
             <div className="absolute -top-24 right-0 h-56 w-56 rounded-full bg-emerald-300/25 blur-3xl" />
             <div className="absolute -bottom-28 left-0 h-72 w-72 rounded-full bg-amber-300/20 blur-3xl" />

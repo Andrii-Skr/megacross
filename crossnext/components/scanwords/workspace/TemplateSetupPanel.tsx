@@ -1165,7 +1165,7 @@ export function TemplateSetupPanel({
                 )}
 
                 {editingIsPhotoDefinition && (
-                  <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
+                  <div className="grid gap-3 rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-3">
                     {editingPhotoAreaSize && (
                       <div className="grid gap-1 rounded-md border border-sky-500/25 bg-sky-500/5 p-2 text-xs">
                         <div>
@@ -1336,13 +1336,13 @@ export function TemplateSetupPanel({
         )}
 
         {loading && (
-          <div className="rounded-md border bg-background/80 p-4 text-sm text-muted-foreground">
+          <div className="rounded-md border bg-[rgb(var(--background-rgb)/0.8)] p-4 text-sm text-muted-foreground">
             Загрузка превью шаблонов…
           </div>
         )}
 
         {!loading && !hasPreview && (
-          <div className="rounded-md border bg-background/80 p-4 text-sm text-muted-foreground">
+          <div className="rounded-md border bg-[rgb(var(--background-rgb)/0.8)] p-4 text-sm text-muted-foreground">
             После загрузки `.fsh` и нажатия «Загрузить» здесь появятся превью шаблонов.
           </div>
         )}
@@ -1490,7 +1490,7 @@ export function TemplateSetupPanel({
                         </div>
                       </div>
 
-                      <div className="grid gap-2 rounded-md border bg-muted/20 p-3">
+                      <div className="grid gap-2 rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-3">
                         <label className="text-xs font-medium" htmlFor={`keyword-${selectedTemplate.key}`}>
                           Ключевое слово
                         </label>

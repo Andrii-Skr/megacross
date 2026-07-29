@@ -255,7 +255,9 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
         {...getRootProps()}
         className={
           "border-2 border-dashed rounded-md px-6 py-14 text-center transition-colors " +
-          (isDragActive ? "border-primary bg-primary/5" : "border-muted-foreground/30 hover:border-primary")
+          (isDragActive
+            ? "border-primary bg-[rgb(var(--primary-rgb)/0.05)]"
+            : "border-[rgb(var(--muted-foreground-rgb)/0.3)] hover:border-primary")
         }
       >
         <input {...getInputProps()} aria-label={t("selectFiles")} />

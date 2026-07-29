@@ -149,7 +149,7 @@ export function DefinitionCarousel({
           </div>
         </div>
       )}
-      <div className="w-full overflow-hidden rounded-md border bg-muted/10">
+      <div className="w-full overflow-hidden rounded-md border bg-[rgb(var(--muted-rgb)/0.1)]">
         <Carousel className="w-full" setApi={setApi} opts={{ loop: canSlide, align: "start" }}>
           <CarouselContent className="ml-0">{content}</CarouselContent>
         </Carousel>
@@ -166,7 +166,7 @@ export function DefinitionCarousel({
                     size="icon"
                     className={cn(
                       "size-2 rounded-full p-0 transition-colors",
-                      i === index ? "bg-primary" : "bg-muted-foreground/40",
+                      i === index ? "bg-primary" : "bg-[rgb(var(--muted-foreground-rgb)/0.4)]",
                     )}
                     onClick={() => api?.scrollTo(i)}
                     aria-label={t(labelKey, { current: i + 1, total })}
@@ -182,7 +182,7 @@ export function DefinitionCarousel({
                 size="icon"
                 className={cn(
                   "size-2 rounded-full p-0 transition-colors",
-                  i === index ? "bg-primary" : "bg-muted-foreground/40",
+                  i === index ? "bg-primary" : "bg-[rgb(var(--muted-foreground-rgb)/0.4)]",
                 )}
                 onClick={() => api?.scrollTo(i)}
                 aria-label={t(labelKey, { current: i + 1, total })}

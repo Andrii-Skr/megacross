@@ -12,7 +12,7 @@ export function SimilarMatchesList({ items, threshold }: { items: SimilarItem[];
   const t = useTranslations();
   if (!items.length) return null;
   return (
-    <div className="mt-1 rounded-md border bg-accent/20 p-2 text-xs">
+    <div className="mt-1 rounded-md border bg-[rgb(var(--accent-rgb)/0.2)] p-2 text-xs">
       <div className="mb-1 font-medium">{t("similarDefsTitle", { percent: threshold })}</div>
       <ul className="grid gap-1">
         {items.map((m, idx) => (

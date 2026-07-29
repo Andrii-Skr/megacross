@@ -87,22 +87,26 @@ export function Filters({
 
   if (!mounted) {
     return (
-      <div className="sticky top-0 z-10 bg-background/80 border-b p-4 grid gap-3" suppressHydrationWarning aria-hidden>
+      <div
+        className="sticky top-0 z-10 bg-[rgb(var(--background-rgb)/0.8)] border-b p-4 grid gap-3"
+        suppressHydrationWarning
+        aria-hidden
+      >
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
-          <div className="h-9 w-full rounded-md bg-muted/60 animate-pulse" />
-          <div className="h-9 w-full rounded-md bg-muted/60 animate-pulse" />
+          <div className="h-9 w-full rounded-md bg-[rgb(var(--muted-rgb)/0.6)] animate-pulse" />
+          <div className="h-9 w-full rounded-md bg-[rgb(var(--muted-rgb)/0.6)] animate-pulse" />
         </div>
         <div className="grid gap-2 text-sm">
-          <div className="h-4 w-48 rounded bg-muted/60 animate-pulse" />
-          <div className="h-4 w-56 rounded bg-muted/60 animate-pulse" />
-          <div className="h-4 w-64 rounded bg-muted/60 animate-pulse" />
+          <div className="h-4 w-48 rounded bg-[rgb(var(--muted-rgb)/0.6)] animate-pulse" />
+          <div className="h-4 w-56 rounded bg-[rgb(var(--muted-rgb)/0.6)] animate-pulse" />
+          <div className="h-4 w-64 rounded bg-[rgb(var(--muted-rgb)/0.6)] animate-pulse" />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="sticky top-0 z-10 bg-background/92 border-b p-4 grid gap-3">
+    <div className="sticky top-0 z-10 bg-[rgb(var(--background-rgb)/0.92)] border-b p-4 grid gap-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
         <div className="flex-1 w-full">
           <Input
@@ -277,7 +281,7 @@ export function Filters({
                   <Badge
                     key={`exclude-${tag}`}
                     variant="outline"
-                    className="gap-1 border-destructive/40 text-destructive"
+                    className="gap-1 border-[rgb(var(--destructive-rgb)/0.4)] text-destructive"
                     onContextMenu={(event) => {
                       event.preventDefault();
                       const nextExcluded = excludeTags.filter((name) => name !== tag);
@@ -289,7 +293,7 @@ export function Filters({
                     <Button
                       type="button"
                       variant="ghost"
-                      className="inline-flex h-4 w-4 items-center justify-center p-0 text-destructive/80 hover:text-destructive"
+                      className="inline-flex h-4 w-4 items-center justify-center p-0 text-[rgb(var(--destructive-rgb)/0.8)] hover:text-destructive"
                       onClick={() => {
                         const nextExcluded = excludeTags.filter((name) => name !== tag);
                         onChange({ ...value, excludeTags: nextExcluded });

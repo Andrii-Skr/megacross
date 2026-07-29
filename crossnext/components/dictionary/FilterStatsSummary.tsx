@@ -26,7 +26,10 @@ export function FilterStatsSummary({
     return (
       <ul className="grid gap-1 text-xs max-h-36 overflow-auto pr-2">
         {stats.difficultyCounts.map((row) => (
-          <li key={row.difficulty} className="flex items-center gap-2 rounded-md px-2 odd:bg-muted/90 even:bg-muted/10">
+          <li
+            key={row.difficulty}
+            className="flex items-center gap-2 rounded-md px-2 odd:bg-[rgb(var(--muted-rgb)/0.9)] even:bg-[rgb(var(--muted-rgb)/0.1)]"
+          >
             <span className="min-w-0 flex-1 truncate">{row.difficulty}</span>
             <span className="shrink-0 tabular-nums text-muted-foreground">{f.number(row.count)}</span>
           </li>
@@ -42,7 +45,10 @@ export function FilterStatsSummary({
     return (
       <ul className="grid gap-1 text-xs max-h-36 overflow-auto pr-2">
         {stats.tagCounts.map((row) => (
-          <li key={row.tagId} className="flex items-center gap-2 rounded-md px-2 odd:bg-muted/90 even:bg-muted/10">
+          <li
+            key={row.tagId}
+            className="flex items-center gap-2 rounded-md px-2 odd:bg-[rgb(var(--muted-rgb)/0.9)] even:bg-[rgb(var(--muted-rgb)/0.1)]"
+          >
             <span className="min-w-0 flex-1 truncate">{row.name}</span>
             <span className="shrink-0 tabular-nums text-muted-foreground">{f.number(row.count)}</span>
           </li>
@@ -58,7 +64,10 @@ export function FilterStatsSummary({
     return (
       <ul className="grid gap-1 text-xs max-h-36 overflow-auto pr-2">
         {stats.lengthCounts.map((row) => (
-          <li key={row.length} className="flex items-center gap-2 rounded-md px-2 odd:bg-muted/90 even:bg-muted/10">
+          <li
+            key={row.length}
+            className="flex items-center gap-2 rounded-md px-2 odd:bg-[rgb(var(--muted-rgb)/0.9)] even:bg-[rgb(var(--muted-rgb)/0.1)]"
+          >
             <span className="min-w-0 flex-1 truncate">{row.length}</span>
             <span className="shrink-0 tabular-nums text-muted-foreground">{f.number(row.count)}</span>
           </li>
@@ -68,7 +77,7 @@ export function FilterStatsSummary({
   };
 
   return (
-    <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
+    <div className="grid gap-3 rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-3">
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium">{t("templateStatsTitle")}</span>
         {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}

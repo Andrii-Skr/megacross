@@ -343,7 +343,9 @@ export function NewWordModal({ open, onOpenChange, onCreated, languageOverride, 
                           maxLength={1}
                           className={cn(
                             "h-10 w-10 px-0 text-center text-base font-semibold uppercase tracking-[0.12em]",
-                            fixed ? "border-primary/40 bg-primary/10 text-foreground" : "",
+                            fixed
+                              ? "border-[rgb(var(--primary-rgb)/0.4)] bg-[rgb(var(--primary-rgb)/0.1)] text-foreground"
+                              : "",
                           )}
                           onChange={(event) => updateOtpAt(slot.position, event.currentTarget.value)}
                           onKeyDown={(event) => handleOtpKeyDown(slot.position, event)}

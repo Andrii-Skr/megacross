@@ -44,7 +44,7 @@ export function WorkspaceProgressHeader({
   const progressSteps = [1, 2, 3, 4, 5];
 
   return (
-    <div className="grid gap-2 rounded-md border bg-muted/20 p-3">
+    <div className="grid gap-2 rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-3">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>{t("scanwordsProgress")}</span>
         <span>

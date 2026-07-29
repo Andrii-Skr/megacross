@@ -298,7 +298,7 @@ export function TagsAdminClient({
                     (tag.definitions.length ? (
                       <ul id={`tag-${tag.id}`} className="space-y-2">
                         {tag.definitions.map((def) => (
-                          <li key={def.id} className="rounded-md border bg-muted/40 p-3">
+                          <li key={def.id} className="rounded-md border bg-[rgb(var(--muted-rgb)/0.4)] p-3">
                             <div className="flex items-start gap-2">
                               <div className="min-w-0 flex-1">
                                 <div className="break-words text-sm font-semibold leading-tight">{def.word}</div>
