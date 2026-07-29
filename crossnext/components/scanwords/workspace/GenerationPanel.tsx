@@ -119,7 +119,7 @@ export function GenerationPanel({
 
       <div className={cn(active ? "" : "hidden")} aria-hidden={!active}>
         <div className="grid gap-3">
-          <div className="rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-3">
+          <div className="rounded-md border bg-muted/20 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
               <div className="text-sm font-medium">{t("scanwordsFillTitle")}</div>
               <div className="flex flex-wrap items-center gap-2">
@@ -217,7 +217,7 @@ export function GenerationPanel({
             )}
           </div>
 
-          <div className="rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-3">
+          <div className="rounded-md border bg-muted/20 p-3">
             <div className="text-sm font-medium">{t("scanwordsGenerationTemplates")}</div>
             {templateList.length === 0 ? (
               <p className="mt-2 text-xs text-muted-foreground">{t("scanwordsGenerationEmpty")}</p>
@@ -234,7 +234,7 @@ export function GenerationPanel({
                   const regenerating = item.key != null && regeneratingTemplateKey === item.key;
                   const regenerateDisabled = Boolean(regeneratingTemplateKey) || finalizing;
                   return (
-                    <li key={rowKey} className="rounded-md border bg-[rgb(var(--background-rgb)/0.8)] p-2 text-xs">
+                    <li key={rowKey} className="rounded-md border bg-background/80 p-2 text-xs">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate font-medium">{displayName}</span>
                         <div className="flex items-center gap-2">

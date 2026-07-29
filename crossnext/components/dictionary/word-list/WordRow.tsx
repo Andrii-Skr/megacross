@@ -175,7 +175,7 @@ export function WordRow({
               <li
                 key={d.id}
                 className={cn(
-                  "group flex items-start gap-2 w-full rounded px-2 py-1 transition-colors hover:bg-[rgb(var(--accent-rgb)/0.5)] focus-within:bg-[rgb(var(--accent-rgb)/0.5)]",
+                  "group flex items-start gap-2 w-full rounded px-2 py-1 transition-colors hover:bg-accent/50 focus-within:bg-accent/50",
                   isExpanded ? "animate-in fade-in-0 slide-in-from-top-1 duration-200" : "",
                 )}
               >

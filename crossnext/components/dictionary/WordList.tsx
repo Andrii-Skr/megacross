@@ -394,7 +394,7 @@ export function WordList() {
                   onToggleSelectAll={toggleSelectAllVisible}
                 />
                 {bulkTagging && (shouldShowSelectAllBanner || selectAllAcrossFilter) && (
-                  <div className="flex flex-col gap-2 rounded-md border border-dashed bg-[rgb(var(--muted-rgb)/0.4)] px-3 py-2 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
+                  <div className="flex flex-col gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
                     <div className="space-y-1">
                       {!selectAllAcrossFilter ? (
                         <>

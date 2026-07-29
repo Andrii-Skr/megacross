@@ -323,7 +323,7 @@ export function ScanwordsLists({
     <>
       <div className="-mx-4 px-4 py-2 md:-mx-6 md:px-6 lg:sticky lg:top-12 lg:z-20">
         <nav aria-label={t("breadcrumb")} className="text-sm">
-          <div className="inline-flex max-w-full rounded-2xl border border-[rgb(var(--border-rgb)/0.5)] bg-[rgb(var(--background-rgb)/0.8)] px-3 py-1.5 shadow-sm backdrop-blur-sm">
+          <div className="inline-flex max-w-full rounded-2xl border border-border/50 bg-background/80 px-3 py-1.5 shadow-sm backdrop-blur-sm">
             <ol className="flex flex-wrap items-center gap-2 text-muted-foreground">
               <li>
                 <Button
@@ -345,7 +345,7 @@ export function ScanwordsLists({
                       type="button"
                       onClick={() => handleSelectEdition(selectedEdition.id)}
                       variant="link"
-                      className="h-auto p-0 text-[rgb(var(--foreground-rgb)/0.8)]"
+                      className="h-auto p-0 text-foreground/80"
                     >
                       {selectedEdition.name}
                     </Button>
@@ -357,7 +357,7 @@ export function ScanwordsLists({
                   <li aria-hidden className="text-muted-foreground">
                     /
                   </li>
-                  <li className="text-[rgb(var(--foreground-rgb)/0.8)]">{selectedIssue.label}</li>
+                  <li className="text-foreground/80">{selectedIssue.label}</li>
                 </>
               )}
             </ol>
@@ -367,7 +367,7 @@ export function ScanwordsLists({
 
       <div className="mt-3 flex flex-col gap-4 lg:flex-row">
         <aside className="w-full lg:w-50">
-          <Card className="bg-[rgb(var(--background-rgb)/0.7)]">
+          <Card className="bg-background/70">
             <CardHeader className="pb-0">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="flex items-center gap-2 text-sm">
@@ -441,8 +441,8 @@ export function ScanwordsLists({
                           className={cn(
                             "h-auto w-full justify-center rounded-lg border px-3 py-2 text-left transition",
                             active
-                              ? "border-[rgb(var(--primary-rgb)/0.3)] bg-[rgb(var(--primary-rgb)/0.1)] shadow-sm"
-                              : "border-[rgb(var(--border-rgb)/0.6)] bg-[rgb(var(--background-rgb)/0.6)] hover:border-[rgb(var(--primary-rgb)/0.3)] hover:bg-[rgb(var(--muted-rgb)/0.6)]",
+                              ? "border-primary/30 bg-primary/10 shadow-sm"
+                              : "border-border/60 bg-background/60 hover:border-primary/30 hover:bg-muted/60",
                           )}
                         >
                           <button
@@ -479,7 +479,7 @@ export function ScanwordsLists({
                     variant="ghost"
                     onClick={() => setShowHiddenEditions((prev) => !prev)}
                     aria-label={t("scanwordsHiddenToggleAria", { count: hiddenEditions.length })}
-                    className="h-auto w-full justify-between rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground transition hover:border-[rgb(var(--primary-rgb)/0.3)] hover:bg-[rgb(var(--muted-rgb)/0.4)]"
+                    className="h-auto w-full justify-between rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground transition hover:border-primary/30 hover:bg-muted/40"
                   >
                     <span className="text-sm font-medium">{t("scanwordsHiddenToggle")}</span>
                     <Badge variant="secondary" className="ml-2">
@@ -501,7 +501,7 @@ export function ScanwordsLists({
                                 hidden: true,
                               })
                             }
-                            className="h-auto w-full justify-center rounded-lg border border-dashed px-3 py-2 text-left text-muted-foreground transition hover:border-[rgb(var(--primary-rgb)/0.3)] hover:bg-[rgb(var(--muted-rgb)/0.4)]"
+                            className="h-auto w-full justify-center rounded-lg border border-dashed px-3 py-2 text-left text-muted-foreground transition hover:border-primary/30 hover:bg-muted/40"
                             aria-label={t("scanwordsHiddenEditionAria", { name: edition.name })}
                           >
                             <div className="flex items-center justify-between">
@@ -536,7 +536,7 @@ export function ScanwordsLists({
             style={selectedEdition && isDesktop ? { transform: `translateY(${issuesOffset}px)` } : undefined}
             ref={issuesCardRef}
           >
-            <Card className="bg-[rgb(var(--background-rgb)/0.7)]">
+            <Card className="bg-background/70">
               <CardHeader className="pb-0">
                 <CardTitle className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-2">
@@ -613,7 +613,7 @@ export function ScanwordsLists({
                                 "h-auto w-full justify-center rounded-lg border px-3 py-2 text-left transition",
                                 active
                                   ? "border-emerald-400/40 bg-emerald-400/10 shadow-sm"
-                                  : "border-[rgb(var(--border-rgb)/0.6)] bg-[rgb(var(--background-rgb)/0.6)] hover:border-emerald-400/40 hover:bg-[rgb(var(--muted-rgb)/0.6)]",
+                                  : "border-border/60 bg-background/60 hover:border-emerald-400/40 hover:bg-muted/60",
                               )}
                             >
                               <button
@@ -649,7 +649,7 @@ export function ScanwordsLists({
                       variant="ghost"
                       onClick={() => setShowHiddenIssues((prev) => !prev)}
                       aria-label={t("scanwordsHiddenToggleAria", { count: hiddenIssues.length })}
-                      className="h-auto w-full justify-between rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground transition hover:border-emerald-400/40 hover:bg-[rgb(var(--muted-rgb)/0.4)]"
+                      className="h-auto w-full justify-between rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground transition hover:border-emerald-400/40 hover:bg-muted/40"
                     >
                       <span className="text-sm font-medium">{t("scanwordsHiddenToggle")}</span>
                       <Badge variant="secondary" className="ml-2">
@@ -675,7 +675,7 @@ export function ScanwordsLists({
                                     hidden: issue.hidden,
                                   })
                                 }
-                                className="h-auto w-full justify-center rounded-lg border border-dashed px-3 py-2 text-left text-muted-foreground transition hover:border-emerald-400/40 hover:bg-[rgb(var(--muted-rgb)/0.4)]"
+                                className="h-auto w-full justify-center rounded-lg border border-dashed px-3 py-2 text-left text-muted-foreground transition hover:border-emerald-400/40 hover:bg-muted/40"
                                 aria-label={t("scanwordsHiddenIssueAria", { label: issue.label })}
                               >
                                 <div className="flex items-center justify-between gap-2">
@@ -740,7 +740,7 @@ export function ScanwordsLists({
               variant="ghost"
               role="menuitem"
               onClick={handleContextDelete}
-              className="h-auto w-full justify-start rounded px-2 py-1.5 text-left font-normal text-destructive hover:bg-[rgb(var(--destructive-rgb)/0.1)] hover:text-destructive"
+              className="h-auto w-full justify-start rounded px-2 py-1.5 text-left font-normal text-destructive hover:bg-destructive/10 hover:text-destructive"
             >
               {t("scanwordsContextDelete")}
             </Button>

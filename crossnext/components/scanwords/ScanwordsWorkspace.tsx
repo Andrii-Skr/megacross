@@ -140,7 +140,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
   return (
     <TooltipProvider>
       <section className="min-w-0 flex-1">
-        <Card className="flex flex-col bg-[rgb(var(--background-rgb)/0.7)] lg:h-[calc(100vh-7rem)]">
+        <Card className="flex flex-col bg-background/70 lg:h-[calc(100vh-7rem)]">
           <CardHeader className="shrink-0 pb-4">
             <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
               <Sparkles className="size-4 text-emerald-500" />

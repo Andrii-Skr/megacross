@@ -73,29 +73,6 @@
   --input: oklch(0.82 0.03 250);
   --ring: oklch(0.7 0.01 250);
 
-  /*
-   * sRGB channels for alpha utilities in browsers without color-mix().
-   * Keep these aligned with the theme colors above.
-   */
-  --background-rgb: 241 244 247;
-  --foreground-rgb: 11 11 12;
-  --card-rgb: 248 250 253;
-  --card-foreground-rgb: 11 11 12;
-  --popover-rgb: 248 250 253;
-  --popover-foreground-rgb: 11 11 12;
-  --primary-rgb: 0 100 154;
-  --primary-foreground-rgb: 249 248 246;
-  --secondary-rgb: 230 236 242;
-  --secondary-foreground-rgb: 32 33 39;
-  --muted-rgb: 230 236 242;
-  --muted-foreground-rgb: 114 116 123;
-  --accent-rgb: 152 227 255;
-  --accent-foreground-rgb: 3 23 44;
-  --destructive-rgb: 230 44 43;
-  --border-rgb: 182 198 215;
-  --input-rgb: 182 198 215;
-  --ring-rgb: 154 159 165;
-
   --page-glow-top: rgb(110 231 183 / 0.25);
   --page-glow-bottom: rgb(252 211 77 / 0.2);
   --page-glow-radial: radial-gradient(circle at top, rgb(15 23 42 / 0.06), transparent 60%);
@@ -134,25 +111,6 @@
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
 
-  --background-rgb: 10 10 10;
-  --foreground-rgb: 250 250 250;
-  --card-rgb: 23 23 23;
-  --card-foreground-rgb: 250 250 250;
-  --popover-rgb: 23 23 23;
-  --popover-foreground-rgb: 250 250 250;
-  --primary-rgb: 229 229 229;
-  --primary-foreground-rgb: 23 23 23;
-  --secondary-rgb: 38 38 38;
-  --secondary-foreground-rgb: 250 250 250;
-  --muted-rgb: 38 38 38;
-  --muted-foreground-rgb: 161 161 161;
-  --accent-rgb: 38 38 38;
-  --accent-foreground-rgb: 250 250 250;
-  --destructive-rgb: 255 101 104;
-  --border-rgb: 247 247 247;
-  --input-rgb: 255 255 255;
-  --ring-rgb: 115 115 115;
-
   --page-glow-top: rgb(110 231 183 / 0.12);
   --page-glow-bottom: rgb(252 211 77 / 0.1);
   --page-glow-radial: radial-gradient(circle at top, rgb(248 250 252 / 0.08), transparent 60%);
@@ -160,7 +118,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-[rgb(var(--ring-rgb)/0.5)];
+    @apply border-border outline-ring/50;
   }
   body {
     @apply bg-background text-foreground;
@@ -216,26 +174,49 @@
 }
 
 .fill-review-error-row {
-  background-color: rgb(var(--destructive-rgb) / 0.15);
-  box-shadow: inset 4px 0 0 rgb(var(--destructive-rgb));
+  background-color: rgb(230 44 43 / 0.15);
+  box-shadow: inset 4px 0 0 rgb(230 44 43);
 }
 
 .fill-review-error-control {
-  border-color: rgb(var(--destructive-rgb) / 0.6);
-  --tw-ring-color: rgb(var(--destructive-rgb) / 0.3);
+  border-color: rgb(230 44 43 / 0.6);
+  --tw-ring-color: rgb(230 44 43 / 0.3);
 }
 
 .fill-review-error-panel {
-  border-color: rgb(var(--destructive-rgb) / 0.4);
-  background-color: rgb(var(--destructive-rgb) / 0.05);
+  border-color: rgb(230 44 43 / 0.4);
+  background-color: rgb(230 44 43 / 0.05);
 }
 
 .fill-review-error-detail {
-  color: rgb(var(--destructive-rgb) / 0.8);
+  color: rgb(230 44 43 / 0.8);
 }
 
 .fill-review-muted-header {
-  background-color: rgb(var(--muted-rgb) / 0.4);
+  background-color: rgb(230 236 242 / 0.4);
+}
+
+.dark .fill-review-error-row {
+  background-color: rgb(255 101 104 / 0.15);
+  box-shadow: inset 4px 0 0 rgb(255 101 104);
+}
+
+.dark .fill-review-error-control {
+  border-color: rgb(255 101 104 / 0.6);
+  --tw-ring-color: rgb(255 101 104 / 0.3);
+}
+
+.dark .fill-review-error-panel {
+  border-color: rgb(255 101 104 / 0.4);
+  background-color: rgb(255 101 104 / 0.05);
+}
+
+.dark .fill-review-error-detail {
+  color: rgb(255 101 104 / 0.8);
+}
+
+.dark .fill-review-muted-header {
+  background-color: rgb(38 38 38 / 0.4);
 }
 
 /* Mobile portrait typography tweaks for dictionary list */

@@ -94,7 +94,7 @@ export function DeletedList<T extends DeletedListItem>({
             run();
           }}
           disabled={pending || selected.size === 0}
-          className="bg-destructive text-destructive-foreground hover:bg-[rgb(var(--destructive-rgb)/0.9)]"
+          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
         >
           {t("delete")}
         </Button>

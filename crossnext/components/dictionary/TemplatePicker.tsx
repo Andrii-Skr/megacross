@@ -140,10 +140,8 @@ export function TemplatePicker({
                             type="button"
                             variant="ghost"
                             className={cn(
-                              "!block !h-auto w-full whitespace-normal rounded-md border !px-3 !py-2 text-left !font-normal transition hover:bg-[rgb(var(--accent-rgb)/0.5)]",
-                              selectedId === tpl.id
-                                ? "border-primary ring-1 ring-[rgb(var(--primary-rgb)/0.3)]"
-                                : "border-border",
+                              "!block !h-auto w-full whitespace-normal rounded-md border !px-3 !py-2 text-left !font-normal transition hover:bg-accent/50",
+                              selectedId === tpl.id ? "border-primary ring-1 ring-primary/30" : "border-border",
                             )}
                             onClick={() => {
                               onSelect(tpl.id);
@@ -181,7 +179,7 @@ export function TemplatePicker({
                                   <Badge
                                     key={`exclude-${tag}`}
                                     variant="outline"
-                                    className="border-[rgb(var(--destructive-rgb)/0.4)] text-destructive line-through"
+                                    className="border-destructive/40 text-destructive line-through"
                                   >
                                     {tag}
                                   </Badge>
@@ -198,7 +196,7 @@ export function TemplatePicker({
             </PopoverContent>
           </Popover>
           {showMeta && selected && (
-            <div className="grid gap-2 rounded-md border bg-[rgb(var(--muted-rgb)/0.2)] p-2">
+            <div className="grid gap-2 rounded-md border bg-muted/20 p-2">
               <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
                 <span>
                   {scopeLabel(selected)} / {modeLabel(selected)}
@@ -233,7 +231,7 @@ export function TemplatePicker({
                     <Badge
                       key={`selected-exclude-${tag}`}
                       variant="outline"
-                      className="border-[rgb(var(--destructive-rgb)/0.4)] text-destructive line-through"
+                      className="border-destructive/40 text-destructive line-through"
                     >
                       {tag}
                     </Badge>

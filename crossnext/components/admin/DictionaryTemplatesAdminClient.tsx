@@ -273,7 +273,7 @@ export function DictionaryTemplatesAdminClient({ langCode }: Props) {
                           <Badge
                             key={`${template.id}-exclude-${tag}`}
                             variant="outline"
-                            className="border-[rgb(var(--destructive-rgb)/0.4)] text-destructive line-through"
+                            className="border-destructive/40 text-destructive line-through"
                           >
                             {tag}
                           </Badge>

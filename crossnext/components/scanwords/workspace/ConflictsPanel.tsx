@@ -69,7 +69,7 @@ export function ConflictsPanel({
         </div>
 
         {showParseErrors && (
-          <div className="rounded-md border border-[rgb(var(--destructive-rgb)/0.4)] bg-[rgb(var(--destructive-rgb)/0.05)] p-2">
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2">
             <div className="text-xs font-medium text-destructive">{t("scanwordsConflictsParseErrorsTitle")}</div>
             <ul className="mt-1 grid gap-1 text-xs text-destructive">
               {visibleParseErrors.map((err) => (
@@ -110,10 +110,7 @@ export function ConflictsPanel({
                             ? "text-amber-600"
                             : "text-muted-foreground";
                         return (
-                          <li
-                            key={`mobile-${row.length}`}
-                            className="rounded-md border bg-[rgb(var(--background-rgb)/0.7)] p-3 text-xs"
-                          >
+                          <li key={`mobile-${row.length}`} className="rounded-md border bg-background/70 p-3 text-xs">
                             <div className="font-medium">
                               {t("scanwordsConflictsLengthLabel", { length: row.length })}
                             </div>
