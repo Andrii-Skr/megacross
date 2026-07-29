@@ -119,6 +119,97 @@ export function localizeFillError(error: string | null | undefined, t: Translate
   match = raw.match(/^Template (.+): keyword (.+) cannot be embedded into the template$/i);
   if (match) return t("scanwordsFillErrorKeywordPlacement", { template: match[1], keyword: match[2] });
 
+  match = raw.match(/^Template (.+): Slot (\d+): image is required for photo definition$/i);
+  if (match) return t("scanwordsFillErrorPhotoRequired", { template: match[1], slot: match[2] });
+
+  match = raw.match(/^Template (.+): Slot (\d+): definition is required$/i);
+  if (match) return t("scanwordsFillErrorDefinitionRequired", { template: match[1], slot: match[2] });
+
+  match = raw.match(/^Template (.+): Template (\d+): word is empty$/i);
+  if (match) return t("scanwordsFillErrorWordRequired", { template: match[1], slot: match[2] });
+
+  match = raw.match(/^Template (.+): Slot (\d+): word length (\d+) does not match (\d+)$/i);
+  if (match) {
+    return t("scanwordsFillErrorWordLength", {
+      template: match[1],
+      slot: match[2],
+      actual: match[3],
+      expected: match[4],
+    });
+  }
+
+  match = raw.match(/^Template (.+): Slot (\d+): word must contain letters only$/i);
+  if (match) return t("scanwordsFillErrorWordLettersOnly", { template: match[1], slot: match[2] });
+
+  match = raw.match(/^Template (.+): definition for slot (\d+) exceeds (\d+) symbols(?: for shared clue cell (.+))?$/i);
+  if (match) {
+    return t("scanwordsFillErrorDefinitionTooLong", {
+      template: match[1],
+      slot: match[2],
+      limit: match[3],
+    });
+  }
+
+  match = raw.match(/^Template (.+): definitions total exceeds (\d+) symbols for clue cell (.+)$/i);
+  if (match) return t("scanwordsFillErrorDefinitionsTooLong", { template: match[1], limit: match[2] });
+
+  match = raw.match(/^Template (.+): word (.+) has conflicting definitions$/i);
+  if (match) return t("scanwordsFillErrorConflictingDefinitions", { template: match[1], word: match[2] });
+
+  match = raw.match(/^Template (.+): word (.+) duplicates slot (\d+)$/i);
+  if (match) {
+    return t("scanwordsFillErrorDuplicateWord", {
+      template: match[1],
+      word: match[2],
+      slot: match[3],
+    });
+  }
+
+  match = raw.match(/^Template (.+): definition for slot (\d+) duplicates slot (\d+)$/i);
+  if (match) {
+    return t("scanwordsFillErrorDuplicateDefinition", {
+      template: match[1],
+      slot: match[2],
+      duplicateSlot: match[3],
+    });
+  }
+
+  match = raw.match(/^Template (.+): definition for slot (\d+) duplicates template (.+) slot (\d+)$/i);
+  if (match) {
+    return t("scanwordsFillErrorDuplicateDefinitionTemplate", {
+      template: match[1],
+      slot: match[2],
+      duplicateTemplate: match[3],
+      duplicateSlot: match[4],
+    });
+  }
+
+  match = raw.match(/^Template (.+): word (.+) in slot (\d+) duplicates neighboring template (.+) slot (\d+)$/i);
+  if (match) {
+    return t("scanwordsFillErrorDuplicateNeighborWord", {
+      template: match[1],
+      word: match[2],
+      slot: match[3],
+      duplicateTemplate: match[4],
+      duplicateSlot: match[5],
+    });
+  }
+
+  match = raw.match(/^Template (.+): image (.+) not found for slot (\d+)$/i);
+  if (match) return t("scanwordsFillErrorImageNotFound", { template: match[1], slot: match[3] });
+
+  match = raw.match(/^Template (.+): image (.+) does not belong to slot (\d+) word$/i);
+  if (match) return t("scanwordsFillErrorImageWrongWord", { template: match[1], slot: match[3] });
+
+  match = raw.match(/^Template (.+): photo area is missing for slot (\d+)$/i);
+  if (match) return t("scanwordsFillErrorPhotoAreaMissing", { template: match[1], slot: match[2] });
+
+  match = raw.match(/^Template (.+): image (.+) ratio does not match slot (\d+)$/i);
+  if (match) return t("scanwordsFillErrorImageRatio", { template: match[1], slot: match[3] });
+
+  match = raw.match(/^Template (.+): image file is missing for slot (\d+)$/i);
+  if (match) return t("scanwordsFillErrorImageFileMissing", { template: match[1], slot: match[2] });
+
   if (
     normalized.startsWith("native csp solver is not available") ||
     normalized.startsWith("native dlx solver is not available")

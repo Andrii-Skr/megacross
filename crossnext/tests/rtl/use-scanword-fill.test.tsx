@@ -345,6 +345,9 @@ describe("useScanwordFill", () => {
     expect(localizeFillError("Template 12: fixed word КОТ is not available in dictionary", translate)).toBe(
       'scanwordsFillErrorFixedWordMissing:{"template":"12","word":"КОТ"}',
     );
+    expect(localizeFillError("Template 55: Slot 43: image is required for photo definition", translate)).toBe(
+      'scanwordsFillErrorPhotoRequired:{"template":"55","slot":"43"}',
+    );
   });
 
   it("keeps unknown upstream error details under a localized heading", () => {
