@@ -3,6 +3,7 @@ import { PHOTO_IMAGE_RATIO_TOLERANCE } from "@megacross/cross-clues";
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import sharp from "sharp";
 import { authOptions } from "@/auth";
 import { hasPermissionAsync, Permissions } from "@/lib/authz";
 import { prisma } from "@/lib/db";
@@ -181,16 +182,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     console.error("Word image upload failed while reading the uploaded file", fileError);
     return error(400, "Failed to read image file", "UPLOAD_FILE_READ_FAILED");
   }
-  let sharpModule: typeof import("sharp");
+  let metadata: Awaited<ReturnType<ReturnType<typeof sharp>["metadata"]>>;
   try {
-    sharpModule = await import("sharp");
-  } catch (processorError) {
-    console.error("Word image upload failed while loading the image processor", processorError);
-    return error(503, "Image processor is unavailable", "UPLOAD_IMAGE_PROCESSOR_UNAVAILABLE");
-  }
-  let metadata: Awaited<ReturnType<ReturnType<typeof sharpModule.default>["metadata"]>>;
-  try {
-    metadata = await sharpModule.default(bytes, { failOn: "error" }).metadata();
+    metadata = await sharp(bytes, { failOn: "error" }).metadata();
   } catch (metadataError) {
     console.error("Word image upload failed while reading image metadata", metadataError);
     return error(400, "Failed to read image dimensions", "UPLOAD_IMAGE_DIMENSIONS_INVALID");

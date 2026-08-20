@@ -23,7 +23,8 @@ COPY packages/cross-clues /packages/cross-clues
 # Copy Prisma schema (folder-based schema)
 COPY crossnext/prisma/schema prisma/schema
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-  pnpm install --frozen-lockfile
+  pnpm install --frozen-lockfile \
+  && node -e "const sharp=require('sharp');if(!sharp.versions?.vips)throw new Error('Sharp/libvips install is unavailable');console.log('Installed Sharp/libvips',sharp.versions.vips)"
 
 # ---- dev: hot-reload image ----
 FROM deps AS dev
@@ -84,6 +85,9 @@ COPY --from=deps --chown=node:node /app/node_modules/dotenv ./node_modules/doten
 COPY --from=deps --chown=node:node /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
 ENV PATH="/app/node_modules/.bin:${PATH}"
 RUN chmod +x /app/node_modules/.bin/prisma || true
+# Refuse to publish a standalone image without the native runtime used by
+# photo uploads. The dependency must resolve from the actual server entry.
+RUN node -e "const fs=require('node:fs');const {createRequire}=require('node:module');const entry=['/app/app/server.js','/app/server.js','/app/crossnext/server.js'].find(fs.existsSync);if(!entry)throw new Error('Next.js standalone server entry not found');const sharp=createRequire(entry)('sharp');if(!sharp.versions?.vips)throw new Error('Sharp/libvips runtime is unavailable');console.log('Sharp/libvips',sharp.versions.vips)"
 USER node
 EXPOSE 3000
 STOPSIGNAL SIGTERM
