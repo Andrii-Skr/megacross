@@ -27,6 +27,17 @@ function error(status: number, message: string, errorCode: string, details?: Rec
   return NextResponse.json({ success: false, message, errorCode, ...(details ? { details } : {}) }, { status });
 }
 
+function isUploadedFile(value: FormDataEntryValue | null): value is File {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<File>;
+  return (
+    typeof candidate.name === "string" &&
+    typeof candidate.type === "string" &&
+    typeof candidate.size === "number" &&
+    typeof candidate.arrayBuffer === "function"
+  );
+}
+
 function toImageDto(image: {
   id: bigint;
   wordId: bigint;
@@ -124,17 +135,29 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     return error(400, "Invalid word id", "INVALID_WORD_ID");
   }
 
-  const word = await prisma.word_v.findFirst({
-    where: { id: wordId, is_deleted: false },
-    select: { id: true },
-  });
+  let word: { id: bigint } | null;
+  try {
+    word = await prisma.word_v.findFirst({
+      where: { id: wordId, is_deleted: false },
+      select: { id: true },
+    });
+  } catch (dbError) {
+    console.error("Word image upload failed while reading the word", dbError);
+    return error(500, "Failed to read word data", "UPLOAD_DB_READ_FAILED");
+  }
   if (!word) {
     return error(404, "Word not found", "WORD_NOT_FOUND");
   }
 
-  const form = await req.formData();
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch (formError) {
+    console.error("Word image upload failed while parsing multipart form data", formError);
+    return error(400, "Invalid image upload request", "UPLOAD_FORM_INVALID");
+  }
   const entry = form.get("file");
-  const file = entry instanceof File ? entry : null;
+  const file = isUploadedFile(entry) ? entry : null;
   if (!file) {
     return error(400, "No image file", "UPLOAD_NO_FILE");
   }
@@ -151,9 +174,27 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     return error(400, "Unsupported image format", "UPLOAD_UNSUPPORTED_IMAGE_FORMAT");
   }
 
-  const bytes = Buffer.from(await file.arrayBuffer());
-  const sharpModule = await import("sharp");
-  const metadata = await sharpModule.default(bytes, { failOn: "error" }).metadata();
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(await file.arrayBuffer());
+  } catch (fileError) {
+    console.error("Word image upload failed while reading the uploaded file", fileError);
+    return error(400, "Failed to read image file", "UPLOAD_FILE_READ_FAILED");
+  }
+  let sharpModule: typeof import("sharp");
+  try {
+    sharpModule = await import("sharp");
+  } catch (processorError) {
+    console.error("Word image upload failed while loading the image processor", processorError);
+    return error(503, "Image processor is unavailable", "UPLOAD_IMAGE_PROCESSOR_UNAVAILABLE");
+  }
+  let metadata: Awaited<ReturnType<ReturnType<typeof sharpModule.default>["metadata"]>>;
+  try {
+    metadata = await sharpModule.default(bytes, { failOn: "error" }).metadata();
+  } catch (metadataError) {
+    console.error("Word image upload failed while reading image metadata", metadataError);
+    return error(400, "Failed to read image dimensions", "UPLOAD_IMAGE_DIMENSIONS_INVALID");
+  }
   const width = metadata.width ?? 0;
   const height = metadata.height ?? 0;
   if (!(width > 0) || !(height > 0)) {
@@ -205,7 +246,10 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       },
     });
   } catch (dbError) {
-    if (!isMissingWordImagesRelationError(dbError)) throw dbError;
+    if (!isMissingWordImagesRelationError(dbError)) {
+      console.error("Word image upload failed while checking for an existing image", dbError);
+      return error(500, "Failed to read image data", "UPLOAD_DB_READ_FAILED");
+    }
     return error(503, SCANWORD_WORD_IMAGES_NOT_READY_MESSAGE, "WORD_IMAGE_STORAGE_NOT_READY");
   }
   if (existing) {
@@ -213,9 +257,15 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   }
 
   const storageRelPath = buildWordImageStorageRelPath(wordId, sha256, originalName);
-  const absolutePath = await ensureWordImagesDir(storageRelPath);
-  await fs.mkdir(resolveWordImagesDir(), { recursive: true });
-  await fs.writeFile(absolutePath, bytes);
+  let absolutePath: string;
+  try {
+    absolutePath = await ensureWordImagesDir(storageRelPath);
+    await fs.mkdir(resolveWordImagesDir(), { recursive: true });
+    await fs.writeFile(absolutePath, bytes);
+  } catch (storageError) {
+    console.error("Word image upload failed while writing the image file", storageError);
+    return error(500, "Failed to write image file", "UPLOAD_STORAGE_WRITE_FAILED");
+  }
 
   const createdBy = getNumericUserId(auth.session?.user as { id?: string | number | null } | null);
   try {
@@ -245,8 +295,15 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
     return NextResponse.json({ success: true, image: toImageDto(created) });
   } catch (dbError) {
-    await safeUnlink(absolutePath);
-    if (!isMissingWordImagesRelationError(dbError)) throw dbError;
+    try {
+      await safeUnlink(absolutePath);
+    } catch (cleanupError) {
+      console.error("Word image upload failed while cleaning up the image file", cleanupError);
+    }
+    if (!isMissingWordImagesRelationError(dbError)) {
+      console.error("Word image upload failed while saving image data", dbError);
+      return error(500, "Failed to save image data", "UPLOAD_DB_WRITE_FAILED");
+    }
     return error(503, SCANWORD_WORD_IMAGES_NOT_READY_MESSAGE, "WORD_IMAGE_STORAGE_NOT_READY");
   }
 }

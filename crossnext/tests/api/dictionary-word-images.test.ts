@@ -98,10 +98,30 @@ describe("/api/dictionary/word/[id]/images", () => {
     expect(prisma.scanwordWordImage.findUnique).not.toHaveBeenCalled();
   });
 
+  it("returns a controlled error when image metadata cannot be read", async () => {
+    sharpMetadataMock.mockRejectedValue(new Error("unsupported image"));
+    prisma.word_v.findFirst.mockResolvedValue({ id: 10n });
+
+    const form = new FormData();
+    const file = new File([new Uint8Array([1, 2, 3])], "broken.jpg", { type: "image/jpeg" });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: async () => new Uint8Array([1, 2, 3]).buffer,
+    });
+    form.append("file", file);
+
+    const res = await POST({ formData: async () => form } as Request, makeCtx({ id: "10" }));
+    const { status, json } = await readJson<{ errorCode: string }>(res);
+
+    expect(status).toBe(400);
+    expect(json.errorCode).toBe("UPLOAD_IMAGE_DIMENSIONS_INVALID");
+    expect(prisma.scanwordWordImage.findUnique).not.toHaveBeenCalled();
+  });
+
   it.each([
-    [500, 500],
-    [510, 500],
-  ])("accepts a %sx%s upload for a square photo area", async (width, height) => {
+    [500, 500, 4, 4],
+    [510, 500, 4, 4],
+    [400, 500, 4, 5],
+  ])("accepts a %sx%s upload for a %sx%s photo area", async (width, height, targetWidth, targetHeight) => {
     sharpMetadataMock.mockResolvedValue({ width, height });
     prisma.word_v.findFirst.mockResolvedValue({ id: 10n });
     prisma.scanwordWordImage.findUnique.mockResolvedValue({
@@ -120,14 +140,49 @@ describe("/api/dictionary/word/[id]/images", () => {
       value: async () => new Uint8Array([1, 2, 3]).buffer,
     });
     form.append("file", file);
-    form.append("targetWidth", "4");
-    form.append("targetHeight", "4");
+    form.append("targetWidth", String(targetWidth));
+    form.append("targetHeight", String(targetHeight));
 
     const res = await POST({ formData: async () => form } as Request, makeCtx({ id: "10" }));
     const { status, json } = await readJson<{ image: { width: number; height: number } }>(res);
 
     expect(status).toBe(200);
     expect(json.image).toEqual(expect.objectContaining({ width, height }));
+  });
+
+  it("accepts a multipart file-like value from another runtime realm", async () => {
+    sharpMetadataMock.mockResolvedValue({ width: 400, height: 500 });
+    prisma.word_v.findFirst.mockResolvedValue({ id: 10n });
+    prisma.scanwordWordImage.findUnique.mockResolvedValue({
+      id: 5n,
+      wordId: 10n,
+      fileName: "city.jpg",
+      mimeType: "image/jpeg",
+      width: 400,
+      height: 500,
+      aspectRatio: 0.8,
+    });
+
+    const fileLike = {
+      name: "city.jpg",
+      type: "image/jpeg",
+      size: 3,
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    };
+    const form = {
+      get: vi.fn((key: string) => {
+        if (key === "file") return fileLike;
+        if (key === "targetWidth") return "4";
+        if (key === "targetHeight") return "5";
+        return null;
+      }),
+    } as unknown as FormData;
+
+    const res = await POST({ formData: async () => form } as Request, makeCtx({ id: "10" }));
+    const { status, json } = await readJson<{ image: { width: number; height: number } }>(res);
+
+    expect(status).toBe(200);
+    expect(json.image).toEqual(expect.objectContaining({ width: 400, height: 500 }));
   });
 
   it("deletes stored word image", async () => {

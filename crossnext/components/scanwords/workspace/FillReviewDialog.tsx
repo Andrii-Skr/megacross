@@ -66,6 +66,7 @@ import {
   resolveSelectedImageId,
   wordMatchesFixedLetters,
 } from "./reviewDraftState";
+import { formatWordImageUploadError, type WordImageUploadErrorPayload } from "./wordImageUploadError";
 
 type WordOption = {
   value: string;
@@ -1222,13 +1223,11 @@ export function FillReviewDialog({
           method: "POST",
           body: formData,
         });
-        const payload = (await response.json().catch(() => ({}))) as {
+        const payload = (await response.json().catch(() => ({}))) as WordImageUploadErrorPayload & {
           image?: WordImageOption;
-          message?: string;
-          errorCode?: string;
         };
         if (!response.ok) {
-          throw new Error(payload.message || `HTTP ${response.status}`);
+          throw new Error(formatWordImageUploadError(payload, t, "scanwordsReviewImageUploadError"));
         }
         const images = await refreshWordImages(row.wordId);
         replaceRowImages(template.key, slot.slotId, images, payload.image?.id ?? null);

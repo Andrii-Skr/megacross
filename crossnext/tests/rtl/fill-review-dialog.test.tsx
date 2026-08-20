@@ -347,6 +347,64 @@ describe("FillReviewDialog", () => {
     expect(screen.getAllByAltText("cat.png")).toHaveLength(2);
   });
 
+  it("shows the exact aspect-ratio error for a rejected image upload", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/api/scanwords/fill-review-draft?jobId=job-image-ratio" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse({ available: false, rows: [] });
+      }
+      if (url === "/api/dictionary/word/10/images" && init?.method === "POST") {
+        return jsonResponse(
+          {
+            success: false,
+            errorCode: "UPLOAD_IMAGE_BAD_RATIO",
+            details: {
+              imageWidth: 400,
+              imageHeight: 500,
+              targetWidth: 2,
+              targetHeight: 1,
+              tolerancePercent: 8,
+            },
+          },
+          422,
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload = makeReviewPayload();
+    const firstSlot = payload.templates[0]?.slots[0];
+    if (!firstSlot) throw new Error("Missing review slot fixture");
+    firstSlot.isPhotoDefinition = true;
+    firstSlot.photoAreaBounds = { minRow: 0, minCol: 0, maxRow: 0, maxCol: 1 };
+
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-image-ratio"
+        reviewData={payload}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={vi.fn().mockResolvedValue(undefined)}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Кот")).toBeInTheDocument());
+    const input = document.querySelector('input[type="file"]');
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    await userEvent.upload(input as HTMLInputElement, new File(["jpeg"], "city.jpg", { type: "image/jpeg" }));
+
+    await waitFor(() => expect(screen.getByText("scanwordsImageBadRatio")).toBeInTheDocument());
+  });
+
   it("renders a compact proofreading list and persists row bookmarks", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);

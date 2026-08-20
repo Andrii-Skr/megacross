@@ -24,6 +24,7 @@ const workspaceRoot = resolve(projectRoot, "..");
 const tailwindcssPath = fileURLToPath(new URL("./node_modules/tailwindcss", import.meta.url));
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["192.168.1.228"],
   turbopack: {
     // pnpm stores the real Next.js package under the workspace-level .pnpm store.
     root: workspaceRoot,

@@ -32,6 +32,7 @@ import type {
   TemplateSetupTemplate,
   WordImageOption,
 } from "./model";
+import { formatWordImageUploadError, type WordImageUploadErrorPayload } from "./wordImageUploadError";
 
 type DictionaryWordCandidate = {
   id: string;
@@ -771,40 +772,9 @@ export function TemplateSetupPanel({
           method: "POST",
           body: formData,
         });
-        const payload = (await response.json().catch(() => ({}))) as {
-          message?: string;
-          errorCode?: string;
-          details?: {
-            imageWidth?: number;
-            imageHeight?: number;
-            targetWidth?: number;
-            targetHeight?: number;
-            tolerancePercent?: number;
-          };
-        };
+        const payload = (await response.json().catch(() => ({}))) as WordImageUploadErrorPayload;
         if (!response.ok) {
-          if (
-            payload.errorCode === "UPLOAD_IMAGE_BAD_RATIO" &&
-            payload.details?.imageWidth &&
-            payload.details.imageHeight &&
-            payload.details.targetWidth &&
-            payload.details.targetHeight
-          ) {
-            throw new Error(
-              t("scanwordsTemplateSetupImageBadRatio", {
-                imageWidth: payload.details.imageWidth,
-                imageHeight: payload.details.imageHeight,
-                targetWidth: payload.details.targetWidth,
-                targetHeight: payload.details.targetHeight,
-                tolerance: payload.details.tolerancePercent ?? PHOTO_IMAGE_RATIO_TOLERANCE * 100,
-              }),
-            );
-          }
-          throw new Error(
-            typeof payload.message === "string" && payload.message.trim().length > 0
-              ? payload.message
-              : t("scanwordsTemplateSetupImageUploadError"),
-          );
+          throw new Error(formatWordImageUploadError(payload, t, "scanwordsTemplateSetupImageUploadError"));
         }
         await refreshModalImages(editingWordId);
       } catch (error) {
