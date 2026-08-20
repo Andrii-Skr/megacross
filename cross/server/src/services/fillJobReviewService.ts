@@ -290,36 +290,6 @@ function buildClueMaps(
   return { clueBySlot: bySlot, clueGroups, photoBySlot, photoBoundsByKey };
 }
 
-function pickPreferredDefinitionOption(
-  options: ReviewDefinitionOption[],
-  usedDefinitionKeys?: Set<string>
-): ReviewDefinitionOption | null {
-  let best: { option: ReviewDefinitionOption; bucket: number; len: number } | null = null;
-  for (const option of options) {
-    const text = normalizeDefinitionText(option.text);
-    if (!text) continue;
-    const bucket = definitionSelectionBucket(text, usedDefinitionKeys);
-    if (!Number.isFinite(bucket)) continue;
-    const len = text.length;
-    if (
-      !best ||
-      bucket < best.bucket ||
-      (bucket === best.bucket &&
-        (len < best.len || (len === best.len && text.localeCompare(best.option.text, "ru") < 0)))
-    ) {
-      best = {
-        option: {
-          opredId: option.opredId,
-          text,
-        },
-        bucket,
-        len,
-      };
-    }
-  }
-  return best?.option ?? null;
-}
-
 function mergeDefinitionOptionByText(
   current: ReviewDefinitionOption | undefined,
   candidate: ReviewDefinitionOption
@@ -374,7 +344,8 @@ export function buildReviewTemplate(
     const word = wordsBySlot.get(slot.id) ?? "";
     const selection = selections.get(word);
     const fallbackDefinition = normalizeDefinitionText(fallbackDefinitions.get(word));
-    const selectedDefinition = normalizeDefinitionText(selection?.definition) || fallbackDefinition;
+    const templateMatchedDefinition = normalizeDefinitionText(selection?.definition);
+    const selectedDefinition = templateMatchedDefinition || fallbackDefinition;
     let selectedOpredId: string | null = null;
     const optionMap = new Map<string, ReviewDefinitionOption>();
     const pushOption = (option: ReviewDefinitionOption) => {
@@ -404,12 +375,11 @@ export function buildReviewTemplate(
     const options = [...optionMap.values()];
     options.sort((a, b) => a.text.localeCompare(b.text, "ru"));
 
-    let definition = "";
-    const preferred = pickPreferredDefinitionOption(options, usedDefinitionKeys);
-    if (preferred) {
-      definition = preferred.text;
-      selectedOpredId = preferred.opredId;
-    }
+    // `selection.definition` and `fallbackDefinition` are already constrained by
+    // the fill template. `options` deliberately contains every active definition
+    // for manual review and must never be used for automatic selection.
+    const definition = selectedDefinition;
+    selectedOpredId = templateMatchedDefinition ? (selection?.opredId ? String(selection.opredId) : null) : null;
     if (definition.length > 0) {
       usedDefinitionKeys?.add(normalizeDefinitionKey(definition));
     }

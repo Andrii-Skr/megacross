@@ -1224,6 +1224,7 @@ export function useScanwordFill({
           body: JSON.stringify({
             jobId: fillJob.id,
             templateKey,
+            templateSetup,
           }),
         });
         const data = await res.json();
@@ -1248,7 +1249,7 @@ export function useScanwordFill({
         setRegeneratingTemplateKey(null);
       }
     },
-    [fillJob?.id, normalizeFillJob, t],
+    [fillJob?.id, normalizeFillJob, t, templateSetup],
   );
 
   return {

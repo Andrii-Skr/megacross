@@ -66,6 +66,8 @@ COPY --from=builder --chown=node:node /app/.next/static ./app/.next/static
 COPY --from=builder --chown=node:node /app/public ./app/public
 COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/prisma.config.ts ./prisma.config.ts
+# prisma.config.ts imports this runtime helper when Prisma CLI runs migrations.
+COPY --from=builder --chown=node:node /app/lib/resolveDatabaseUrl.ts ./lib/resolveDatabaseUrl.ts
 COPY --chown=node:node cross/server/src/arrows ./cross-arrows
 # entrypoint for running migrations/seed on start
 COPY --from=builder --chown=node:node /app/entrypoint.sh ./entrypoint.sh

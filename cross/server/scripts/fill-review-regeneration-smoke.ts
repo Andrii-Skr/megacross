@@ -112,7 +112,10 @@ function runBuildReviewPayloadSmoke() {
           wordId: 10n,
           opredId: 100n,
           definition: "Домашний хищник",
-          definitions: [{ opredId: 100n, text: "Домашний хищник" }],
+          definitions: [
+            { opredId: 100n, text: "Домашний хищник" },
+            { opredId: 101n, text: "Кот" },
+          ],
         },
       ],
     ]),
@@ -137,6 +140,40 @@ function runBuildReviewPayloadSmoke() {
   assert.equal(payload.templates.length, 1);
   assert.equal(payload.templates[0]?.slots[0]?.word, "КОТ");
   assert.equal(payload.templates[0]?.slots[0]?.definition, "Домашний хищник");
+  assert.deepEqual(
+    payload.templates[0]?.slots[0]?.definitionOptions.map((option) => option.text),
+    ["Домашний хищник", "Кот"],
+  );
+
+  const withoutMatchingDefinition = buildReviewTemplate(
+    entry,
+    ["КОТ"],
+    "ru",
+    1,
+    new Map([
+      [
+        "КОТ",
+        {
+          wordId: 10n,
+          opredId: null,
+          definition: "",
+          definitions: [
+            { opredId: 101n, text: "Определение сложности 4" },
+            { opredId: 102n, text: "Определение сложности 5" },
+          ],
+        },
+      ],
+    ]),
+    new Map(),
+    new Map(),
+    new Set(),
+  );
+  assert.equal(withoutMatchingDefinition.slots[0]?.definition, "");
+  assert.equal(withoutMatchingDefinition.slots[0]?.opredId, null);
+  assert.deepEqual(
+    withoutMatchingDefinition.slots[0]?.definitionOptions.map((option) => option.text),
+    ["Определение сложности 4", "Определение сложности 5"],
+  );
 }
 
 function runTemplateStateSmoke() {

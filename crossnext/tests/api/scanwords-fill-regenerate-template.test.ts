@@ -127,8 +127,22 @@ describe("/api/scanwords/fill/regenerate-template", () => {
         const body = JSON.parse(String(init?.body)) as {
           templateKey: string;
           templates: Array<{ key: string; slots: Array<{ slotId: number; word: string; definition: string }> }>;
+          templateSetup: {
+            version: 1;
+            templates: Array<{ templateKey: string; fixedSlots: Array<{ word: string }> }>;
+          };
         };
         expect(body.templateKey).toBe("tpl-1");
+        expect(body.templateSetup).toEqual({
+          version: 1,
+          templates: [
+            {
+              templateKey: "tpl-1",
+              keyword: null,
+              fixedSlots: [{ slotId: 1, wordId: "777", word: "АББА", imageId: null }],
+            },
+          ],
+        });
         expect(body.templates).toEqual([
           {
             key: "tpl-1",
@@ -167,6 +181,16 @@ describe("/api/scanwords/fill/regenerate-template", () => {
       makeReq("POST", "http://localhost/api/scanwords/fill/regenerate-template", {
         jobId: "123",
         templateKey: "tpl-1",
+        templateSetup: {
+          version: 1,
+          templates: [
+            {
+              templateKey: "tpl-1",
+              keyword: null,
+              fixedSlots: [{ slotId: 1, wordId: "777", word: "АББА", imageId: null }],
+            },
+          ],
+        },
       }),
       makeCtx({}),
     );

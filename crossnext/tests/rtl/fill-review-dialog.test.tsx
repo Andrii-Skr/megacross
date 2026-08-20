@@ -421,6 +421,8 @@ describe("FillReviewDialog", () => {
     const payload = makeReviewPayload();
     const firstSlot = payload.templates[0]?.slots[0];
     if (!firstSlot) throw new Error("Missing review slot fixture");
+    firstSlot.definitionOptions = [{ opredId: "101", text: "Кот", difficulty: 3 }];
+    firstSlot.opredId = "101";
     firstSlot.isPhotoDefinition = true;
     firstSlot.photoAreaBounds = { minRow: 0, minCol: 0, maxRow: 0, maxCol: 1 };
     firstSlot.availableImages = [
@@ -462,6 +464,7 @@ describe("FillReviewDialog", () => {
     expect(screen.getByRole("button", { name: "new" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "addDefinition" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "editDefinition" })).toBeInTheDocument();
+    expect(screen.getByText("difficultyFilterLabel 3")).toBeInTheDocument();
     expect(proofreadingTab.parentElement?.parentElement).toHaveClass("sticky", "-top-6");
     expect(screen.getByText("word").closest("table")).toHaveClass("sticky", "top-6");
 

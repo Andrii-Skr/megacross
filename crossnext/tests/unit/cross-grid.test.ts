@@ -120,4 +120,28 @@ describe("cross/grid", () => {
     expect(classicDetailed.slots).toHaveLength(63);
     expect(scanSlots(classic)).toHaveLength(63);
   });
+
+  it("treats direction code 0x3d as a dual down-and-right start", () => {
+    const grid = parseFshBytes(
+      buildFshBytes(
+        ["↘**", "*#*", "***"],
+        [
+          [0x3d, 0x01, 0x01],
+          [0x01, 0x02, 0x01],
+          [0x01, 0x01, 0x01],
+        ],
+      ),
+    );
+
+    expect(grid.data[0]?.[0]).toBe("↘");
+
+    const detailed = scanSlotsDetailed(grid);
+    expect(detailed.slots).toHaveLength(2);
+    expect(detailed.starts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ r: 0, c: 0, dir: "right" }),
+        expect.objectContaining({ r: 0, c: 0, dir: "down" }),
+      ]),
+    );
+  });
 });

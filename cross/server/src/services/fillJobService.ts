@@ -216,6 +216,7 @@ type FinalizePayload = {
 type RegenerateTemplatePayload = {
   templateKey?: unknown;
   templates?: ReviewTemplateOverrideInput[] | null;
+  templateSetup?: unknown;
 };
 
 type ParsedFinalizeSvgTypography = {
@@ -2630,7 +2631,14 @@ export async function regenerateFillJobTemplate(jobId: bigint, payloadRaw: unkno
   const templateKey = typeof payload.templateKey === "string" ? payload.templateKey.trim() : "";
   if (!templateKey) throw new Error("templateKey is required");
 
-  const options = parseFillJobOptions(row.options);
+  const storedOptions = parseFillJobOptions(row.options);
+  const options: FillJobOptions = {
+    ...storedOptions,
+    templateSetup:
+      payload.templateSetup === undefined
+        ? storedOptions.templateSetup
+        : parseTemplateSetupPayload(payload.templateSetup),
+  };
   const context = await loadFillExecutionContext(row.issueId, options);
   const templatesState =
     parseTemplatesPayload(row.templates) ??

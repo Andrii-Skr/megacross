@@ -12,9 +12,30 @@ import { prisma } from "@/lib/db";
 import { getNumericUserId } from "@/lib/user";
 import { apiRoute } from "@/utils/appRoute";
 
+const templateSetupSchema = z
+  .object({
+    version: z.literal(1),
+    templates: z.array(
+      z.object({
+        templateKey: z.string().min(1).max(128),
+        keyword: z.string().nullable(),
+        fixedSlots: z.array(
+          z.object({
+            slotId: z.number().int().nonnegative(),
+            wordId: z.string().min(1),
+            word: z.string().min(1),
+            imageId: z.string().nullable().optional(),
+          }),
+        ),
+      }),
+    ),
+  })
+  .nullable();
+
 const schema = z.object({
   jobId: z.string().min(1),
   templateKey: z.string().min(1).max(128),
+  templateSetup: templateSetupSchema.optional(),
 });
 
 type Body = z.infer<typeof schema>;
@@ -216,6 +237,7 @@ export const POST = apiRoute<Body>(
           body: JSON.stringify({
             templateKey: body.templateKey,
             templates: editableTemplates,
+            templateSetup: body.templateSetup,
           }),
           cache: "no-store",
           signal: controller.signal,

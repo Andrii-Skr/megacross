@@ -275,6 +275,20 @@ describe("useScanwordFill", () => {
       }
       if (url === "/api/scanwords/fill/regenerate-template") {
         expect(init?.method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          jobId: "303",
+          templateKey: "tpl-1",
+          templateSetup: {
+            version: 1,
+            templates: [
+              {
+                templateKey: "tpl-1",
+                keyword: null,
+                fixedSlots: [{ slotId: 1, wordId: "44", word: "АББА" }],
+              },
+            ],
+          },
+        });
         return jsonResponse({
           id: "303",
           issueId: "1",
@@ -302,7 +316,16 @@ describe("useScanwordFill", () => {
         selectedTemplateId: 7,
         filesSignature: "files",
         crossApiBase: "http://cross",
-        templateSetup: null,
+        templateSetup: {
+          version: 1,
+          templates: [
+            {
+              templateKey: "tpl-1",
+              keyword: null,
+              fixedSlots: [{ slotId: 1, wordId: "44", word: "АББА" }],
+            },
+          ],
+        },
         t: ((key: string) => key) as never,
       }),
     );

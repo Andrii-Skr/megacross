@@ -1573,6 +1573,9 @@ export function FillReviewDialog({
       selectedDefIndex >= 0
         ? selectedDefIndex
         : filteredDefinitionOptions.findIndex((option) => option.text === row.definition);
+    const selectedDefinitionDifficulty = normalizeDefinitionDifficulty(
+      selectedDefIndexByText >= 0 ? filteredDefinitionOptions[selectedDefIndexByText]?.difficulty : null,
+    );
     const intersectionIndexes = new Set(slot.intersections.map((item) => item.index));
     const fixedLetters = buildFixedLetters(template, slot);
     const templateLang = toSupportedLanguage(template.language);
@@ -1858,11 +1861,16 @@ export function FillReviewDialog({
                   ) : (
                     <span
                       className={cn(
-                        "block max-h-14 w-full overflow-y-auto whitespace-normal pr-1 text-left leading-snug",
+                        "flex max-h-14 w-full min-w-0 items-center gap-2 overflow-y-auto whitespace-normal pr-1 text-left leading-snug",
                         row.definition ? "" : "text-muted-foreground",
                       )}
                     >
-                      {row.definition || t("definition")}
+                      <span className="min-w-0 flex-1">{row.definition || t("definition")}</span>
+                      {compact && selectedDefinitionDifficulty != null && (
+                        <Badge variant="outline" size="sm" className="shrink-0 px-1.5 text-[10px] font-normal">
+                          {`${t("difficultyFilterLabel")} ${selectedDefinitionDifficulty}`}
+                        </Badge>
+                      )}
                     </span>
                   )}
                 </SelectTrigger>
