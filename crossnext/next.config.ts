@@ -35,6 +35,15 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: workspaceRoot,
   // Produce a minimal standalone server output for Docker runner stage
   output: "standalone",
+  // Sharp loads its platform binary and libvips through optional @img packages.
+  // Their native files are not always discovered by standalone output tracing.
+  outputFileTracingIncludes: {
+    "/*": [
+      "./node_modules/.pnpm/@img+sharp-*/node_modules/@img/sharp-*/**/*",
+      "./node_modules/.pnpm/@img+sharp-libvips-*/node_modules/@img/sharp-libvips-*/**/*",
+    ],
+  },
+  serverExternalPackages: ["sharp"],
   headers: async () => [
     {
       source: "/(.*)",

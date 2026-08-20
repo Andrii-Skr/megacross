@@ -272,6 +272,31 @@ function buildStartsByCell(startPositions: FillReviewStartPosition[]): Map<strin
   return map;
 }
 
+export function buildPhotoSlotByCell(
+  template: TemplateSetupPreviewTemplate | null,
+): Map<string, TemplateSetupPreviewTemplate["slots"][number]> {
+  const map = new Map<string, TemplateSetupPreviewTemplate["slots"][number]>();
+  if (!template) return map;
+
+  for (const slot of template.slots) {
+    const bounds = slot.isPhotoDefinition ? slot.photoAreaBounds : null;
+    if (!bounds) continue;
+
+    const minRow = Math.max(0, bounds.minRow);
+    const minCol = Math.max(0, bounds.minCol);
+    const maxRow = Math.min(template.grid.rows - 1, bounds.maxRow);
+    const maxCol = Math.min(template.grid.cols - 1, bounds.maxCol);
+    for (let row = minRow; row <= maxRow; row += 1) {
+      for (let col = minCol; col <= maxCol; col += 1) {
+        const key = `${row},${col}`;
+        if (!map.has(key)) map.set(key, slot);
+      }
+    }
+  }
+
+  return map;
+}
+
 function startLabel(start: FillReviewStartPosition) {
   return `${start.number}. ${start.dir === "right" ? "→" : "↓"}`;
 }
@@ -298,6 +323,7 @@ export function TemplateSetupPanel({
   const t = useTranslations();
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
   const [editingSlotId, setEditingSlotId] = useState<number | null>(null);
+  const [hoveredPhotoSlotId, setHoveredPhotoSlotId] = useState<number | null>(null);
   const [pendingStarts, setPendingStarts] = useState<FillReviewStartPosition[] | null>(null);
   const [modalWord, setModalWord] = useState<string[]>([]);
   const [modalCandidates, setModalCandidates] = useState<DictionaryWordCandidate[]>([]);
@@ -376,6 +402,7 @@ export function TemplateSetupPanel({
   }, [selectedTemplate]);
 
   const startsByCell = useMemo(() => buildStartsByCell(selectedTemplate?.startPositions ?? []), [selectedTemplate]);
+  const photoSlotByCell = useMemo(() => buildPhotoSlotByCell(selectedTemplate), [selectedTemplate]);
   const slotById = useMemo(
     () => new Map((selectedTemplate?.slots ?? []).map((slot) => [slot.slotId, slot])),
     [selectedTemplate],
@@ -1375,10 +1402,12 @@ export function TemplateSetupPanel({
                               const previewCell = previewCellByKey.get(cellKey);
                               const previewArrow = previewArrowByKey.get(cellKey);
                               const starts = startsByCell.get(cellKey) ?? [];
+                              const photoSlot = photoSlotByCell.get(cellKey) ?? null;
                               const singleStart = starts.length === 1 ? (starts[0] ?? null) : null;
                               const singleSlot = singleStart ? (slotById.get(singleStart.slotId) ?? null) : null;
                               const isFixed = fixedCellSet.has(cellKey);
                               const fixedLetter = fixedLetterByCell.get(cellKey) ?? "";
+                              const isPhotoAreaHighlighted = photoSlot?.slotId === hoveredPhotoSlotId;
                               const visibleLetter =
                                 fixedLetter || (cell === "*" || cell === "#" || previewArrow ? "" : cell);
                               const visibleLetterIsFixed = fixedLetter.length > 0;
@@ -1386,7 +1415,7 @@ export function TemplateSetupPanel({
                                 <div
                                   key={cellKey}
                                   className={cn(
-                                    "relative flex aspect-square min-h-6 min-w-6 items-center justify-center rounded-[2px] border text-[10px]",
+                                    "relative flex aspect-square min-h-6 min-w-6 items-center justify-center rounded-[2px] border text-[10px] transition-colors",
                                     cell === "#"
                                       ? "border-slate-500 bg-slate-700 text-slate-50"
                                       : cell === "*"
@@ -1394,8 +1423,12 @@ export function TemplateSetupPanel({
                                         : "border-emerald-200 bg-emerald-50 text-emerald-900",
                                     previewCell?.isIntersection ? "ring-1 ring-amber-400/60" : "",
                                     isFixed ? "bg-sky-100 text-sky-900 ring-1 ring-sky-500/60" : "",
+                                    isPhotoAreaHighlighted
+                                      ? "border-sky-400 bg-sky-100 text-sky-900 ring-1 ring-inset ring-sky-500/70 dark:bg-sky-950/50"
+                                      : "",
                                   )}
                                   title={`${rowIndex + 1}:${colIndex + 1}`}
+                                  data-photo-area-highlighted={isPhotoAreaHighlighted ? "true" : undefined}
                                 >
                                   {previewArrow?.markup ? (
                                     <Image
@@ -1419,12 +1452,44 @@ export function TemplateSetupPanel({
                                             : `Открыть слот ${startLabel(singleStart)}`
                                           : "Выбрать слот из этой клетки"
                                       }
-                                      onClick={() => openStartCell(starts)}
+                                      onClick={() => {
+                                        setHoveredPhotoSlotId(null);
+                                        openStartCell(starts);
+                                      }}
+                                      onMouseEnter={
+                                        photoSlot ? () => setHoveredPhotoSlotId(photoSlot.slotId) : undefined
+                                      }
+                                      onMouseLeave={photoSlot ? () => setHoveredPhotoSlotId(null) : undefined}
+                                      onFocus={photoSlot ? () => setHoveredPhotoSlotId(photoSlot.slotId) : undefined}
+                                      onBlur={photoSlot ? () => setHoveredPhotoSlotId(null) : undefined}
                                     >
                                       <span className="sr-only">
                                         {singleStart
                                           ? `Открыть ${singleSlot ? slotLabel(singleSlot) : startLabel(singleStart)}`
                                           : "Выбрать слот из клетки"}
+                                      </span>
+                                    </button>
+                                  )}
+                                  {starts.length === 0 && photoSlot && (
+                                    <button
+                                      type="button"
+                                      className="absolute inset-0 z-[3] cursor-pointer rounded-[2px] bg-sky-400/0 transition-colors hover:bg-sky-400/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/70"
+                                      title={t("scanwordsTemplateSetupOpenPhotoArea", {
+                                        slot: slotLabel(photoSlot),
+                                      })}
+                                      onClick={() => {
+                                        setHoveredPhotoSlotId(null);
+                                        openSlotEditor(photoSlot.slotId);
+                                      }}
+                                      onMouseEnter={() => setHoveredPhotoSlotId(photoSlot.slotId)}
+                                      onMouseLeave={() => setHoveredPhotoSlotId(null)}
+                                      onFocus={() => setHoveredPhotoSlotId(photoSlot.slotId)}
+                                      onBlur={() => setHoveredPhotoSlotId(null)}
+                                    >
+                                      <span className="sr-only">
+                                        {t("scanwordsTemplateSetupOpenPhotoArea", {
+                                          slot: slotLabel(photoSlot),
+                                        })}
                                       </span>
                                     </button>
                                   )}

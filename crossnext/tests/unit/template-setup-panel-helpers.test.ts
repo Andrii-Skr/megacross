@@ -3,6 +3,7 @@ import type { TemplateSetupPreviewTemplate, TemplateSetupTemplate } from "@/comp
 import {
   applyLockedLettersToWord,
   buildLockedSlotLetters,
+  buildPhotoSlotByCell,
   buildReservedWordIds,
   wordMatchesLockedLetters,
 } from "@/components/scanwords/workspace/TemplateSetupPanel";
@@ -93,6 +94,17 @@ function makeTemplateMap(): Map<string, TemplateSetupTemplate> {
 }
 
 describe("template setup helpers", () => {
+  it("maps every cell inside the photo bounds to its photo slot", () => {
+    const template = makeTemplate();
+    const photoSlotByCell = buildPhotoSlotByCell(template);
+
+    expect(photoSlotByCell.size).toBe(9);
+    expect(photoSlotByCell.get("0,0")?.slotId).toBe(4);
+    expect(photoSlotByCell.get("1,1")?.slotId).toBe(4);
+    expect(photoSlotByCell.get("2,2")?.slotId).toBe(4);
+    expect(photoSlotByCell.has("3,3")).toBe(false);
+  });
+
   it("locks letters that come from already fixed intersecting slots", () => {
     const template = makeTemplate();
     const fixedSlotMap = new Map([[1, { slotId: 1, wordId: "word-1", word: "РАЗБЕГ" }]]);

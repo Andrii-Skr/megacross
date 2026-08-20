@@ -381,6 +381,7 @@
   "scanwordsImageStorageNotReady": "Image storage is not ready. Apply the database migrations.",
   "scanwordsReviewImageDeleteError": "Failed to delete image",
   "scanwordsTemplateSetupStep": "Setup",
+  "scanwordsTemplateSetupOpenPhotoArea": "Open photo slot {slot}",
   "scanwordsTemplateSetupImageSectionTitle": "Word images",
   "scanwordsTemplateSetupImageHint": "Images are saved on the selected dictionary word and will be available later during review.",
   "scanwordsTemplateSetupImageRequirements": "Photo area: {width}×{height} cells. Aspect-ratio tolerance: ±{tolerance}%.",

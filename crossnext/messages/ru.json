@@ -381,6 +381,7 @@
   "scanwordsImageStorageNotReady": "Хранилище картинок не готово. Примените миграции базы данных.",
   "scanwordsReviewImageDeleteError": "Не удалось удалить картинку",
   "scanwordsTemplateSetupStep": "Настройка",
+  "scanwordsTemplateSetupOpenPhotoArea": "Открыть фотослот {slot}",
   "scanwordsTemplateSetupImageSectionTitle": "Картинки слова",
   "scanwordsTemplateSetupImageHint": "Картинки сохраняются у выбранного словарного слова и потом будут доступны на этапе ревью.",
   "scanwordsTemplateSetupImageRequirements": "Область картинки: {width}×{height} клетки. Допуск пропорций: ±{tolerance}%.",

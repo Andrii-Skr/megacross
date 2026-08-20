@@ -118,6 +118,45 @@ function makeTemplate(): TemplateSetupPreviewTemplate {
 }
 
 describe("TemplateSetupPanel", () => {
+  it("opens the photo slot from its image area while keeping start-cell clicks unchanged", () => {
+    const template = makeTemplate();
+
+    renderPanel({
+      active: true,
+      loading: false,
+      error: null,
+      dictionaryFilter: null,
+      dictionaryLanguage: "ru",
+      dictionaryReady: false,
+      templates: [template],
+      templateMap: new Map(),
+      onKeywordChange: vi.fn(),
+      onFixedSlotChange: vi.fn(),
+      onFixedSlotClear: vi.fn(),
+    });
+
+    const startCell = screen.getByTitle("1:1");
+    expect(within(startCell).getByRole("button", { name: /Открыть 1\. → 6/i })).toBeInTheDocument();
+    expect(
+      within(startCell).queryByRole("button", { name: "scanwordsTemplateSetupOpenPhotoArea" }),
+    ).not.toBeInTheDocument();
+
+    const photoAreaCell = screen.getByTitle("2:2");
+    const photoAreaButton = within(photoAreaCell).getByRole("button", {
+      name: "scanwordsTemplateSetupOpenPhotoArea",
+    });
+    fireEvent.mouseEnter(photoAreaButton);
+    expect(document.querySelectorAll('[data-photo-area-highlighted="true"]')).toHaveLength(9);
+    expect(startCell).toHaveAttribute("data-photo-area-highlighted", "true");
+
+    fireEvent.mouseLeave(photoAreaButton);
+    expect(document.querySelectorAll('[data-photo-area-highlighted="true"]')).toHaveLength(0);
+
+    fireEvent.click(photoAreaButton);
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("Слот 4. ↓ 6");
+  });
+
   it("keeps the current slot word visible while editing that same slot", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
