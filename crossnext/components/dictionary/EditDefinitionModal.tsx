@@ -4,7 +4,6 @@ import { useTranslations } from "next-intl";
 import { useEffect, useId, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EndDateSelect } from "@/components/ui/end-date-select";
@@ -14,6 +13,7 @@ import { getActionErrorMeta } from "@/lib/action-error";
 import { toEndOfDayUtcIso } from "@/lib/date";
 import { fetcher } from "@/lib/fetcher";
 import { useDifficulties } from "@/lib/useDifficulties";
+import { z } from "@/lib/zodClient";
 
 export function EditDefinitionModal({
   open,

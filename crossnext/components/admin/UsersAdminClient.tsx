@@ -8,7 +8,6 @@ import { useFormatter, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useForm, useFormContext } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getActionErrorMeta } from "@/lib/action-error";
 import { useClientTimeZone } from "@/lib/date";
+import { z } from "@/lib/zodClient";
 import { RHFProvider } from "@/providers/RHFProvider";
 
 type AdminUser = {

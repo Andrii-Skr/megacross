@@ -6,7 +6,6 @@ import { useFormatter, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +20,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { getActionErrorMeta } from "@/lib/action-error";
 import { fetcher } from "@/lib/fetcher";
+import { z } from "@/lib/zodClient";
 import type { DictionaryTemplateItem, DictionaryTemplatesResponse } from "@/types/dictionary-templates";
 
 type AdminTemplateItem = DictionaryTemplateItem & {

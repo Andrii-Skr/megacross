@@ -7,7 +7,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useFieldArray, useForm } from "react-hook-form";
 import { Rnd } from "react-rnd";
 import { toast } from "sonner";
-import { z } from "zod";
 import { DefinitionCarousel } from "@/components/admin/pending/DefinitionCarousel";
 import {
   AddDefHeader,
@@ -27,6 +26,7 @@ import { compareWithPrepared, prepareExisting } from "@/lib/similarityClient";
 import { SIMILARITY_CONFIG } from "@/lib/similarityConfig";
 import { useDifficulties } from "@/lib/useDifficulties";
 import { useGenerateDefinition } from "@/lib/useGenerateDefinition";
+import { z } from "@/lib/zodClient";
 import { useDictionaryStore } from "@/store/dictionary";
 import { usePendingStore } from "@/store/pending";
 import { useUiStore } from "@/store/ui";

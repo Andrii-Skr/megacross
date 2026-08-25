@@ -4,12 +4,12 @@ import { useTranslations } from "next-intl";
 import { useId } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { getActionErrorMeta } from "@/lib/action-error";
 import { fetcher } from "@/lib/fetcher";
+import { z } from "@/lib/zodClient";
 
 export function EditWordModal({
   open,

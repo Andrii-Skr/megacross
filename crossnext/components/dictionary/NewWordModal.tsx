@@ -4,7 +4,6 @@ import { useTranslations } from "next-intl";
 import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import { DefinitionCarousel } from "@/components/admin/pending/DefinitionCarousel";
 import { DefinitionSection } from "@/components/dictionary/add-definition/DefinitionSection";
 import { MetaSection } from "@/components/dictionary/add-definition/MetaSection";
@@ -17,6 +16,7 @@ import { toEndOfDayUtcIso } from "@/lib/date";
 import { fetcher } from "@/lib/fetcher";
 import { useDifficulties } from "@/lib/useDifficulties";
 import { cn } from "@/lib/utils";
+import { z } from "@/lib/zodClient";
 import { useDictionaryStore } from "@/store/dictionary";
 import { usePendingStore } from "@/store/pending";
 

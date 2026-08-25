@@ -6,7 +6,6 @@ import { useTranslations } from "next-intl";
 import { useMemo, useState, useTransition } from "react";
 import { useFormContext } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import { SelectionToolbar } from "@/components/admin/SelectionToolbar";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { z } from "@/lib/zodClient";
 import { RHFProvider } from "@/providers/RHFProvider";
 
 type DeletedListItem = { id: string };

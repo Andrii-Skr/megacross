@@ -6,7 +6,6 @@ import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 import {
   createEditionAction,
   createIssueAction,
@@ -21,6 +20,7 @@ import { ScanwordsDialogs } from "@/components/scanwords/ScanwordsDialogs";
 import { ScanwordsLists } from "@/components/scanwords/ScanwordsLists";
 import { ScanwordsWorkspace } from "@/components/scanwords/ScanwordsWorkspace";
 import { getActionErrorMeta } from "@/lib/action-error";
+import { z } from "@/lib/zodClient";
 import type { ContextTarget, DeleteTarget, Edition } from "./types";
 
 export function ScanwordsClient({ editions }: { editions: Edition[] }) {
