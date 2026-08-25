@@ -33,7 +33,7 @@ mkdir -p "$SAMPLES_DIR" "$OUTPUT_DIR"
 
 if [ "${MIGRATE_ON_START:-}" = "1" ] || [ "${MIGRATE_ON_START:-}" = "true" ] || [ "${MIGRATE_ON_START:-}" = "TRUE" ]; then
   log "Running prisma migrate deploy"
-  pnpm prisma migrate deploy
+  /app/node_modules/.bin/prisma migrate deploy
 fi
 
 log "Starting cross service: $*"

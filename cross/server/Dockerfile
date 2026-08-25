@@ -44,4 +44,4 @@ RUN DATABASE_URL=postgresql://prisma:prisma@localhost:5432/prisma?schema=public 
 USER node
 EXPOSE 3001
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["pnpm","start"]
+CMD ["node","node_modules/tsx/dist/cli.mjs","src/index.ts"]
