@@ -2410,14 +2410,15 @@ export function FillReviewDialog({
                             <th className="relative w-16 min-w-16 px-0 py-1 text-center font-medium">
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <Checkbox
-                                    id="scanwords-review-group-by-template"
-                                    className="absolute top-1/2 left-0 -translate-y-1/2"
-                                    checked={proofreadingGroupByTemplate}
-                                    onCheckedChange={(checked) => setProofreadingGroupByTemplate(checked === true)}
-                                    disabled={reviewLoading || finalizing || submitting}
-                                    aria-label={t("scanwordsReviewGroupByTemplateAria")}
-                                  />
+                                  <span className="absolute top-1/2 left-0 inline-flex -translate-y-1/2">
+                                    <Checkbox
+                                      id="scanwords-review-group-by-template"
+                                      checked={proofreadingGroupByTemplate}
+                                      onCheckedChange={(checked) => setProofreadingGroupByTemplate(checked === true)}
+                                      disabled={reviewLoading || finalizing || submitting}
+                                      aria-label={t("scanwordsReviewGroupByTemplateAria")}
+                                    />
+                                  </span>
                                 </TooltipTrigger>
                                 <TooltipContent>{t("scanwordsReviewGroupByTemplate")}</TooltipContent>
                               </Tooltip>

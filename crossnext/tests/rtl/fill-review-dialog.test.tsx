@@ -560,7 +560,10 @@ describe("FillReviewDialog", () => {
     expect(screen.getByText("scanwordsReviewTemplateNumber")).toBeInTheDocument();
     expect(renderedWord("АИР").closest("tr")?.textContent).toContain("8");
 
-    await userEvent.click(screen.getByRole("checkbox", { name: "scanwordsReviewGroupByTemplateAria" }));
+    const groupByTemplateCheckbox = screen.getByRole("checkbox", { name: "scanwordsReviewGroupByTemplateAria" });
+    await userEvent.click(groupByTemplateCheckbox);
+    expect(groupByTemplateCheckbox).toHaveAttribute("data-state", "checked");
+    expect(groupByTemplateCheckbox.querySelector("svg")).toBeInTheDocument();
     await waitFor(() => expect(renderedWord("БОР")).toBeInTheDocument());
     expect(renderedWord("БОР").closest("tr")?.textContent).toContain("2");
 
