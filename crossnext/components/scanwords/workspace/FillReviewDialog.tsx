@@ -439,6 +439,7 @@ export function FillReviewDialog({
   const [reviewTab, setReviewTab] = useState<ReviewListTab>("byTemplate");
   const [allRowsSortField, setAllRowsSortField] = useState<ReviewListSortField>("word");
   const [allRowsSortDirection, setAllRowsSortDirection] = useState<ReviewListSortDirection>("asc");
+  const [proofreadingGroupByTemplate, setProofreadingGroupByTemplate] = useState(false);
   const [allRowsSearchQuery, setAllRowsSearchQuery] = useState("");
   const [allRowsShowDuplicatesOnly, setAllRowsShowDuplicatesOnly] = useState(false);
   const [allRowsShowErrorsOnly, setAllRowsShowErrorsOnly] = useState(false);
@@ -994,7 +995,13 @@ export function FillReviewDialog({
     }
 
     const direction = allRowsSortDirection === "asc" ? 1 : -1;
+    const groupByTemplate = reviewTab === "proofreading" && proofreadingGroupByTemplate;
     rows.sort((a, b) => {
+      if (groupByTemplate) {
+        const templateNumberCmp = resolveTemplatePageNumber(a.template) - resolveTemplatePageNumber(b.template);
+        if (templateNumberCmp !== 0) return templateNumberCmp;
+      }
+
       const aWord = normalizeWordInput(a.row.word);
       const bWord = normalizeWordInput(b.row.word);
       const aDefinition = (a.row.definition ?? "").trim();
@@ -1015,7 +1022,7 @@ export function FillReviewDialog({
     });
 
     return rows;
-  }, [allRowsSortDirection, allRowsSortField, slotsByTemplate, templates]);
+  }, [allRowsSortDirection, allRowsSortField, proofreadingGroupByTemplate, reviewTab, slotsByTemplate, templates]);
   const allRowsDuplicateIndex = useMemo(() => {
     const wordCounts = new Map<string, number>();
     const definitionCounts = new Map<string, number>();
@@ -1152,7 +1159,8 @@ export function FillReviewDialog({
     let rafId = 0;
     let attempts = 0;
     const resolveScrollParent = () => {
-      const nextParent = document.getElementById("fill-review-dialog-content");
+      const scrollParentId = reviewTab === "proofreading" ? "fill-review-dialog-scroll" : "fill-review-dialog-content";
+      const nextParent = document.getElementById(scrollParentId);
       if (nextParent) {
         setDialogScrollParent(nextParent);
         return;
@@ -1168,7 +1176,7 @@ export function FillReviewDialog({
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [open]);
+  }, [open, reviewTab]);
 
   const requestCandidates = useCallback(
     async (template: FillReviewTemplate, slot: FillReviewSlot) => {
@@ -1585,13 +1593,47 @@ export function FillReviewDialog({
     const imageError = imageErrorByRowKey[rowKey] ?? null;
     const imageBusy = imageBusyRowKey === rowKey;
     const fileInputId = `${rowKey}-image-upload`;
+    const compactBookmarkControl = compact ? (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className={cn(
+              "size-6 shrink-0",
+              row.bookmarked ? "text-amber-600 hover:text-amber-700 dark:text-amber-400" : "text-muted-foreground",
+            )}
+            onClick={() =>
+              updateSlot(template.key, slot.slotId, (prev) => ({
+                ...prev,
+                bookmarked: !prev.bookmarked,
+              }))
+            }
+            aria-label={row.bookmarked ? t("scanwordsReviewRemoveBookmark") : t("scanwordsReviewAddBookmark")}
+            aria-pressed={row.bookmarked}
+          >
+            <Bookmark className={cn("size-3.5", row.bookmarked && "fill-current")} aria-hidden />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {row.bookmarked ? t("scanwordsReviewRemoveBookmark") : t("scanwordsReviewAddBookmark")}
+        </TooltipContent>
+      </Tooltip>
+    ) : null;
 
     return (
       <tr key={rowKey} className={rowHighlightClass}>
+        {compact && <td className="w-10 min-w-10 align-top py-0.5 pl-1 pr-0">{compactBookmarkControl}</td>}
+        {compact && (
+          <td className="w-16 min-w-16 align-top px-1 py-0.5 text-center text-[11px] font-medium tabular-nums text-muted-foreground">
+            {resolveTemplatePageNumber(template)}
+          </td>
+        )}
         <td
           className={cn(
             "align-top px-2",
-            compact ? "w-[260px] min-w-[260px] py-1" : "py-2",
+            compact ? "w-[220px] min-w-[220px] py-0.5" : "py-2",
             showTemplateName && "w-[280px] min-w-[280px]",
           )}
         >
@@ -1620,37 +1662,7 @@ export function FillReviewDialog({
                 #{slot.slotId} · {slot.dir} · {slot.r}:{slot.c} · {t("scanwordsReviewLength", { count: slot.len })}
               </div>
             )}
-            <div className="flex items-center gap-2">
-              {compact && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className={cn(
-                        "size-7 shrink-0",
-                        row.bookmarked
-                          ? "text-amber-600 hover:text-amber-700 dark:text-amber-400"
-                          : "text-muted-foreground",
-                      )}
-                      onClick={() =>
-                        updateSlot(template.key, slot.slotId, (prev) => ({
-                          ...prev,
-                          bookmarked: !prev.bookmarked,
-                        }))
-                      }
-                      aria-label={row.bookmarked ? t("scanwordsReviewRemoveBookmark") : t("scanwordsReviewAddBookmark")}
-                      aria-pressed={row.bookmarked}
-                    >
-                      <Bookmark className={cn("size-4", row.bookmarked && "fill-current")} aria-hidden />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {row.bookmarked ? t("scanwordsReviewRemoveBookmark") : t("scanwordsReviewAddBookmark")}
-                  </TooltipContent>
-                </Tooltip>
-              )}
+            <div className={cn("flex items-center gap-2", compact && "gap-1.5")}>
               <Select
                 value={selectedWordValue ?? ""}
                 disabled={isCandidateLoading || finalizing || submitting}
@@ -1686,9 +1698,10 @@ export function FillReviewDialog({
                 }}
               >
                 <SelectTrigger
+                  size={compact ? "xs" : "default"}
                   className={cn(
                     "w-full px-2 text-sm",
-                    compact ? "h-7" : "h-8",
+                    compact ? "!h-6 !px-2 !py-0 text-[13px]" : "h-8",
                     rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
                   )}
                 >
@@ -1698,7 +1711,9 @@ export function FillReviewDialog({
                       <span>{t("loading")}</span>
                     </span>
                   ) : selectedWordOption ? (
-                    <span className="inline-flex font-sans text-[12px] tracking-[0.12em]">
+                    <span
+                      className={cn("inline-flex font-sans text-[12px] tracking-[0.12em]", compact && "text-[11px]")}
+                    >
                       {Array.from({ length: slot.len }, (_, index) => {
                         const letter = selectedWordOption.word[index] ?? ".";
                         const cell = slot.cells[index];
@@ -1736,7 +1751,9 @@ export function FillReviewDialog({
                       value={option.value}
                       disabled={!wordMatchesFixedLetters(option.word, fixedLetters)}
                     >
-                      <span className="inline-flex font-sans text-[12px] tracking-[0.12em]">
+                      <span
+                        className={cn("inline-flex font-sans text-[12px] tracking-[0.12em]", compact && "text-[11px]")}
+                      >
                         {Array.from({ length: slot.len }, (_, index) => {
                           const letter = option.word[index] ?? ".";
                           const cell = slot.cells[index];
@@ -1765,7 +1782,7 @@ export function FillReviewDialog({
                     type="button"
                     size="icon"
                     variant="outline"
-                    className={cn("shrink-0", compact ? "size-7" : "size-8")}
+                    className={cn("shrink-0", compact ? "size-6" : "size-8")}
                     onClick={() => {
                       const mask = buildMask(template, slot);
                       const fixedLetters = Array.from(mask)
@@ -1784,7 +1801,7 @@ export function FillReviewDialog({
                     }}
                     aria-label={t("new")}
                   >
-                    <CirclePlus className="size-4" aria-hidden />
+                    <CirclePlus className={cn(compact ? "size-3.5" : "size-4")} aria-hidden />
                     <span className="sr-only">{t("new")}</span>
                   </Button>
                 </TooltipTrigger>
@@ -1793,7 +1810,7 @@ export function FillReviewDialog({
             </div>
           </div>
         </td>
-        <td className={cn("align-top px-2", compact ? "py-1" : "py-2")}>
+        <td className={cn("align-top px-2", compact ? "py-0.5" : "py-2")}>
           <div className={cn("grid", compact ? "gap-0" : "gap-2")}>
             {showTemplateName && !compact && (
               <div aria-hidden className="invisible flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -1829,7 +1846,7 @@ export function FillReviewDialog({
                 )}
               </div>
             )}
-            <div className="flex items-center gap-2">
+            <div className={cn("flex items-center gap-2", compact && "gap-1.5")}>
               <Select
                 value={selectedDefIndexByText >= 0 ? String(selectedDefIndexByText) : ""}
                 disabled={isCandidateLoading || finalizing || submitting}
@@ -1847,9 +1864,10 @@ export function FillReviewDialog({
                 }}
               >
                 <SelectTrigger
+                  size={compact ? "xs" : "default"}
                   className={cn(
                     "h-auto w-full items-start px-2 text-sm",
-                    compact ? "min-h-7 py-0.5" : "min-h-8 py-1",
+                    compact ? "!h-6 !min-h-6 !px-2 !py-0 text-[13px]" : "min-h-8 py-1",
                     rowHasError && "border-destructive/60 ring-1 ring-destructive/30",
                   )}
                 >
@@ -1862,12 +1880,13 @@ export function FillReviewDialog({
                     <span
                       className={cn(
                         "flex max-h-14 w-full min-w-0 items-center gap-2 overflow-y-auto whitespace-normal pr-1 text-left leading-snug",
+                        compact && "max-h-10 gap-1.5 leading-tight",
                         row.definition ? "" : "text-muted-foreground",
                       )}
                     >
                       <span className="min-w-0 flex-1">{row.definition || t("definition")}</span>
                       {compact && selectedDefinitionDifficulty != null && (
-                        <Badge variant="outline" size="sm" className="shrink-0 px-1.5 text-[10px] font-normal">
+                        <Badge variant="outline" size="sm" className="shrink-0 px-1 text-[9px] font-normal">
                           {`${t("difficultyFilterLabel")} ${selectedDefinitionDifficulty}`}
                         </Badge>
                       )}
@@ -1921,7 +1940,7 @@ export function FillReviewDialog({
                     type="button"
                     size="icon"
                     variant="outline"
-                    className={cn("shrink-0", compact ? "size-7" : "size-8")}
+                    className={cn("shrink-0", compact ? "size-6" : "size-8")}
                     onClick={(event) => {
                       if (!row.wordId) return;
                       const buttonRect = event.currentTarget.getBoundingClientRect();
@@ -1946,7 +1965,7 @@ export function FillReviewDialog({
                     disabled={!row.wordId}
                     aria-label={t("addDefinition")}
                   >
-                    <CirclePlus className="size-4" aria-hidden />
+                    <CirclePlus className={cn(compact ? "size-3.5" : "size-4")} aria-hidden />
                     <span className="sr-only">{t("addDefinition")}</span>
                   </Button>
                 </TooltipTrigger>
@@ -1958,7 +1977,7 @@ export function FillReviewDialog({
                     type="button"
                     size="icon"
                     variant="outline"
-                    className={cn("shrink-0", compact ? "size-7" : "size-8")}
+                    className={cn("shrink-0", compact ? "size-6" : "size-8")}
                     onClick={() => {
                       if (!row.opredId || !row.wordId) return;
                       setDefinitionEditTarget({
@@ -1972,7 +1991,7 @@ export function FillReviewDialog({
                     disabled={!row.opredId || !row.wordId}
                     aria-label={t("editDefinition")}
                   >
-                    <SquarePen className="size-4" aria-hidden />
+                    <SquarePen className={cn(compact ? "size-3.5" : "size-4")} aria-hidden />
                     <span className="sr-only">{t("editDefinition")}</span>
                   </Button>
                 </TooltipTrigger>
@@ -2122,19 +2141,28 @@ export function FillReviewDialog({
     <TooltipProvider>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[1240px]"
+          className={cn(
+            "max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[1240px]",
+            reviewTab === "proofreading" &&
+              "h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden p-3 sm:max-w-[1360px]",
+          )}
           aria-describedby={undefined}
           id="fill-review-dialog-content"
         >
-          <DialogHeader>
+          <DialogHeader className={cn(reviewTab === "proofreading" && "gap-0 px-1")}>
             <DialogTitle>{t("scanwordsReviewTitle")}</DialogTitle>
-            <div className="flex items-start justify-between gap-3">
-              <DialogDescription className="flex-1">{t("scanwordsReviewDescription")}</DialogDescription>
-              <div className="shrink-0">{renderFinalizeButton()}</div>
-            </div>
+            {reviewTab !== "proofreading" && (
+              <div className="flex items-start justify-between gap-3">
+                <DialogDescription className="flex-1">{t("scanwordsReviewDescription")}</DialogDescription>
+                <div className="shrink-0">{renderFinalizeButton()}</div>
+              </div>
+            )}
           </DialogHeader>
 
-          <div className="pr-1">
+          <div
+            id="fill-review-dialog-scroll"
+            className={cn("pr-1", reviewTab === "proofreading" && "min-h-0 overflow-y-auto pr-0")}
+          >
             {reviewLoading && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -2143,8 +2171,13 @@ export function FillReviewDialog({
             )}
             {!reviewLoading && !reviewData && <div className="text-sm text-muted-foreground">{t("noData")}</div>}
             {!reviewLoading && reviewData && (
-              <div className="grid gap-3">
-                <div className="sticky -top-6 z-30 -mx-1 flex h-12 flex-nowrap items-center gap-2 border-b bg-background px-1">
+              <div className={cn("grid gap-3", reviewTab === "proofreading" && "gap-2")}>
+                <div
+                  className={cn(
+                    "sticky -top-6 z-30 -mx-1 flex h-12 flex-nowrap items-center gap-2 border-b bg-background px-1",
+                    reviewTab === "proofreading" && "top-0 mx-0 h-10",
+                  )}
+                >
                   <div className="inline-flex shrink-0 items-center rounded-md border p-0.5">
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -2226,7 +2259,7 @@ export function FillReviewDialog({
                         <Checkbox
                           id="scanwords-review-show-duplicates-only"
                           checked={allRowsShowDuplicatesOnly}
-                          onChange={(event) => setAllRowsShowDuplicatesOnly(event.target.checked)}
+                          onCheckedChange={(checked) => setAllRowsShowDuplicatesOnly(checked === true)}
                           disabled={reviewLoading || finalizing || submitting}
                           aria-label={t("scanwordsReviewShowDuplicatesOnlyAria")}
                         />
@@ -2239,7 +2272,7 @@ export function FillReviewDialog({
                         <Checkbox
                           id="scanwords-review-show-errors-only"
                           checked={allRowsShowErrorsOnly}
-                          onChange={(event) => setAllRowsShowErrorsOnly(event.target.checked)}
+                          onCheckedChange={(checked) => setAllRowsShowErrorsOnly(checked === true)}
                           disabled={reviewLoading || finalizing || submitting}
                           aria-label={t("scanwordsReviewShowErrorsOnlyAria")}
                         />
@@ -2253,7 +2286,7 @@ export function FillReviewDialog({
                           <Checkbox
                             id="scanwords-review-show-photo-only"
                             checked={allRowsShowPhotoOnly}
-                            onChange={(event) => setAllRowsShowPhotoOnly(event.target.checked)}
+                            onCheckedChange={(checked) => setAllRowsShowPhotoOnly(checked === true)}
                             disabled={reviewLoading || finalizing || submitting}
                             aria-label={t("scanwordsReviewShowPhotoOnlyAria")}
                           />
@@ -2355,14 +2388,47 @@ export function FillReviewDialog({
 
                 {reviewTab !== "byTemplate" && (
                   <div className="overflow-x-clip rounded border">
-                    <table className="sticky top-6 z-20 w-full bg-background text-xs">
+                    <table
+                      className={cn(
+                        "sticky z-20 w-full bg-background text-xs",
+                        reviewTab === "proofreading" && "table-fixed",
+                        reviewTab === "proofreading" ? "top-10" : "top-6",
+                      )}
+                    >
+                      {reviewTab === "proofreading" && (
+                        <colgroup>
+                          <col className="w-10" />
+                          <col className="w-16" />
+                          <col className="w-[220px]" />
+                          <col />
+                        </colgroup>
+                      )}
                       <thead className="bg-muted/40 text-left">
                         <tr>
+                          {reviewTab === "proofreading" && <th className="w-10 min-w-10 px-1 py-1" aria-hidden />}
+                          {reviewTab === "proofreading" && (
+                            <th className="relative w-16 min-w-16 px-0 py-1 text-center font-medium">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Checkbox
+                                    id="scanwords-review-group-by-template"
+                                    className="absolute top-1/2 left-0 -translate-y-1/2"
+                                    checked={proofreadingGroupByTemplate}
+                                    onCheckedChange={(checked) => setProofreadingGroupByTemplate(checked === true)}
+                                    disabled={reviewLoading || finalizing || submitting}
+                                    aria-label={t("scanwordsReviewGroupByTemplateAria")}
+                                  />
+                                </TooltipTrigger>
+                                <TooltipContent>{t("scanwordsReviewGroupByTemplate")}</TooltipContent>
+                              </Tooltip>
+                              <span className="text-[11px] leading-none">{t("scanwordsReviewTemplateNumber")}</span>
+                            </th>
+                          )}
                           <th
                             className={cn(
                               "px-2 font-medium",
                               reviewTab === "proofreading"
-                                ? "w-[260px] min-w-[260px] py-1.5"
+                                ? "w-[220px] min-w-[220px] py-1"
                                 : "w-[280px] min-w-[280px] py-2",
                             )}
                           >
@@ -2390,7 +2456,7 @@ export function FillReviewDialog({
                               <TooltipContent>{t("word")}</TooltipContent>
                             </Tooltip>
                           </th>
-                          <th className={cn("px-2 font-medium", reviewTab === "proofreading" ? "py-1.5" : "py-2")}>
+                          <th className={cn("px-2 font-medium", reviewTab === "proofreading" ? "py-1" : "py-2")}>
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button
@@ -2426,7 +2492,9 @@ export function FillReviewDialog({
                         data={filteredAllTemplateRows}
                         initialItemCount={Math.min(filteredAllTemplateRows.length, 120)}
                         customScrollParent={dialogScrollParent ?? undefined}
-                        style={dialogScrollParent ? undefined : { height: "70dvh" }}
+                        style={
+                          dialogScrollParent ? undefined : { height: reviewTab === "proofreading" ? "60dvh" : "70dvh" }
+                        }
                         computeItemKey={(index, item) =>
                           item ? keyForRow(item.template.key, item.slot.slotId) : `missing-row:${index}`
                         }
@@ -2434,7 +2502,15 @@ export function FillReviewDialog({
                           if (!item) return null;
                           const rowKey = keyForRow(item.template.key, item.slot.slotId);
                           return (
-                            <table className="w-full text-xs">
+                            <table className={cn("w-full text-xs", reviewTab === "proofreading" && "table-fixed")}>
+                              {reviewTab === "proofreading" && (
+                                <colgroup>
+                                  <col className="w-10" />
+                                  <col className="w-16" />
+                                  <col className="w-[220px]" />
+                                  <col />
+                                </colgroup>
+                              )}
                               <tbody>
                                 {renderReviewRow({
                                   template: item.template,
@@ -2510,7 +2586,7 @@ export function FillReviewDialog({
             }}
           />
 
-          <DialogFooter>
+          <DialogFooter className={cn(reviewTab === "proofreading" && "border-t pt-2")}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

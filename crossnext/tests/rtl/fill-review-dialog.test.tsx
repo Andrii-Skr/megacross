@@ -123,6 +123,41 @@ function makeReviewPayload(): FillReviewPayload {
   };
 }
 
+function makeProofreadingSortPayload(): FillReviewPayload {
+  const payload = makeReviewPayload();
+  const sourceTemplate = payload.templates[0];
+  const sourceSlot = sourceTemplate?.slots[0];
+  if (!sourceTemplate || !sourceSlot) throw new Error("Missing review fixture");
+
+  const makeSlot = (slotId: number, word: string, definition: string) => ({
+    ...sourceSlot,
+    slotId,
+    word,
+    definition,
+    definitionOptions: [{ opredId: null, text: definition, difficulty: null }],
+  });
+
+  payload.templates = [
+    {
+      ...sourceTemplate,
+      key: "tpl-8",
+      name: "8",
+      sourceName: "8.fsh",
+      order: 0,
+      slots: [makeSlot(1, "АИР", "Г")],
+    },
+    {
+      ...sourceTemplate,
+      key: "tpl-2",
+      name: "2",
+      sourceName: "2.fsh",
+      order: 1,
+      slots: [makeSlot(1, "БОР", "Я"), makeSlot(2, "ЯРК", "А")],
+    },
+  ];
+  return payload;
+}
+
 function makeSharedClusterReviewPayload(): FillReviewPayload {
   return {
     version: 1,
@@ -465,8 +500,9 @@ describe("FillReviewDialog", () => {
     expect(screen.getByRole("button", { name: "addDefinition" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "editDefinition" })).toBeInTheDocument();
     expect(screen.getByText("difficultyFilterLabel 3")).toBeInTheDocument();
-    expect(proofreadingTab.parentElement?.parentElement).toHaveClass("sticky", "-top-6");
-    expect(screen.getByText("word").closest("table")).toHaveClass("sticky", "top-6");
+    expect(proofreadingTab.parentElement?.parentElement).toHaveClass("sticky", "top-0");
+    expect(screen.queryByText("scanwordsReviewDescription")).not.toBeInTheDocument();
+    expect(screen.getByText("word").closest("table")).toHaveClass("sticky", "top-10");
 
     await userEvent.click(screen.getByRole("button", { name: "scanwordsReviewAddBookmark" }));
     expect(screen.getByRole("button", { name: "scanwordsReviewRemoveBookmark" })).toHaveAttribute(
@@ -483,6 +519,53 @@ describe("FillReviewDialog", () => {
       },
       { timeout: 2000 },
     );
+  });
+
+  it("groups proofreading rows by template number without changing the default order", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (
+          url === "/api/scanwords/fill-review-draft?jobId=job-proofreading-sort" &&
+          (!init?.method || init.method === "GET")
+        ) {
+          return jsonResponse({ available: false, rows: [] });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-proofreading-sort"
+        reviewData={makeProofreadingSortPayload()}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={vi.fn().mockResolvedValue(undefined)}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+
+    const renderedWord = (word: string) =>
+      screen.getByText((_, element) => element?.classList.contains("font-sans") && element.textContent === word);
+
+    await waitFor(() => expect(renderedWord("АИР")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "scanwordsReviewTabProofreading" }));
+
+    expect(screen.getByText("scanwordsReviewTemplateNumber")).toBeInTheDocument();
+    expect(renderedWord("АИР").closest("tr")?.textContent).toContain("8");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "scanwordsReviewGroupByTemplateAria" }));
+    await waitFor(() => expect(renderedWord("БОР")).toBeInTheDocument());
+    expect(renderedWord("БОР").closest("tr")?.textContent).toContain("2");
+
+    await userEvent.click(screen.getByRole("button", { name: "definition" }));
+    await waitFor(() => expect(renderedWord("ЯРК")).toBeInTheDocument());
   });
 
   it("cycles through bookmarks in the current list order", async () => {

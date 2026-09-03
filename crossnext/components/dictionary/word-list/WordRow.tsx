@@ -183,7 +183,7 @@ export function WordRow({
                   <Checkbox
                     className="mt-1 size-4"
                     checked={isRowChecked?.(d.id) ?? false}
-                    onChange={(e) => onToggleSelectDef?.(d.id, e.currentTarget.checked)}
+                    onCheckedChange={(checked) => onToggleSelectDef?.(d.id, checked === true)}
                     aria-label={t("select")}
                   />
                 ) : (

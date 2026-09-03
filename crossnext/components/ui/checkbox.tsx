@@ -1,16 +1,30 @@
+"use client";
+
+import * as CheckboxPrimitive from "@radix-ui/react-checkbox";
+import { CheckIcon } from "lucide-react";
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-const checkboxBaseClass =
-  "size-4 shrink-0 rounded-sm border border-input bg-background align-middle accent-primary disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2";
+const Checkbox = React.forwardRef<
+  React.ElementRef<typeof CheckboxPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>
+>(({ className, ...props }, ref) => (
+  <CheckboxPrimitive.Root
+    ref={ref}
+    data-slot="checkbox"
+    className={cn(
+      "size-4 shrink-0 rounded-sm border border-input bg-background text-primary-foreground shadow-xs outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=indeterminate]:border-primary data-[state=indeterminate]:bg-primary",
+      className,
+    )}
+    {...props}
+  >
+    <CheckboxPrimitive.Indicator className="flex items-center justify-center text-current">
+      <CheckIcon className="size-3" aria-hidden />
+    </CheckboxPrimitive.Indicator>
+  </CheckboxPrimitive.Root>
+));
 
-const Checkbox = React.forwardRef<HTMLInputElement, Omit<React.ComponentProps<"input">, "type">>(
-  ({ className, ...props }, ref) => (
-    <input data-slot="checkbox" type="checkbox" ref={ref} className={cn(checkboxBaseClass, className)} {...props} />
-  ),
-);
-
-Checkbox.displayName = "Checkbox";
+Checkbox.displayName = CheckboxPrimitive.Root.displayName;
 
 export { Checkbox };

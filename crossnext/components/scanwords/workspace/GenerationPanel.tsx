@@ -188,10 +188,10 @@ export function GenerationPanel({
                     <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                       <Checkbox
                         id={latestArchiveOnlyCheckboxId}
-                        className="size-4 rounded border border-input bg-background align-middle accent-primary"
+                        className="size-4"
                         checked={latestArchiveOnly}
                         aria-label={t("scanwordsFillDownloadLatestOnly")}
-                        onChange={(event) => onLatestArchiveOnlyChange(event.currentTarget.checked)}
+                        onCheckedChange={(checked) => onLatestArchiveOnlyChange(checked === true)}
                       />
                       <label htmlFor={latestArchiveOnlyCheckboxId} className="cursor-pointer">
                         {t("scanwordsFillDownloadLatestOnly")}

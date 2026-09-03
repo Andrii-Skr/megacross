@@ -58,7 +58,7 @@ export const ExpiredDefinitionItem = React.memo(function ExpiredDefinitionItem({
           <Checkbox
             className="mt-1 size-4"
             checked={selected}
-            onChange={(e) => onToggleSelect?.(item.id, e.currentTarget.checked)}
+            onCheckedChange={(checked) => onToggleSelect?.(item.id, checked === true)}
             aria-label={t("select")}
           />
         ) : null}

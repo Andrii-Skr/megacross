@@ -37,7 +37,7 @@ export function DeletedItem({
           <Checkbox
             className="mt-1 size-4"
             checked={selected}
-            onChange={(e) => onToggleSelect?.(id, e.currentTarget.checked)}
+            onCheckedChange={(checked) => onToggleSelect?.(id, checked === true)}
             aria-label={t("select")}
           />
         ) : null}

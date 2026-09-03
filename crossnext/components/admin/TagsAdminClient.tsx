@@ -473,10 +473,10 @@ export function TagsAdminClient({
                           className="h-4 w-4"
                           checked={bulkSelectedTags.has(tag.id)}
                           aria-label={t("select")}
-                          onChange={(e) => {
+                          onCheckedChange={(checked) => {
                             setBulkSelectedTags((prev) => {
                               const next = new Set(prev);
-                              if (e.target.checked) next.add(tag.id);
+                              if (checked === true) next.add(tag.id);
                               else next.delete(tag.id);
                               return next;
                             });

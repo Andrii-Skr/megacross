@@ -1,7 +1,6 @@
 "use client";
 import { ArrowDown, ArrowUp, ArrowUpDown, SquarePlus } from "lucide-react";
 import { useFormatter, useTranslations } from "next-intl";
-import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -37,14 +36,6 @@ export function WordListHeader({
 }) {
   const t = useTranslations();
   const f = useFormatter();
-  const selectAllRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (selectAllRef.current) {
-      selectAllRef.current.indeterminate = someSelected && !allSelected;
-    }
-  }, [someSelected, allSelected]);
-
   return (
     <TooltipProvider>
       <div className="w-full flex flex-col gap-2 px-1 py-2 text-sm text-muted-foreground border-b md:flex-row md:items-center md:gap-4">
@@ -88,10 +79,9 @@ export function WordListHeader({
         <div className="flex items-center gap-2 w-full md:flex-1 md:min-w-0 md:pl-4">
           {bulkMode && (
             <Checkbox
-              ref={selectAllRef}
               className="size-4"
-              checked={allSelected}
-              onChange={() => onToggleSelectAll?.()}
+              checked={someSelected && !allSelected ? "indeterminate" : allSelected}
+              onCheckedChange={() => onToggleSelectAll?.()}
               aria-label={t("selectAll")}
             />
           )}
