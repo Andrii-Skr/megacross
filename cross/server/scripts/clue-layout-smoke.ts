@@ -845,11 +845,14 @@ function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
   });
 
   const imageIndex = svg.indexOf(`<image href="${embeddedPhoto}"`);
+  const gridIndex = svg.indexOf('<rect x="1" y="1" width="30" height="30" fill="#fff"/>');
   const textIndex = svg.indexOf(">Фото<");
   assert.ok(imageIndex >= 0, "expected photo clue image in svg");
+  assert.ok(gridIndex >= 0, "expected main grid in svg");
+  assert.ok(imageIndex < gridIndex, "expected photo layer under the main grid");
   assert.equal(svg.includes('href="assets/'), false, "photo clue image should not depend on archive assets");
   assert.ok(
-    svg.includes(">определение</tspan>") || (svg.includes(">определе-</tspan>") && svg.includes(">ние</tspan>")),
+    svg.includes(">определение</tspan>") || (svg.includes(">определе–</tspan>") && svg.includes(">ние</tspan>")),
     "expected definition text to be rendered either on one line or split across lines",
   );
   assert.ok(textIndex >= 0, "expected definition text in svg");
@@ -860,9 +863,66 @@ function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
   );
   const photoFrame = '<rect x="31" y="1" width="60" height="60" fill="none" stroke="#000000" stroke-width="2"/>';
   assert.ok(svg.indexOf(photoFrame, imageIndex) > imageIndex, "expected frame over the photo edge");
-  assert.match(svg, /<rect x="31" y="[0-9.]+" width="60" height="[0-9.]+" fill="#fff"\/>/);
-  assert.match(svg, /<rect x="32" y="[0-9.]+" width="58" height="[0-9.]+" fill="none" stroke="#000000" stroke-width="2"\/>/);
-  assert.match(svg, /<text x="61" y="[0-9.]+" font-size="12" text-anchor="middle"/);
+  assert.match(svg, /<rect x="31" y="[0-9.]+" width="[0-9.]+" height="[0-9.]+" fill="#fff"\/>/);
+  assert.match(svg, /<rect x="32" y="[0-9.]+" width="[0-9.]+" height="[0-9.]+" fill="none" stroke="#000000" stroke-width="2"\/>/);
+  assert.match(svg, /<text x="[0-9.]+" y="[0-9.]+" font-size="12" text-anchor="middle"/);
+}
+
+function testClusterBackgroundIsTransparent(): void {
+  const data = ["*##*#", "*##**", "*↓***", "*****"];
+  const codes = createCodes(4, 5);
+  for (const [row, col] of [[0, 1], [0, 2], [1, 1], [1, 2]]) {
+    codes[row][col] = 0x02;
+  }
+  const grid = buildGrid(data, codes);
+  const slots: Slot[] = [{ id: 1, r: 2, c: 1, dir: DIRS.down, len: 2, cells: [[2, 1], [3, 1]] }];
+  const solved = ["*##*#", "*##**", "*A***", "*B***"];
+  for (const style of ["default", "corel"] as const) {
+    for (const withText of [false, true]) {
+      for (const withPhoto of [false, true]) {
+        const definitions = new Map<string, string>(withText ? [["AB", "Фото"]] : []);
+        const options = {
+          style, arrowMode: "export" as const, arrowScale: 1,
+          photoClues: withPhoto ? [{ clueKey: "1,1", href: "data:image/jpeg;base64,QUJDRA==" }] : [],
+        };
+        const result = buildCrosswordSvg(grid, slots, solved, definitions, options);
+        const debug = buildCrosswordSvg(grid, slots, solved, definitions, {
+          ...options, debugClusterFill: true, debugClusterColor: "#abcdef",
+        });
+        if (style === "corel") {
+          assert.match(result.svg, /font-family="Arimo"/u, "Corel SVG should use bundled Arimo");
+          assert.match(
+            result.svg,
+            /@font-face\{font-family:'Arimo';src:url\('data:font\/ttf;base64,/u,
+            "Corel SVG should embed the same font used for text measurement"
+          );
+        }
+        for (const variant of ["svg", "svgRaw"] as const) {
+          const highlighted = debug[variant].match(/<rect[^>]*fill="#abcdef"\/>/g) ?? [];
+          assert.equal(highlighted.length, 4, "all cluster cells should retain debug highlighting");
+          assert.equal(debug[variant].replace(/<rect[^>]*fill="#abcdef"\/>/g, ""), result[variant],
+            "only cluster backgrounds should differ from debug output");
+          for (const rect of highlighted) {
+            const geometry = rect.slice(0, rect.indexOf(' fill='));
+            const cellRects = result[variant].match(/<rect[^>]*\/>/g) ?? [];
+            assert.ok(!cellRects.some((item) => item.startsWith(`${geometry} fill=`)),
+              "cluster cells must have neither background fill nor cell borders");
+          }
+          assert.ok(!result[variant].includes("#abcdef"));
+          assert.ok(result[variant].includes(`fill="${style === "corel" ? "#FEFEFE" : "#fff"}"`), "keep ordinary cell fill");
+          assert.equal(result[variant].includes("<image "), withText && withPhoto);
+          if (withText && withPhoto) {
+            const photoIndex = result[variant].indexOf("<image ");
+            const ordinaryCellIndex = result[variant].indexOf(
+              `fill="${style === "corel" ? "#FEFEFE" : "#fff"}"/>`,
+            );
+            assert.ok(photoIndex < ordinaryCellIndex, "photo layer must be under the main grid");
+          }
+          if (withText) assert.ok(result[variant].includes('fill="#fff"/>'), "keep white text plaque");
+        }
+      }
+    }
+  }
 }
 
 function main(): void {
@@ -889,6 +949,7 @@ function main(): void {
     testAreaExpansionIsEnabledByDefaultEvenWhenEnvDisabled();
     testAreaExpansionCanBeDisabledExplicitlyByOption();
     testPhotoClueRendersImageUnderDefinitionPlaque();
+    testClusterBackgroundIsTransparent();
   } finally {
     if (previousValue === undefined) {
       delete process.env[AREA_EXPANSION_ENV_KEY];

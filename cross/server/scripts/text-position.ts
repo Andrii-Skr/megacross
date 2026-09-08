@@ -55,6 +55,7 @@ const CHAR_WIDTH_FACTOR_BY_CHAR: Record<string, number> = {
   z: 0.48,
   " ": 0.3,
   "-": 0.32,
+  "\u2013": 0.56,
   '"': 0.28,
   "'": 0.18,
   ",": 0.22,

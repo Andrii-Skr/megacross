@@ -411,6 +411,19 @@ app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   next(error);
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
+server.ref();
+
+const closeServer = () => {
+  server.close((error) => {
+    if (error) {
+      console.error("Failed to stop server cleanly:", error);
+      process.exitCode = 1;
+    }
+  });
+};
+
+process.once("SIGINT", closeServer);
+process.once("SIGTERM", closeServer);

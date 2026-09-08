@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { extname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
 
+const INKSCAPE_MAX_OUTPUT_BUFFER = 64 * 1024 * 1024;
+
 function resolveInkscapeBin(): string {
   const configured = process.env.CROSS_INKSCAPE_BIN?.trim();
   return configured || "inkscape";
@@ -131,6 +133,8 @@ export function exportSvgFilesToEps(svgPaths: readonly string[]): string[] {
         {
           encoding: "utf8",
           env: { ...process.env, INKSCAPE_PROFILE_DIR: profileDir },
+          maxBuffer: INKSCAPE_MAX_OUTPUT_BUFFER,
+          stdio: ["ignore", "ignore", "pipe"],
         }
       );
     } finally {

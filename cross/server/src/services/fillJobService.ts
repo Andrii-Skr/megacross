@@ -237,6 +237,7 @@ type ResolvedFinalizeSvgTypography = {
   photoCluesGrayscale: boolean;
   fontFamily: string | null;
   fontFaceCss: string | null;
+  fontData: Uint8Array | null;
 };
 
 export type FillMaskCandidate = {
@@ -331,6 +332,7 @@ type SolveSingleTemplateMetrics = {
 
 const jobRuntimes = new Map<string, JobRuntime>();
 const jobRunners = new Set<string>();
+const finalizingJobs = new Set<string>();
 
 const DEFAULT_OPTIONS: FillJobOptions = {
   engine: "dlx",
@@ -978,22 +980,42 @@ function mapJobRow(row: FillJobRow): FillJobUpdate {
   };
 }
 
-function resumeActiveJobIfNeeded(row: FillJobRow): void {
+async function resumeActiveJobIfNeeded(row: FillJobRow): Promise<FillJobRow> {
   const status = String(row.status ?? "");
-  if (status !== "queued" && status !== "running") return;
+  if (status !== "queued" && status !== "running") return row;
   if (status === "running") {
     const hasReviewData =
       row.reviewData !== null &&
       row.reviewData !== undefined &&
       (!(typeof row.reviewData === "string") || row.reviewData.trim().length > 0);
     const hasArchive = typeof row.outputPath === "string" && row.outputPath.trim().length > 0;
-    // During review finalization we temporarily use "running", but that must never
-    // restart the full fill pipeline via lazy "resume" calls.
-    if (hasReviewData || hasArchive) return;
+    // During review finalization we temporarily use "running". If this process
+    // owns it, leave it alone. Otherwise the process died mid-finalization and
+    // the saved review must become available for another attempt.
+    if (hasReviewData && !hasArchive) {
+      if (finalizingJobs.has(String(row.id))) return row;
+      const error = "Previous export was interrupted. Review the clues and start generation again.";
+      await updateJob(row.id, {
+        status: "review",
+        progress: 100,
+        currentTemplate: null,
+        error,
+      });
+      return {
+        ...row,
+        status: "review",
+        progress: 100,
+        currentTemplate: null,
+        error,
+        updatedAt: new Date(),
+      };
+    }
+    if (hasArchive) return row;
   }
   ensureRuntime(String(row.id));
   const options = parseFillJobOptions(row.options);
   void runFillJob(row.id, row.issueId, options);
+  return row;
 }
 
 async function loadIssueContext(issueId: bigint): Promise<IssueContext | null> {
@@ -1296,6 +1318,7 @@ function buildSvg(
       clueGlyphWidthScale: typography ? typography.clueGlyphWidthPct / 100 : undefined,
       clueLineHeightScale: typography ? typography.clueLineHeightPct / 100 : undefined,
       fontFaceCss: typography?.fontFaceCss ?? null,
+      fontData: typography?.fontData ?? null,
     },
     photoClues: options.photoClues ?? [],
     type0Features: true,
@@ -2185,7 +2208,9 @@ function resolveSafeFontPath(fontsRoot: string, storageRelPath: string): string 
   return absolute;
 }
 
-async function loadEmbeddedSvgFont(fontId: bigint): Promise<{ familyName: string; fontFaceCss: string } | null> {
+async function loadEmbeddedSvgFont(
+  fontId: bigint
+): Promise<{ familyName: string; fontFaceCss: string; fontData: Uint8Array } | null> {
   try {
     const rows = await prisma.$queryRaw<
       Array<{
@@ -2209,10 +2234,11 @@ async function loadEmbeddedSvgFont(fontId: bigint): Promise<{ familyName: string
     const mimeType = resolveFontMimeType(format, row.mimeType);
     const cssFormat = resolveFontCssFormat(format);
     const familyName = sanitizeSvgFontFamily(row.familyName) ?? `ScanwordFont${fontId.toString()}`;
-    const fontData = readFileSync(fontPath).toString("base64");
+    const rawFontData = readFileSync(fontPath);
+    const fontData = rawFontData.toString("base64");
     const escapedFamily = familyName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     const fontFaceCss = `@font-face{font-family:'${escapedFamily}';src:url('data:${mimeType};base64,${fontData}') format('${cssFormat}');font-weight:normal;font-style:normal;}`;
-    return { familyName, fontFaceCss };
+    return { familyName, fontFaceCss, fontData: rawFontData };
   } catch {
     return null;
   }
@@ -2223,12 +2249,14 @@ async function resolveFinalizeSvgTypography(
 ): Promise<ResolvedFinalizeSvgTypography> {
   let fontFamily = parsed.systemFontFamily;
   let fontFaceCss: string | null = null;
+  let fontData: Uint8Array | null = null;
 
   if (parsed.fontId != null) {
     const embedded = await loadEmbeddedSvgFont(parsed.fontId);
     if (embedded) {
       fontFamily = embedded.familyName;
       fontFaceCss = embedded.fontFaceCss;
+      fontData = embedded.fontData;
     }
   }
 
@@ -2243,6 +2271,7 @@ async function resolveFinalizeSvgTypography(
     photoCluesGrayscale: parsed.photoCluesGrayscale,
     fontFamily,
     fontFaceCss,
+    fontData,
   };
 }
 
@@ -2570,9 +2599,7 @@ export async function startFillJob(
   if (!row) {
     const existing = await loadLatestActiveJobByIssue(prisma, issueId);
     if (existing) {
-      const update = mapJobRow(existing);
-      resumeActiveJobIfNeeded(existing);
-      return update;
+      return mapJobRow(await resumeActiveJobIfNeeded(existing));
     }
     row = await createQueuedFillJob(prisma, issueId, JSON.stringify(options));
     if (!row) {
@@ -2589,15 +2616,13 @@ export async function startFillJob(
 export async function getFillJob(jobId: bigint): Promise<FillJobUpdate | null> {
   const row = await loadFillJobById(prisma, jobId);
   if (!row) return null;
-  resumeActiveJobIfNeeded(row);
-  return mapJobRow(row);
+  return mapJobRow(await resumeActiveJobIfNeeded(row));
 }
 
 export async function getLatestFillJob(issueId: bigint): Promise<FillJobUpdate | null> {
   const row = await loadLatestFillJobByIssue(prisma, issueId);
   if (!row) return null;
-  resumeActiveJobIfNeeded(row);
-  return mapJobRow(row);
+  return mapJobRow(await resumeActiveJobIfNeeded(row));
 }
 
 export async function getJobArchivePath(jobId: bigint, fileName?: string | null): Promise<string | null> {
@@ -2748,20 +2773,23 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
   if (!row) throw new Error("Job not found");
   const status = String(row.status ?? "");
   if (status !== "review") throw new Error("Job is not waiting for review");
+  const jobIdStr = String(jobId);
+  finalizingJobs.add(jobIdStr);
 
-  const review = parseReviewPayload(row.reviewData);
-  if (!review) throw new Error("Review data not found for this job");
-  const payload = (payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {}) as FinalizePayload;
-  const effectiveReview = applyReviewTemplateOverrides(review, Array.isArray(payload.templates) ? payload.templates : []);
-  const definitionLengthLimits = parseDefinitionLengthLimits(payload.definitionLimits);
-  const parsedSvgTypography = parseFinalizeSvgTypography(payload.svgTypography);
-  const resolvedSvgTypography = await resolveFinalizeSvgTypography(parsedSvgTypography);
-  const templateInputMap = new Map<string, FinalizeTemplateInput>();
-  for (const item of payload.templates ?? []) {
-    if (!item || typeof item !== "object") continue;
-    if (typeof item.key !== "string" || item.key.length === 0) continue;
-    templateInputMap.set(item.key, item);
-  }
+  try {
+    const review = parseReviewPayload(row.reviewData);
+    if (!review) throw new Error("Review data not found for this job");
+    const payload = (payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {}) as FinalizePayload;
+    const effectiveReview = applyReviewTemplateOverrides(review, Array.isArray(payload.templates) ? payload.templates : []);
+    const definitionLengthLimits = parseDefinitionLengthLimits(payload.definitionLimits);
+    const parsedSvgTypography = parseFinalizeSvgTypography(payload.svgTypography);
+    const resolvedSvgTypography = await resolveFinalizeSvgTypography(parsedSvgTypography);
+    const templateInputMap = new Map<string, FinalizeTemplateInput>();
+    for (const item of payload.templates ?? []) {
+      if (!item || typeof item !== "object") continue;
+      if (typeof item.key !== "string" || item.key.length === 0) continue;
+      templateInputMap.set(item.key, item);
+    }
 
   const options = parseFillJobOptions(row.options);
   const outputRoot = getOutputDir();
@@ -3034,9 +3062,22 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
   });
   await emitCurrentJob(jobId);
 
-  const updated = await getFillJob(jobId);
-  if (!updated) throw new Error("Failed to load updated job");
-  return updated;
+    const updated = await getFillJob(jobId);
+    if (!updated) throw new Error("Failed to load updated job");
+    return updated;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await updateJob(jobId, {
+      status: "review",
+      progress: 100,
+      currentTemplate: null,
+      error: msg,
+    });
+    await emitCurrentJob(jobId);
+    throw err;
+  } finally {
+    finalizingJobs.delete(jobIdStr);
+  }
 }
 
 export function subscribeFillJob(jobId: string, listener: (update: FillJobUpdate) => void): () => void {
