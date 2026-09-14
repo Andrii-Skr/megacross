@@ -7,5 +7,6 @@ coverage
 .next
 out
 var/
+temp/
 
 _legacy_backup/
