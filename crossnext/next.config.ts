@@ -53,7 +53,7 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ["lucide-react", "@tanstack/react-query", "sonner", "next-intl"],
   },
-  transpilePackages: ["@megacross/cross-clues"],
+  transpilePackages: ["@megacross/cross-clues", "@megacross/cross-format"],
 };
 
 export default withNextIntl(nextConfig);
