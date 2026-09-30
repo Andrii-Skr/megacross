@@ -18,12 +18,14 @@ COPY cross/server/package.json ./package.json
 COPY cross/server/pnpm-lock.yaml ./pnpm-lock.yaml
 COPY cross/server/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY packages/cross-clues /packages/cross-clues
+COPY packages/cross-format /packages/cross-format
 RUN --mount=type=cache,id=cross-pnpm-store,target=/root/.local/share/pnpm/store \
   pnpm install --frozen-lockfile
 
 FROM deps AS native-builder
 COPY cross/server/. .
 COPY packages/cross-clues /packages/cross-clues
+COPY packages/cross-format /packages/cross-format
 RUN --mount=type=cache,id=cross-cargo-registry,target=/root/.cargo/registry \
   --mount=type=cache,id=cross-cargo-git,target=/root/.cargo/git \
   pnpm exec napi build --release --cwd native/dlx-solver \
@@ -36,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends epstool ghostsc
 COPY --from=deps /app/node_modules ./node_modules
 COPY cross/server/. .
 COPY packages/cross-clues /packages/cross-clues
+COPY packages/cross-format /packages/cross-format
 COPY --from=native-builder /app/native/dlx-solver/dlx_solver.node /app/native/dlx-solver/dlx_solver.node
 RUN DATABASE_URL=postgresql://prisma:prisma@localhost:5432/prisma?schema=public pnpm prisma generate \
   && chmod +x /app/entrypoint.sh \

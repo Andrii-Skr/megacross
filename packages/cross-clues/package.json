@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "sideEffects": false,
+  "dependencies": {
+    "@megacross/cross-format": "file:../cross-format"
+  },
   "exports": {
     ".": "./src/index.ts"
   }

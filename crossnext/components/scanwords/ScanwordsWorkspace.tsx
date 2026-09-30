@@ -60,6 +60,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
   });
 
   const fill = useScanwordFill({
+    selectedEditionId: selectedEdition?.id ?? null,
     selectedIssueId,
     selectedTemplateId,
     filesSignature: upload.filesSignature,
@@ -173,7 +174,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
             <div
               className={cn(
                 "flex flex-1 flex-col gap-4",
-                activeTab === "upload"
+                activeTab === "upload" || activeTab === "templateSetup"
                   ? "overflow-visible lg:min-h-0 lg:overflow-hidden"
                   : "overflow-visible lg:min-h-0 lg:overflow-y-auto",
               )}
@@ -297,6 +298,9 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
               onSpeedPresetChange={fill.handleSpeedPresetChange}
               onDefinitionMaxPerCellChange={fill.handleDefinitionMaxPerCellChange}
               onDefinitionMaxPerHalfCellChange={fill.handleDefinitionMaxPerHalfCellChange}
+              onTemplateCellSizeMmChange={fill.handleTemplateCellSizeMmChange}
+              onAnswerCellSizeMmChange={fill.handleAnswerCellSizeMmChange}
+              onType0CellSizeMmChange={fill.handleType0CellSizeMmChange}
               onClueFontBasePtChange={fill.handleClueFontBasePtChange}
               onClueFontMinPtChange={fill.handleClueFontMinPtChange}
               onClueGlyphWidthPctChange={fill.handleClueGlyphWidthPctChange}

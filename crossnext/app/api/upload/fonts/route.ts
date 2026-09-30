@@ -196,9 +196,9 @@ export async function POST(req: Request) {
       }>
     >(Prisma.sql`
       INSERT INTO "public"."scanword_svg_fonts"
-        ("displayName", "familyName", "format", "mimeType", "fileName", "storageRelPath", "sha256", "sizeBytes", "createdBy")
+        ("displayName", "familyName", "format", "mimeType", "fileName", "storageRelPath", "sha256", "sizeBytes", "createdBy", "updatedAt")
       VALUES
-        (${displayName}, ${familyName}, ${formatMeta.format}, ${formatMeta.mimeType}, ${originalName}, ${storageFileName}, ${sha256}, ${BigInt(bytes.byteLength)}, ${createdBy})
+        (${displayName}, ${familyName}, ${formatMeta.format}, ${formatMeta.mimeType}, ${originalName}, ${storageFileName}, ${sha256}, ${BigInt(bytes.byteLength)}, ${createdBy}, NOW())
       ON CONFLICT ("sha256")
       DO UPDATE SET
         "displayName" = EXCLUDED."displayName",

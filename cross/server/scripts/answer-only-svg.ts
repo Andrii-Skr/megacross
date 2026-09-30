@@ -1,13 +1,10 @@
 import type { Cell, Grid } from "../src/types";
-import { COREL_UNITS_PER_MM, formatCorelSizeMm } from "./svg-theme";
+import { convertMmToCorelUnits, COREL_UNITS_PER_MM, formatCorelSizeMm } from "./svg-theme";
 import { resolveCenteredTextStartX } from "./text-position";
 
 const MM_PER_PT = 25.4 / 72;
-const ANSWER_CELL_SIZE_MM = 10;
 const ANSWER_STROKE_WIDTH_MM = 0.2;
 const ANSWER_FONT_SIZE_PT = 20;
-const ANSWER_CELL_SIZE =
-  Math.round(ANSWER_CELL_SIZE_MM * COREL_UNITS_PER_MM * 1000) / 1000;
 const ANSWER_STROKE_WIDTH =
   Math.round(ANSWER_STROKE_WIDTH_MM * COREL_UNITS_PER_MM * 1000) / 1000;
 const ANSWER_FONT_SIZE =
@@ -23,6 +20,15 @@ const ANSWER_BLOCK_FILL = "#000000";
 const ANSWER_EMPTY_FILL = "#fff";
 const ANSWER_FONT_FAMILY = "Arial";
 
+type AnswerSvgFont = {
+  familyName?: string | null;
+  fontFaceCss?: string | null;
+};
+
+function escapeXmlAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 const SVG_XML_SPACE = ' xml:space="preserve"';
 const SVG_STYLE_ATTR =
   ' style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"';
@@ -36,8 +42,8 @@ function resolveLineHeight(fontSize: number, innerHeight: number): number {
   return Math.max(minLineHeight, Math.min(rawLineHeight, targetLineHeightForMaxLines));
 }
 
-function resolveAnswerTextBaselineY(cellTop: number): number {
-  const innerHeight = ANSWER_CELL_SIZE - ANSWER_TEXT_PADDING * 2;
+function resolveAnswerTextBaselineY(cellTop: number, cellSize: number): number {
+  const innerHeight = cellSize - ANSWER_TEXT_PADDING * 2;
   const lineHeight = resolveLineHeight(ANSWER_FONT_SIZE, innerHeight);
   const textBlockHeight = lineHeight;
   const offsetY = Math.max(0, (innerHeight - textBlockHeight) / 2);
@@ -46,36 +52,41 @@ function resolveAnswerTextBaselineY(cellTop: number): number {
   return textTopY + ascent;
 }
 
-export function buildAnswersOnlySvg(grid: Grid, solved: string[]): string {
+export function buildAnswersOnlySvg(grid: Grid, solved: string[], cellSizeMm: number, font?: AnswerSvgFont): string {
   const rows = grid.rows;
   const cols = grid.cols;
+  const cellSize = convertMmToCorelUnits(cellSizeMm);
   const pad = ANSWER_STROKE_WIDTH / 2;
-  const width = cols * ANSWER_CELL_SIZE + ANSWER_STROKE_WIDTH;
-  const height = rows * ANSWER_CELL_SIZE + ANSWER_STROKE_WIDTH;
+  const width = cols * cellSize + ANSWER_STROKE_WIDTH;
+  const height = rows * cellSize + ANSWER_STROKE_WIDTH;
   const widthAttr = formatCorelSizeMm(width);
   const heightAttr = formatCorelSizeMm(height);
+  const fontFamily = escapeXmlAttr(font?.familyName ?? ANSWER_FONT_FAMILY);
 
   const parts: string[] = [
-    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${widthAttr}" height="${heightAttr}" viewBox="0 0 ${width} ${height}"${SVG_STYLE_ATTR} font-family="${ANSWER_FONT_FAMILY}" text-anchor="middle">`,
+    `${SVG_PREAMBLE}<svg xmlns="http://www.w3.org/2000/svg"${SVG_XML_SPACE} width="${widthAttr}" height="${heightAttr}" viewBox="0 0 ${width} ${height}"${SVG_STYLE_ATTR} font-family="${fontFamily}" text-anchor="middle">`,
   ];
+  if (font?.fontFaceCss) {
+    parts.push(`<defs><style type="text/css"><![CDATA[${font.fontFaceCss}]]></style></defs>`);
+  }
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
-      const x = pad + col * ANSWER_CELL_SIZE;
-      const y = pad + row * ANSWER_CELL_SIZE;
+      const x = pad + col * cellSize;
+      const y = pad + row * cellSize;
       const ch = solved[row][col] as Cell;
       const code = grid.codes[row]?.[col];
 
       if (ch === "#") {
         const blockFill = code === 0x02 ? ANSWER_BLOCK_FILL : ANSWER_EMPTY_FILL;
         parts.push(
-          `<rect x="${x}" y="${y}" width="${ANSWER_CELL_SIZE}" height="${ANSWER_CELL_SIZE}" fill="${blockFill}"/>`
+          `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" fill="${blockFill}"/>`
         );
       } else {
-        const textBaselineY = resolveAnswerTextBaselineY(y);
-        const textX = resolveCenteredTextStartX(x, ANSWER_CELL_SIZE, ch, ANSWER_FONT_SIZE);
+        const textBaselineY = resolveAnswerTextBaselineY(y, cellSize);
+        const textX = resolveCenteredTextStartX(x, cellSize, ch, ANSWER_FONT_SIZE);
         parts.push(
-          `<rect x="${x}" y="${y}" width="${ANSWER_CELL_SIZE}" height="${ANSWER_CELL_SIZE}" fill="${ANSWER_EMPTY_FILL}"/>`
+          `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" fill="${ANSWER_EMPTY_FILL}"/>`
         );
         parts.push(
           `<text x="${textX}" y="${textBaselineY}" font-size="${ANSWER_FONT_SIZE}" fill="${ANSWER_TEXT_COLOR}" text-anchor="start" dominant-baseline="alphabetic">${ch}</text>`
@@ -83,7 +94,7 @@ export function buildAnswersOnlySvg(grid: Grid, solved: string[]): string {
       }
 
       parts.push(
-        `<rect x="${x}" y="${y}" width="${ANSWER_CELL_SIZE}" height="${ANSWER_CELL_SIZE}" fill="none" stroke="${ANSWER_LINE_COLOR}" stroke-width="${ANSWER_STROKE_WIDTH}"/>`
+        `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" fill="none" stroke="${ANSWER_LINE_COLOR}" stroke-width="${ANSWER_STROKE_WIDTH}"/>`
       );
     }
   }

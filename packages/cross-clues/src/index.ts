@@ -1,4 +1,6 @@
 import { type Grid, type Slot } from "./types";
+export { CLUE_MAP } from "@megacross/cross-format";
+import { CLUE_MAP } from "@megacross/cross-format";
 export type ClueEntry = {
   arrowR: number;
   arrowC: number;
@@ -20,6 +22,45 @@ export type ClueLayout = {
   clusterCells?: Array<[number, number]>;
   text: string;
 };
+
+/** Find unanchored 0x02 strips on the outside edge of a scanword grid. */
+export function findAnchorlessEdgeClusterCells(grid: Grid, layouts: readonly ClueLayout[]): Array<[number, number]> {
+  if (grid.templateType !== "scanword") return [];
+  const occupied = new Set<string>();
+  for (const layout of layouts) {
+    occupied.add(layout.key);
+    for (const [row, col] of layout.areaCells) occupied.add(`${row},${col}`);
+    for (const [row, col] of layout.clusterCells ?? []) occupied.add(`${row},${col}`);
+  }
+
+  const cutout = new Map<string, [number, number]>();
+  const collectRuns = (length: number, cellAt: (index: number) => [number, number]) => {
+    let run: Array<[number, number]> = [];
+    const flush = () => {
+      if (run.length >= 4) {
+        for (const [row, col] of run) cutout.set(`${row},${col}`, [row, col]);
+      }
+      run = [];
+    };
+    for (let index = 0; index < length; index += 1) {
+      const [row, col] = cellAt(index);
+      const key = `${row},${col}`;
+      if (grid.data[row]?.[col] === "#" && grid.codes[row]?.[col] === 0x02 && !occupied.has(key)) {
+        run.push([row, col]);
+      } else {
+        flush();
+      }
+    }
+    flush();
+  };
+
+  if (grid.rows === 0 || grid.cols === 0) return [];
+  collectRuns(grid.cols, (col) => [0, col]);
+  collectRuns(grid.cols, (col) => [grid.rows - 1, col]);
+  collectRuns(grid.rows, (row) => [row, 0]);
+  collectRuns(grid.rows, (row) => [row, grid.cols - 1]);
+  return [...cutout.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
 
 export type PhotoAreaBounds = {
   minRow: number;
@@ -79,95 +120,6 @@ export function buildPhotoImageResolutionRecommendations(
     return [{ width: Math.max(1, Math.round((longSide * target.width) / target.height)), height: longSide }];
   });
 }
-
-export const CLUE_MAP: Record<number, Array<{ cluePos: number; dirKey: number }>> = {
-  0x01: [{ cluePos: 2, dirKey: 8 }],
-  0x02: [{ cluePos: 1, dirKey: 8 }],
-  0x03: [{ cluePos: 4, dirKey: 8 }],
-  0x04: [{ cluePos: 7, dirKey: 8 }],
-  0x05: [{ cluePos: 9, dirKey: 8 }],
-  0x06: [{ cluePos: 6, dirKey: 8 }],
-  0x07: [{ cluePos: 3, dirKey: 8 }],
-  0x08: [{ cluePos: 2, dirKey: 6 }],
-  0x0a: [
-    { cluePos: 1, dirKey: 8 },
-    { cluePos: 2, dirKey: 6 },
-  ],
-  0x0b: [
-    { cluePos: 2, dirKey: 6 },
-    { cluePos: 4, dirKey: 8 },
-  ],
-  0x0d: [
-    { cluePos: 2, dirKey: 6 },
-    { cluePos: 9, dirKey: 8 },
-  ],
-  0x10: [{ cluePos: 1, dirKey: 6 }],
-  0x11: [
-    { cluePos: 2, dirKey: 8 },
-    { cluePos: 1, dirKey: 6 },
-  ],
-  0x13: [
-    { cluePos: 1, dirKey: 6 },
-    { cluePos: 4, dirKey: 8 },
-  ],
-  0x15: [
-    { cluePos: 1, dirKey: 6 },
-    { cluePos: 9, dirKey: 8 },
-  ],
-  0x18: [{ cluePos: 4, dirKey: 6 }],
-  0x19: [
-    { cluePos: 2, dirKey: 8 },
-    { cluePos: 4, dirKey: 6 },
-  ],
-  0x1a: [
-    { cluePos: 1, dirKey: 8 },
-    { cluePos: 4, dirKey: 6 },
-  ],
-  0x1c: [
-    { cluePos: 4, dirKey: 6 },
-    { cluePos: 7, dirKey: 8 },
-  ],
-  0x1d: [
-    { cluePos: 4, dirKey: 6 },
-    { cluePos: 9, dirKey: 8 },
-  ],
-  0x20: [{ cluePos: 7, dirKey: 6 }],
-  0x28: [{ cluePos: 9, dirKey: 6 }],
-  0x29: [
-    { cluePos: 2, dirKey: 8 },
-    { cluePos: 9, dirKey: 6 },
-  ],
-  0x21: [
-    { cluePos: 2, dirKey: 8 },
-    { cluePos: 7, dirKey: 6 },
-  ],
-  0x23: [
-    { cluePos: 4, dirKey: 8 },
-    { cluePos: 7, dirKey: 6 },
-  ],
-  0x2a: [
-    { cluePos: 3, dirKey: 2 },
-    { cluePos: 7, dirKey: 6 },
-  ],
-  0x2b: [
-    { cluePos: 4, dirKey: 8 },
-    { cluePos: 9, dirKey: 6 },
-  ],
-  0x2c: [
-    { cluePos: 7, dirKey: 8 },
-    { cluePos: 9, dirKey: 6 },
-  ],
-  0x30: [{ cluePos: 8, dirKey: 6 }],
-  0x38: [{ cluePos: 3, dirKey: 6 }],
-  0x39: [
-    { cluePos: 2, dirKey: 8 },
-    { cluePos: 3, dirKey: 6 },
-  ],
-  0x3d: [
-    { cluePos: 3, dirKey: 6 },
-    { cluePos: 9, dirKey: 8 },
-  ],
-};
 
 const POS_OFFSETS: Record<number, [number, number]> = {
   1: [-1, -1],

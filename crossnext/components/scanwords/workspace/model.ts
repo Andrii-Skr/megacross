@@ -244,6 +244,7 @@ export type FillFinalizePayload = {
   }>;
   definitionLimits?: FillDefinitionLimits;
   svgTypography?: FillSvgTypography;
+  svgLayout?: FillSvgLayout;
 };
 
 export type FillSpeedPreset = "fast" | "medium" | "slow";
@@ -261,6 +262,12 @@ export type FillSvgTypography = {
   photoCluesGrayscale: boolean;
   fontId: string | null;
   systemFontFamily: string;
+};
+
+export type FillSvgLayout = {
+  templateCellSizeMm: number;
+  answerCellSizeMm: number;
+  type0CellSizeMm: number;
 };
 
 export type SvgFontItem = {
@@ -287,6 +294,9 @@ export type FillSettings = {
   svgPhotoCluesGrayscale: boolean;
   svgFontId: string | null;
   svgSystemFontFamily: string;
+  templateCellSizeMm: number;
+  answerCellSizeMm: number;
+  type0CellSizeMm: number;
 };
 
 export type FillSettingsInput = {
@@ -303,6 +313,9 @@ export type FillSettingsInput = {
   svgFontId?: string | null;
   systemFontFamily?: string | null;
   svgSystemFontFamily?: string | null;
+  templateCellSizeMm?: number | string | null;
+  answerCellSizeMm?: number | string | null;
+  type0CellSizeMm?: number | string | null;
 } | null;
 
 export type FillSpeedOption = {
@@ -443,6 +456,9 @@ export const DEFAULT_SVG_CLUE_FONT_BASE_PT = 9;
 export const DEFAULT_SVG_CLUE_FONT_MIN_PT = 7.6;
 export const DEFAULT_SVG_TYPOGRAPHY_PERCENT = 80;
 export const DEFAULT_SVG_SYSTEM_FONT_FAMILY = "Arial";
+export const DEFAULT_TEMPLATE_CELL_SIZE_MM = 11;
+export const DEFAULT_ANSWER_CELL_SIZE_MM = 10;
+export const DEFAULT_TYPE0_CELL_SIZE_MM = 8.5;
 
 export const DEFAULT_FILL_SETTINGS: FillSettings = {
   speedPreset: "fast",
@@ -455,6 +471,9 @@ export const DEFAULT_FILL_SETTINGS: FillSettings = {
   svgPhotoCluesGrayscale: true,
   svgFontId: null,
   svgSystemFontFamily: DEFAULT_SVG_SYSTEM_FONT_FAMILY,
+  templateCellSizeMm: DEFAULT_TEMPLATE_CELL_SIZE_MM,
+  answerCellSizeMm: DEFAULT_ANSWER_CELL_SIZE_MM,
+  type0CellSizeMm: DEFAULT_TYPE0_CELL_SIZE_MM,
 };
 
 function normalizePositiveInt(
@@ -492,6 +511,13 @@ function normalizeBoolean(value: boolean | string | null | undefined, fallback: 
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function normalizePositiveMillimeters(value: number | string | null | undefined, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  const rounded = Number(parsed.toFixed(3));
+  return rounded > 0 ? rounded : fallback;
 }
 
 export function normalizeFillSettings(input?: FillSettingsInput): FillSettings {
@@ -534,6 +560,15 @@ export function normalizeFillSettings(input?: FillSettingsInput): FillSettings {
     typeof svgSystemFontFamilyRaw === "string" && svgSystemFontFamilyRaw.trim().length > 0
       ? svgSystemFontFamilyRaw.trim().slice(0, 120)
       : DEFAULT_FILL_SETTINGS.svgSystemFontFamily;
+  const templateCellSizeMm = normalizePositiveMillimeters(
+    input?.templateCellSizeMm,
+    DEFAULT_FILL_SETTINGS.templateCellSizeMm,
+  );
+  const answerCellSizeMm = normalizePositiveMillimeters(
+    input?.answerCellSizeMm,
+    DEFAULT_FILL_SETTINGS.answerCellSizeMm,
+  );
+  const type0CellSizeMm = normalizePositiveMillimeters(input?.type0CellSizeMm, DEFAULT_FILL_SETTINGS.type0CellSizeMm);
   return {
     speedPreset,
     definitionMaxPerCell,
@@ -545,5 +580,8 @@ export function normalizeFillSettings(input?: FillSettingsInput): FillSettings {
     svgPhotoCluesGrayscale,
     svgFontId,
     svgSystemFontFamily,
+    templateCellSizeMm,
+    answerCellSizeMm,
+    type0CellSizeMm,
   };
 }

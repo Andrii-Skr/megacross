@@ -4,10 +4,12 @@ import type { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  getScanwordEditionSvgLayoutSettingsAction,
   getScanwordFillArchivesAction,
   getScanwordFillSettingsAction,
   getScanwordIssueSvgSettingsAction,
   listScanwordSvgFontsAction,
+  saveScanwordEditionSvgLayoutSettingsAction,
   saveScanwordFillSettingsAction,
   saveScanwordIssueSvgSettingsAction,
 } from "@/app/actions/scanwords";
@@ -35,6 +37,7 @@ import {
 type TranslateFn = ReturnType<typeof useTranslations>;
 
 type UseScanwordFillParams = {
+  selectedEditionId: number | null;
   selectedIssueId: string | null;
   selectedTemplateId: number | null;
   filesSignature: string;
@@ -402,7 +405,14 @@ function normalizeSvgTypographyPercentInput(value: number, fallback: number): nu
   return normalized;
 }
 
+function normalizeCellSizeMmInput(value: number, fallback: number): number {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  const rounded = Number(value.toFixed(3));
+  return rounded > 0 ? rounded : fallback;
+}
+
 export function useScanwordFill({
+  selectedEditionId,
   selectedIssueId,
   selectedTemplateId,
   filesSignature,
@@ -640,15 +650,19 @@ export function useScanwordFill({
       }
       setSvgFontsLoading(true);
       try {
-        const [savedFill, savedSvg, fonts] = await Promise.all([
+        const [savedFill, savedSvg, savedSvgLayout, fonts] = await Promise.all([
           getScanwordFillSettingsAction({ issueId: selectedIssueId }),
           getScanwordIssueSvgSettingsAction({ issueId: selectedIssueId }),
+          selectedEditionId
+            ? getScanwordEditionSvgLayoutSettingsAction({ editionId: selectedEditionId })
+            : Promise.resolve(null),
           listScanwordSvgFontsAction(),
         ]);
         if (!active) return;
         const normalized = normalizeFillSettings({
           ...(savedFill ?? {}),
           ...(savedSvg ?? {}),
+          ...(savedSvgLayout ?? {}),
         });
         setFillSettings(normalized);
         setSettingsDraft(normalized);
@@ -666,7 +680,7 @@ export function useScanwordFill({
     return () => {
       active = false;
     };
-  }, [selectedIssueId]);
+  }, [selectedEditionId, selectedIssueId]);
 
   useEffect(() => {
     if (!selectedIssueId) return;
@@ -920,6 +934,27 @@ export function useScanwordFill({
     });
   }, []);
 
+  const handleTemplateCellSizeMmChange = useCallback((value: number) => {
+    setSettingsDraft((prev) => ({
+      ...prev,
+      templateCellSizeMm: normalizeCellSizeMmInput(value, prev.templateCellSizeMm),
+    }));
+  }, []);
+
+  const handleAnswerCellSizeMmChange = useCallback((value: number) => {
+    setSettingsDraft((prev) => ({
+      ...prev,
+      answerCellSizeMm: normalizeCellSizeMmInput(value, prev.answerCellSizeMm),
+    }));
+  }, []);
+
+  const handleType0CellSizeMmChange = useCallback((value: number) => {
+    setSettingsDraft((prev) => ({
+      ...prev,
+      type0CellSizeMm: normalizeCellSizeMmInput(value, prev.type0CellSizeMm),
+    }));
+  }, []);
+
   const handleClueFontBasePtChange = useCallback((value: number) => {
     setSettingsDraft((prev) => {
       const nextBase = normalizeSvgFontPtInput(value, prev.clueFontBasePt);
@@ -1016,11 +1051,11 @@ export function useScanwordFill({
   );
 
   const handleSettingsSave = useCallback(async () => {
-    if (!selectedIssueId) return;
+    if (!selectedEditionId || !selectedIssueId) return;
     setSettingsSaving(true);
     try {
       const normalized = normalizeFillSettings(settingsDraft);
-      const [savedFill, savedSvg] = await Promise.all([
+      const [savedFill, savedSvg, savedSvgLayout] = await Promise.all([
         saveScanwordFillSettingsAction({
           issueId: selectedIssueId,
           speedPreset: normalized.speedPreset,
@@ -1037,10 +1072,17 @@ export function useScanwordFill({
           fontId: normalized.svgFontId,
           systemFontFamily: normalized.svgSystemFontFamily,
         }),
+        saveScanwordEditionSvgLayoutSettingsAction({
+          editionId: selectedEditionId,
+          templateCellSizeMm: normalized.templateCellSizeMm,
+          answerCellSizeMm: normalized.answerCellSizeMm,
+          type0CellSizeMm: normalized.type0CellSizeMm,
+        }),
       ]);
       const applied = normalizeFillSettings({
         ...(savedFill ?? {}),
         ...(savedSvg ?? {}),
+        ...(savedSvgLayout ?? {}),
       });
       setFillSettings(applied);
       setSettingsDraft(applied);
@@ -1051,7 +1093,7 @@ export function useScanwordFill({
     } finally {
       setSettingsSaving(false);
     }
-  }, [selectedIssueId, settingsDraft, t]);
+  }, [selectedEditionId, selectedIssueId, settingsDraft, t]);
 
   const openArchivesDialog = useCallback(async () => {
     if (!selectedIssueId) return;
@@ -1161,6 +1203,11 @@ export function useScanwordFill({
                 fontId: fillSettings.svgFontId,
                 systemFontFamily: fillSettings.svgSystemFontFamily,
               },
+              svgLayout: {
+                templateCellSizeMm: fillSettings.templateCellSizeMm,
+                answerCellSizeMm: fillSettings.answerCellSizeMm,
+                type0CellSizeMm: fillSettings.type0CellSizeMm,
+              },
             },
           }),
         });
@@ -1198,6 +1245,9 @@ export function useScanwordFill({
       fillSettings.svgPhotoCluesGrayscale,
       fillSettings.svgFontId,
       fillSettings.svgSystemFontFamily,
+      fillSettings.templateCellSizeMm,
+      fillSettings.answerCellSizeMm,
+      fillSettings.type0CellSizeMm,
       normalizeFillJob,
       t,
     ],
@@ -1292,6 +1342,9 @@ export function useScanwordFill({
     handleSpeedPresetChange,
     handleDefinitionMaxPerCellChange,
     handleDefinitionMaxPerHalfCellChange,
+    handleTemplateCellSizeMmChange,
+    handleAnswerCellSizeMmChange,
+    handleType0CellSizeMmChange,
     handleClueFontBasePtChange,
     handleClueFontMinPtChange,
     handleClueGlyphWidthPctChange,

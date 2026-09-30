@@ -19,8 +19,9 @@ export const CLUE_EDGE_INSET_MM = 0.35;
 export const CLUE_TEXT_ASCENT_RATIO = 0.9;
 export const CLUE_TEXT_DESCENT_RATIO = 0.2;
 export const CLUE_PLAQUE_TEXT_INSET_MM = 1;
+export const PHOTO_CLUE_PLAQUE_HEIGHT_MM = 3.5;
 export const CLUE_TEXT_WIDTH_SAFETY_FACTOR = 1.07;
-export const CLUE_DISPLAY_DASH = "\u2013";
+export const CLUE_DISPLAY_DASH = "-";
 export const CLUE_LETTER_SPACING_MIN_PX = -0.9;
 const CLUE_GLYPH_WIDTH_FALLBACK_RATIO = 0.65;
 const CLUE_GLYPH_WIDTH_FALLBACK_MIN_SCALE = 0.63;
@@ -155,11 +156,10 @@ const QUOTE_NORMALIZATION_MAP: Record<string, string> = {
   "”": '"',
   "„": '"',
 };
+const COMPOUND_WORD_SEPARATOR_PATTERN = /[-‐‑‒–—−]/u;
 
 function normalizeDisplayPunctuation(text: string): string {
-  return text
-    .replace(/[«»“”„]/g, (ch) => QUOTE_NORMALIZATION_MAP[ch] ?? ch)
-    .replace(/[-‐‑‒–—−]/g, CLUE_DISPLAY_DASH);
+  return text.replace(/[«»“”„]/g, (ch) => QUOTE_NORMALIZATION_MAP[ch] ?? ch);
 }
 
 function startsWithDisallowedLineBreakChar(text: string): boolean {
@@ -356,7 +356,7 @@ function splitWordWithHyphenation(
   return { lines, isValid: true };
 }
 
-function splitWordByExistingHyphen(
+function splitWordByExistingCompoundSeparator(
   word: string,
   maxChars: number,
   availableWidth: number,
@@ -364,17 +364,18 @@ function splitWordByExistingHyphen(
   glyphWidthScale: number,
   measureTextWidth: TextWidthMeasure
 ): WordSplitResult {
-  if (!word.includes(CLUE_DISPLAY_DASH)) return { lines: [word], isValid: true };
-  const parts = word.split(CLUE_DISPLAY_DASH);
-  if (parts.length <= 1) return { lines: [word], isValid: true };
+  if (!COMPOUND_WORD_SEPARATOR_PATTERN.test(word)) return { lines: [word], isValid: true };
+  const parts = word.split(/([-‐‑‒–—−])/u);
+  if (parts.length <= 2) return { lines: [word], isValid: true };
 
   const lines: string[] = [];
   let current = parts[0] ?? "";
   let isValid = true;
 
-  for (let idx = 1; idx < parts.length; idx += 1) {
-    const part = parts[idx] ?? "";
-    const combined = current ? `${current}${CLUE_DISPLAY_DASH}${part}` : part;
+  for (let idx = 1; idx < parts.length; idx += 2) {
+    const separator = parts[idx] ?? "";
+    const part = parts[idx + 1] ?? "";
+    const combined = current ? `${current}${separator}${part}` : part;
     if (fitsLineWidth(combined, availableWidth, fontSize, glyphWidthScale, measureTextWidth)) {
       current = combined;
       continue;
@@ -395,7 +396,7 @@ function splitWordByExistingHyphen(
     }
 
     if (current) {
-      lines.push(`${current}${CLUE_DISPLAY_DASH}`);
+      lines.push(`${current}${separator}`);
     }
     current = part;
 
@@ -431,8 +432,8 @@ function splitWord(
     return { lines: [word], isValid: true };
   }
   if (!breakWords) return { lines: [word], isValid: false };
-  if (word.includes(CLUE_DISPLAY_DASH)) {
-    return splitWordByExistingHyphen(word, maxChars, availableWidth, fontSize, glyphWidthScale, measureTextWidth);
+  if (COMPOUND_WORD_SEPARATOR_PATTERN.test(word)) {
+    return splitWordByExistingCompoundSeparator(word, maxChars, availableWidth, fontSize, glyphWidthScale, measureTextWidth);
   }
   if (!/\p{L}/u.test(word)) {
     return {
@@ -583,6 +584,7 @@ export function renderClueText(
     backgroundInset?: number;
     backgroundAnchor?: "auto" | "bottom-left";
     plaqueTextInset?: number;
+    plaqueHeight?: number;
     frame?: "none" | "rect";
     frameWidth?: number;
     clusterFrame?: "none" | "top-right";
@@ -599,6 +601,7 @@ export function renderClueText(
   const background = options.background ?? "none";
   const backgroundAnchor = options.backgroundAnchor ?? "auto";
   const plaqueTextInset = Math.max(0, options.plaqueTextInset ?? 0);
+  const plaqueHeight = Math.max(0, options.plaqueHeight ?? 0);
   const frame = options.frame ?? "none";
   const frameWidth = Math.max(0, options.frameWidth ?? 0);
   const clusterFrame = options.clusterFrame ?? "none";
@@ -626,7 +629,13 @@ export function renderClueText(
   const layoutRect: LayoutRect = { x: minX, y: minY, width: layoutWidth, height: layoutHeight };
   const safeRect = insetRect(layoutRect, padding);
   const textSafeRect =
-    clusterFrame === "top-right" ? insetRect(safeRect, clusterPadding) : safeRect;
+    plaqueHeight > 0 && backgroundAnchor === "bottom-left"
+      ? {
+          ...safeRect,
+          y: layoutRect.y + layoutRect.height - Math.min(layoutRect.height, plaqueHeight),
+          height: Math.min(layoutRect.height, plaqueHeight),
+        }
+      : clusterFrame === "top-right" ? insetRect(safeRect, clusterPadding) : safeRect;
   const availableWidth = Math.max(1, textSafeRect.width);
   const safeAvailableWidth = availableWidth / CLUE_TEXT_WIDTH_SAFETY_FACTOR;
   const wrappingWidth = safeAvailableWidth;
@@ -835,11 +844,15 @@ export function renderClueText(
 
     if (backgroundAnchor === "bottom-left") {
       backgroundWidth = Math.min(layoutRect.width, textBlockWidth + plaqueTextInset * 2);
-      backgroundHeight = Math.min(layoutRect.height, textBlockHeight + plaqueTextInset * 2);
+      backgroundHeight = Math.min(
+        layoutRect.height,
+        plaqueHeight > 0 ? plaqueHeight : textBlockHeight + plaqueTextInset * 2
+      );
       backgroundX = layoutRect.x;
       backgroundY = layoutRect.y + layoutRect.height - backgroundHeight;
       textX = backgroundX + backgroundWidth / 2;
       textY = backgroundY + Math.max(0, (backgroundHeight - textBlockHeight) / 2);
+      if (plaqueHeight > 0) textY -= currentSize * 0.07;
       textAnchor = "middle";
     } else if (clusterFrame === "top-right") {
       backgroundWidth = Math.min(layoutRect.width, textBlockWidth + clusterPadding * 2);
@@ -856,12 +869,13 @@ export function renderClueText(
     background === "text-block"
       ? `<rect x="${backgroundX}" y="${backgroundY}" width="${backgroundWidth}" height="${backgroundHeight}" fill="#fff"/>`
       : "";
+  const frameLeft = backgroundX + (plaqueHeight > 0 ? 0 : frameWidth / 2);
+  const frameTop = backgroundY + frameWidth / 2;
+  const frameRightEdge = backgroundX + backgroundWidth - frameWidth / 2;
+  const frameBottomEdge = backgroundY + backgroundHeight - (plaqueHeight > 0 ? 0 : frameWidth / 2);
   const frameRect =
     frame === "rect" && frameWidth > 0
-      ? `<rect x="${backgroundX + frameWidth / 2}" y="${backgroundY + frameWidth / 2}" width="${Math.max(
-          0,
-          backgroundWidth - frameWidth
-        )}" height="${Math.max(0, backgroundHeight - frameWidth)}" fill="none" stroke="${fill}" stroke-width="${frameWidth}"/>`
+      ? `<rect x="${frameLeft}" y="${frameTop}" width="${Math.max(0, frameRightEdge - frameLeft)}" height="${Math.max(0, frameBottomEdge - frameTop)}" fill="none" stroke="${fill}" stroke-width="${frameWidth}"/>`
       : "";
   const frameRight = backgroundX + backgroundWidth;
   const frameBottom = backgroundY + backgroundHeight;

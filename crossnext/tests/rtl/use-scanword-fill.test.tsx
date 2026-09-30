@@ -12,21 +12,27 @@ const mocked = vi.hoisted(() => ({
     error: vi.fn(),
     success: vi.fn(),
   },
+  getScanwordEditionSvgLayoutSettingsAction: vi.fn(),
   getScanwordFillArchivesAction: vi.fn(),
   getScanwordFillSettingsAction: vi.fn(),
   getScanwordIssueSvgSettingsAction: vi.fn(),
   listScanwordSvgFontsAction: vi.fn(),
   saveScanwordFillSettingsAction: vi.fn(),
+  saveScanwordEditionSvgLayoutSettingsAction: vi.fn(),
   saveScanwordIssueSvgSettingsAction: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({ toast: mocked.toast }));
 vi.mock("@/app/actions/scanwords", () => ({
+  getScanwordEditionSvgLayoutSettingsAction: (...args: unknown[]) =>
+    mocked.getScanwordEditionSvgLayoutSettingsAction(...args),
   getScanwordFillArchivesAction: (...args: unknown[]) => mocked.getScanwordFillArchivesAction(...args),
   getScanwordFillSettingsAction: (...args: unknown[]) => mocked.getScanwordFillSettingsAction(...args),
   getScanwordIssueSvgSettingsAction: (...args: unknown[]) => mocked.getScanwordIssueSvgSettingsAction(...args),
   listScanwordSvgFontsAction: (...args: unknown[]) => mocked.listScanwordSvgFontsAction(...args),
   saveScanwordFillSettingsAction: (...args: unknown[]) => mocked.saveScanwordFillSettingsAction(...args),
+  saveScanwordEditionSvgLayoutSettingsAction: (...args: unknown[]) =>
+    mocked.saveScanwordEditionSvgLayoutSettingsAction(...args),
   saveScanwordIssueSvgSettingsAction: (...args: unknown[]) => mocked.saveScanwordIssueSvgSettingsAction(...args),
 }));
 
@@ -100,10 +106,12 @@ describe("useScanwordFill", () => {
     vi.clearAllMocks();
     vi.stubGlobal("EventSource", MockEventSource);
     mocked.getScanwordFillArchivesAction.mockResolvedValue([]);
+    mocked.getScanwordEditionSvgLayoutSettingsAction.mockResolvedValue(null);
     mocked.getScanwordFillSettingsAction.mockResolvedValue(null);
     mocked.getScanwordIssueSvgSettingsAction.mockResolvedValue(null);
     mocked.listScanwordSvgFontsAction.mockResolvedValue([]);
     mocked.saveScanwordFillSettingsAction.mockResolvedValue(null);
+    mocked.saveScanwordEditionSvgLayoutSettingsAction.mockResolvedValue(null);
     mocked.saveScanwordIssueSvgSettingsAction.mockResolvedValue(null);
   });
 
@@ -131,6 +139,7 @@ describe("useScanwordFill", () => {
 
     const { result } = renderHook(() =>
       useScanwordFill({
+        selectedEditionId: 10,
         selectedIssueId: "1",
         selectedTemplateId: 7,
         filesSignature: "files",
@@ -180,6 +189,7 @@ describe("useScanwordFill", () => {
 
     const { result } = renderHook(() =>
       useScanwordFill({
+        selectedEditionId: 10,
         selectedIssueId: "1",
         selectedTemplateId: 7,
         filesSignature: "files",
@@ -194,6 +204,12 @@ describe("useScanwordFill", () => {
   });
 
   it("finalizeReview proxies through next route and updates fillJob", async () => {
+    mocked.getScanwordIssueSvgSettingsAction.mockResolvedValue({ fontId: "42" });
+    mocked.getScanwordEditionSvgLayoutSettingsAction.mockResolvedValue({
+      templateCellSizeMm: 12,
+      answerCellSizeMm: 9.75,
+      type0CellSizeMm: 8.25,
+    });
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/fill/latest?issueId=1")) {
@@ -210,6 +226,15 @@ describe("useScanwordFill", () => {
       }
       if (url === "/api/scanwords/fill/finalize") {
         expect(init?.method).toBe("POST");
+        const requestBody = JSON.parse(String(init?.body)) as {
+          payload?: { svgLayout?: Record<string, number>; svgTypography?: { fontId?: string } };
+        };
+        expect(requestBody.payload?.svgLayout).toEqual({
+          templateCellSizeMm: 12,
+          answerCellSizeMm: 9.75,
+          type0CellSizeMm: 8.25,
+        });
+        expect(requestBody.payload?.svgTypography?.fontId).toBe("42");
         return jsonResponse({
           id: "202",
           issueId: "1",
@@ -233,6 +258,7 @@ describe("useScanwordFill", () => {
 
     const { result } = renderHook(() =>
       useScanwordFill({
+        selectedEditionId: 10,
         selectedIssueId: "1",
         selectedTemplateId: 7,
         filesSignature: "files",
@@ -242,7 +268,10 @@ describe("useScanwordFill", () => {
       }),
     );
 
-    await waitFor(() => expect(result.current.fillJob?.id).toBe("202"));
+    await waitFor(() => {
+      expect(result.current.fillJob?.id).toBe("202");
+      expect(result.current.fillSettings.templateCellSizeMm).toBe(12);
+    });
     await act(async () => {
       await result.current.finalizeReview({
         templates: [
@@ -256,6 +285,48 @@ describe("useScanwordFill", () => {
 
     expect(result.current.fillJob?.status).toBe("done");
     expect(fetchMock).toHaveBeenCalledWith("/api/scanwords/fill/finalize", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("saves independent SVG cell sizes for the selected edition", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({}, 404)),
+    );
+
+    const { result } = renderHook(() =>
+      useScanwordFill({
+        selectedEditionId: 10,
+        selectedIssueId: "1",
+        selectedTemplateId: 7,
+        filesSignature: "files",
+        crossApiBase: "http://cross",
+        templateSetup: null,
+        t: ((key: string) => key) as never,
+      }),
+    );
+
+    await waitFor(() => expect(mocked.getScanwordIssueSvgSettingsAction).toHaveBeenCalledWith({ issueId: "1" }));
+    expect(mocked.getScanwordEditionSvgLayoutSettingsAction).toHaveBeenCalledWith({ editionId: 10 });
+    act(() => {
+      result.current.handleTemplateCellSizeMmChange(12.3456);
+      result.current.handleAnswerCellSizeMmChange(9.75);
+      result.current.handleType0CellSizeMmChange(7.125);
+    });
+    await act(async () => {
+      await result.current.handleSettingsSave();
+    });
+
+    expect(mocked.saveScanwordIssueSvgSettingsAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ templateCellSizeMm: expect.any(Number) }),
+    );
+    expect(mocked.saveScanwordEditionSvgLayoutSettingsAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        editionId: 10,
+        templateCellSizeMm: 12.346,
+        answerCellSizeMm: 9.75,
+        type0CellSizeMm: 7.125,
+      }),
+    );
   });
 
   it("regenerates a single template through next route and resets cached review data", async () => {
@@ -312,6 +383,7 @@ describe("useScanwordFill", () => {
 
     const { result } = renderHook(() =>
       useScanwordFill({
+        selectedEditionId: 10,
         selectedIssueId: "1",
         selectedTemplateId: 7,
         filesSignature: "files",

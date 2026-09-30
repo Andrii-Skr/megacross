@@ -45,6 +45,9 @@ importers:
       '@megacross/cross-clues':
         specifier: file:../../packages/cross-clues
         version: file:../../packages/cross-clues
+      '@megacross/cross-format':
+        specifier: file:../../packages/cross-format
+        version: file:../../packages/cross-format
       '@prisma/adapter-pg':
         specifier: ^7.0.0
         version: 7.5.0
@@ -630,6 +633,9 @@ packages:
 
   '@megacross/cross-clues@file:../../packages/cross-clues':
     resolution: {directory: ../../packages/cross-clues, type: directory}
+
+  '@megacross/cross-format@file:../../packages/cross-format':
+    resolution: {directory: ../../packages/cross-format, type: directory}
 
   '@napi-rs/cli@3.5.1':
     resolution: {integrity: sha512-XBfLQRDcB3qhu6bazdMJsecWW55kR85l5/k0af9BIBELXQSsCFU0fzug7PX8eQp6vVdm7W/U3z6uP5WmITB2Gw==}
@@ -2603,7 +2609,11 @@ snapshots:
 
   '@kurkle/color@0.3.4': {}
 
-  '@megacross/cross-clues@file:../../packages/cross-clues': {}
+  '@megacross/cross-clues@file:../../packages/cross-clues':
+    dependencies:
+      '@megacross/cross-format': file:../../packages/cross-format
+
+  '@megacross/cross-format@file:../../packages/cross-format': {}
 
   '@napi-rs/cli@3.5.1(@emnapi/runtime@1.11.3)(@types/node@24.0.12)':
     dependencies:

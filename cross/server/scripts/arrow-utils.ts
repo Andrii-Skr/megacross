@@ -24,6 +24,7 @@ const ARROW_FILES: Record<number, string> = {
   0x04: "04.svg",
   0x05: "05.svg",
   0x06: "06.svg",
+  0x07: "07.svg",
   0x08: "08.svg",
   0x10: "10.svg",
   0x18: "18.svg",

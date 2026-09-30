@@ -1,7 +1,7 @@
 "use client";
 
 import { useFormatter, useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,6 +31,9 @@ type FillSettingsDialogProps = {
   onSpeedPresetChange: (value: FillSpeedPreset) => void;
   onDefinitionMaxPerCellChange: (value: number) => void;
   onDefinitionMaxPerHalfCellChange: (value: number) => void;
+  onTemplateCellSizeMmChange: (value: number) => void;
+  onAnswerCellSizeMmChange: (value: number) => void;
+  onType0CellSizeMmChange: (value: number) => void;
   onClueFontBasePtChange: (value: number) => void;
   onClueFontMinPtChange: (value: number) => void;
   onClueGlyphWidthPctChange: (value: number) => void;
@@ -42,12 +45,14 @@ type FillSettingsDialogProps = {
   onSave: () => void;
 };
 
+type SettingsTab = "fill" | "cells" | "svg";
+
 type NumericSettingsInputProps = {
   id: string;
   label: string;
   value: number;
-  min: number;
-  max: number;
+  min?: number;
+  max?: number;
   step: number;
   disabled: boolean;
   labelClassName?: string;
@@ -133,6 +138,9 @@ export function FillSettingsDialog({
   onSpeedPresetChange,
   onDefinitionMaxPerCellChange,
   onDefinitionMaxPerHalfCellChange,
+  onTemplateCellSizeMmChange,
+  onAnswerCellSizeMmChange,
+  onType0CellSizeMmChange,
   onClueFontBasePtChange,
   onClueFontMinPtChange,
   onClueGlyphWidthPctChange,
@@ -145,6 +153,23 @@ export function FillSettingsDialog({
 }: FillSettingsDialogProps) {
   const t = useTranslations();
   const f = useFormatter();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("fill");
+  const contentRef = useRef<HTMLDivElement>(null);
+  const tabs = [
+    { value: "fill", label: t("scanwordsFillSettingsTabFill") },
+    { value: "cells", label: t("scanwordsFillSettingsTabCells") },
+    { value: "svg", label: t("scanwordsFillSettingsTabSvg") },
+  ] as const;
+
+  useEffect(() => {
+    if (open) setActiveTab("fill");
+  }, [open]);
+
+  const selectTab = (tab: SettingsTab) => {
+    setActiveTab(tab);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  };
+
   const scopeEdition = selectedEditionName?.trim().length
     ? selectedEditionName
     : t("scanwordsFillArchiveUnknownEdition");
@@ -159,58 +184,144 @@ export function FillSettingsDialog({
             {t("scanwordsFillSettingsScope", { edition: scopeEdition, issue: scopeIssue })}
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-          <div className="grid gap-6">
-            <section className="grid gap-3">
-              <h3 className="text-sm font-medium">{t("scanwordsFillSettingsSectionFill")}</h3>
-              <div className="grid gap-2">
-                <Label>{t("scanwordsFillSpeedLabel")}</Label>
-                <RadioGroup
-                  value={settingsDraft.speedPreset}
-                  onValueChange={(value) => onSpeedPresetChange(value as FillSpeedPreset)}
-                  className="grid gap-2"
-                >
-                  {speedOptions.map((option) => (
-                    <div
-                      key={option.value}
-                      className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <RadioGroupItem id={`fill-speed-${option.value}`} value={option.value} />
-                        <Label htmlFor={`fill-speed-${option.value}`}>{option.label}</Label>
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {t("scanwordsFillMaxNodes", { value: f.number(option.maxNodes) })}
-                      </span>
+        <div
+          role="tablist"
+          aria-label={t("scanwordsFillSettingsTitle")}
+          className="flex gap-1 overflow-x-auto border-b px-6 pt-3"
+        >
+          {tabs.map((tab, index) => (
+            <button
+              key={tab.value}
+              id={`fill-settings-tab-${tab.value}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.value}
+              aria-controls={`fill-settings-panel-${tab.value}`}
+              tabIndex={activeTab === tab.value ? 0 : -1}
+              className={`shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring ${activeTab === tab.value ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+              onClick={() => selectTab(tab.value)}
+              onKeyDown={(event) => {
+                let nextIndex: number;
+                if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+                else if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+                else if (event.key === "Home") nextIndex = 0;
+                else if (event.key === "End") nextIndex = tabs.length - 1;
+                else return;
+                event.preventDefault();
+                const nextTab = tabs[nextIndex];
+                selectTab(nextTab.value);
+                event.currentTarget.parentElement
+                  ?.querySelector<HTMLButtonElement>(`#fill-settings-tab-${nextTab.value}`)
+                  ?.focus();
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div ref={contentRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <section
+            id="fill-settings-panel-fill"
+            role="tabpanel"
+            aria-labelledby="fill-settings-tab-fill"
+            hidden={activeTab !== "fill"}
+            className={activeTab === "fill" ? "grid gap-3" : "hidden"}
+          >
+            <h3 className="text-sm font-medium">{t("scanwordsFillSettingsSectionFill")}</h3>
+            <div className="grid gap-2">
+              <Label>{t("scanwordsFillSpeedLabel")}</Label>
+              <RadioGroup
+                value={settingsDraft.speedPreset}
+                onValueChange={(value) => onSpeedPresetChange(value as FillSpeedPreset)}
+                className="grid gap-2"
+              >
+                {speedOptions.map((option) => (
+                  <div
+                    key={option.value}
+                    className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <RadioGroupItem id={`fill-speed-${option.value}`} value={option.value} />
+                      <Label htmlFor={`fill-speed-${option.value}`}>{option.label}</Label>
                     </div>
-                  ))}
-                </RadioGroup>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <NumericSettingsInput
-                  id="scanwords-fill-max-per-cell"
-                  label={t("scanwordsFillDefinitionMaxPerCellLabel")}
-                  min={1}
-                  max={1024}
-                  step={1}
-                  value={settingsDraft.definitionMaxPerCell}
-                  onValueChange={onDefinitionMaxPerCellChange}
-                  disabled={settingsSaving}
-                />
-                <NumericSettingsInput
-                  id="scanwords-fill-max-per-half-cell"
-                  label={t("scanwordsFillDefinitionMaxPerHalfCellLabel")}
-                  min={1}
-                  max={1024}
-                  step={1}
-                  value={settingsDraft.definitionMaxPerHalfCell}
-                  onValueChange={onDefinitionMaxPerHalfCellChange}
-                  disabled={settingsSaving}
-                />
-              </div>
-            </section>
+                    <span className="text-xs text-muted-foreground">
+                      {t("scanwordsFillMaxNodes", { value: f.number(option.maxNodes) })}
+                    </span>
+                  </div>
+                ))}
+              </RadioGroup>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <NumericSettingsInput
+                id="scanwords-fill-max-per-cell"
+                label={t("scanwordsFillDefinitionMaxPerCellLabel")}
+                min={1}
+                max={1024}
+                step={1}
+                value={settingsDraft.definitionMaxPerCell}
+                onValueChange={onDefinitionMaxPerCellChange}
+                disabled={settingsSaving}
+              />
+              <NumericSettingsInput
+                id="scanwords-fill-max-per-half-cell"
+                label={t("scanwordsFillDefinitionMaxPerHalfCellLabel")}
+                min={1}
+                max={1024}
+                step={1}
+                value={settingsDraft.definitionMaxPerHalfCell}
+                onValueChange={onDefinitionMaxPerHalfCellChange}
+                disabled={settingsSaving}
+              />
+            </div>
+          </section>
 
-            <section className="grid gap-3 border-t pt-5">
+          <section
+            id="fill-settings-panel-cells"
+            role="tabpanel"
+            aria-labelledby="fill-settings-tab-cells"
+            hidden={activeTab !== "cells"}
+            className={activeTab === "cells" ? "grid gap-3" : "hidden"}
+          >
+            <h3 className="text-sm font-medium">{t("scanwordsFillSettingsSectionSvgCellSizes")}</h3>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <NumericSettingsInput
+                id="scanwords-svg-template-cell-size"
+                label={t("scanwordsSvgTemplateCellSizeMmLabel")}
+                step={0.1}
+                value={settingsDraft.templateCellSizeMm}
+                onValueChange={onTemplateCellSizeMmChange}
+                disabled={settingsSaving}
+                suffix={t("millimetersShort")}
+              />
+              <NumericSettingsInput
+                id="scanwords-svg-answer-cell-size"
+                label={t("scanwordsSvgAnswerCellSizeMmLabel")}
+                step={0.1}
+                value={settingsDraft.answerCellSizeMm}
+                onValueChange={onAnswerCellSizeMmChange}
+                disabled={settingsSaving}
+                suffix={t("millimetersShort")}
+              />
+              <NumericSettingsInput
+                id="scanwords-svg-type0-cell-size"
+                label={t("scanwordsSvgType0CellSizeMmLabel")}
+                step={0.1}
+                value={settingsDraft.type0CellSizeMm}
+                onValueChange={onType0CellSizeMmChange}
+                disabled={settingsSaving}
+                suffix={t("millimetersShort")}
+              />
+            </div>
+          </section>
+
+          <div
+            id="fill-settings-panel-svg"
+            role="tabpanel"
+            aria-labelledby="fill-settings-tab-svg"
+            hidden={activeTab !== "svg"}
+            className={activeTab === "svg" ? "grid gap-6" : "hidden"}
+          >
+            <section className="grid gap-3">
               <h3 className="text-sm font-medium">{t("scanwordsFillSettingsSectionClueText")}</h3>
               <div className="grid gap-3 sm:grid-cols-2">
                 <NumericSettingsInput

@@ -9,6 +9,9 @@ import { getLocale } from "next-intl/server";
 import { z } from "zod";
 import { authOptions } from "@/auth";
 import {
+  DEFAULT_ANSWER_CELL_SIZE_MM,
+  DEFAULT_TEMPLATE_CELL_SIZE_MM,
+  DEFAULT_TYPE0_CELL_SIZE_MM,
   normalizeTemplateSetupPayload,
   type TemplateSetupPreviewArrow,
   type TemplateSetupPreviewCell,
@@ -98,6 +101,10 @@ const fillSettingsLoadSchema = z.object({
 
 const issueSvgSettingsLoadSchema = z.object({
   issueId: z.string().min(1),
+});
+
+const editionSvgLayoutSettingsLoadSchema = z.object({
+  editionId: z.number().int().positive(),
 });
 
 const SVG_FONT_PT_MIN = 1;
@@ -315,6 +322,13 @@ const fillSettingsSchema = z
     }
   });
 
+const positiveMillimetersSchema = z
+  .number()
+  .positive()
+  .refine((value) => Number(value.toFixed(3)) > 0, {
+    message: "Value must remain positive at millimeter precision",
+  });
+
 const issueSvgSettingsSchema = z
   .object({
     issueId: z.string().min(1),
@@ -335,6 +349,13 @@ const issueSvgSettingsSchema = z
       });
     }
   });
+
+const editionSvgLayoutSettingsSchema = z.object({
+  editionId: z.number().int().positive(),
+  templateCellSizeMm: positiveMillimetersSchema,
+  answerCellSizeMm: positiveMillimetersSchema,
+  type0CellSizeMm: positiveMillimetersSchema,
+});
 
 async function ensureScanwordsAccess() {
   const session = await getServerSession(authOptions);
@@ -697,6 +718,10 @@ function normalizeSystemFontFamily(value: string | null | undefined): string {
   return normalized.length > 0 ? normalized.slice(0, 120) : DEFAULT_SVG_SYSTEM_FONT_FAMILY;
 }
 
+function roundMillimeters(value: number): number {
+  return Number(value.toFixed(3));
+}
+
 function defaultIssueSvgSettings() {
   return {
     clueFontBasePt: DEFAULT_SVG_CLUE_FONT_BASE_PT,
@@ -706,6 +731,14 @@ function defaultIssueSvgSettings() {
     photoCluesGrayscale: true,
     fontId: null as string | null,
     systemFontFamily: DEFAULT_SVG_SYSTEM_FONT_FAMILY,
+  };
+}
+
+function defaultEditionSvgLayoutSettings() {
+  return {
+    templateCellSizeMm: DEFAULT_TEMPLATE_CELL_SIZE_MM,
+    answerCellSizeMm: DEFAULT_ANSWER_CELL_SIZE_MM,
+    type0CellSizeMm: DEFAULT_TYPE0_CELL_SIZE_MM,
   };
 }
 
@@ -1643,6 +1676,68 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
     fontId: settings.fontId ? String(settings.fontId) : null,
     systemFontFamily: normalizeSystemFontFamily(settings.systemFontFamily),
   };
+}
+
+export async function getScanwordEditionSvgLayoutSettingsAction(
+  input: z.infer<typeof editionSvgLayoutSettingsLoadSchema>,
+) {
+  await ensureScanwordsAccess();
+  const { editionId } = editionSvgLayoutSettingsLoadSchema.parse(input);
+  try {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        templateCellSizeMm: number;
+        answerCellSizeMm: number;
+        type0CellSizeMm: number;
+      }>
+    >(Prisma.sql`
+      SELECT "templateCellSizeMm", "answerCellSizeMm", "type0CellSizeMm"
+      FROM "public"."scanword_edition_svg_layout_settings"
+      WHERE "editionId" = ${editionId}
+      LIMIT 1
+    `);
+    return rows[0] ?? defaultEditionSvgLayoutSettings();
+  } catch (error) {
+    if (isMissingTableError(error) || isMissingColumnError(error)) {
+      return defaultEditionSvgLayoutSettings();
+    }
+    throw error;
+  }
+}
+
+export async function saveScanwordEditionSvgLayoutSettingsAction(
+  input: z.infer<typeof editionSvgLayoutSettingsSchema>,
+) {
+  await ensureScanwordsAccess();
+  const data = editionSvgLayoutSettingsSchema.parse(input);
+  const templateCellSizeMm = roundMillimeters(data.templateCellSizeMm);
+  const answerCellSizeMm = roundMillimeters(data.answerCellSizeMm);
+  const type0CellSizeMm = roundMillimeters(data.type0CellSizeMm);
+
+  const rows = await prisma.$queryRaw<
+    Array<{
+      templateCellSizeMm: number;
+      answerCellSizeMm: number;
+      type0CellSizeMm: number;
+    }>
+  >(Prisma.sql`
+    INSERT INTO "public"."scanword_edition_svg_layout_settings"
+      ("editionId", "templateCellSizeMm", "answerCellSizeMm", "type0CellSizeMm", "updatedAt")
+    VALUES
+      (${data.editionId}, ${templateCellSizeMm}, ${answerCellSizeMm}, ${type0CellSizeMm}, NOW())
+    ON CONFLICT ("editionId")
+    DO UPDATE SET
+      "templateCellSizeMm" = EXCLUDED."templateCellSizeMm",
+      "answerCellSizeMm" = EXCLUDED."answerCellSizeMm",
+      "type0CellSizeMm" = EXCLUDED."type0CellSizeMm",
+      "updatedAt" = NOW()
+    RETURNING "templateCellSizeMm", "answerCellSizeMm", "type0CellSizeMm"
+  `);
+  const settings = rows[0];
+  if (!settings) {
+    throw actionError("SVG_LAYOUT_SETTINGS_SAVE_FAILED", 500);
+  }
+  return settings;
 }
 
 export async function getScanwordFillSettingsAction(input: z.infer<typeof fillSettingsLoadSchema>) {

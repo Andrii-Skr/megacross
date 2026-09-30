@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { statSync } from "node:fs";
+import archiver from "archiver";
 import { getWordsAndDefinitions, getAllTags } from "./services/wordDefinitionService";
 import type { UsageRebalanceMode } from "./utils/usageRebalance";
 import {
@@ -15,6 +16,21 @@ import {
   type FillJobOptions,
 } from "./services/fillJobService";
 import { parseTemplateSetupPayload } from "./services/fillJobTemplateSetupService";
+import {
+  appendTemplatesToIssue,
+  cancelTemplateGeneration,
+  preflightTemplateGeneration,
+  readLatestTemplateGenerationJob,
+  readTemplateGenerationJob,
+  readTemplateResultBytes,
+  readTemplateResults,
+  readTemplateResultSet,
+  resumeTemplateGenerationJobs,
+  scheduleTemplateGenerationCleanup,
+  startTemplateGeneration,
+  subscribeTemplateGeneration,
+} from "./templateGenerator/service";
+import type { TemplateGenerationRequest } from "./templateGenerator/types";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -396,6 +412,120 @@ app.get("/api/fill/:jobId/archive", async (req, res) => {
   }
 });
 
+function templateError(res: Response, error: unknown, fallback: string): void {
+  const statusRaw = error && typeof error === "object" && "status" in error ? Number((error as { status?: unknown }).status) : 0;
+  const status = statusRaw >= 400 && statusRaw <= 599 ? statusRaw : 400;
+  res.status(status).json({ error: error instanceof Error ? error.message : fallback });
+}
+
+app.post("/api/template-generator/preflight", async (req, res) => {
+  try { res.json(await preflightTemplateGeneration(req.body as TemplateGenerationRequest)); }
+  catch (error) { templateError(res, error, "Template preflight failed"); }
+});
+
+app.post("/api/template-generator/jobs", async (req, res) => {
+  const userId = Number(req.body?.userId);
+  try {
+    const request = { ...(req.body ?? {}) } as TemplateGenerationRequest & { userId?: unknown };
+    delete request.userId;
+    res.status(202).json(await startTemplateGeneration(request, Number.isInteger(userId) && userId > 0 ? userId : null));
+  } catch (error) { templateError(res, error, "Failed to start template generation"); }
+});
+
+app.get("/api/template-generator/jobs", async (req, res) => {
+  const userId = parsePositiveInt(req.query.userId);
+  if (!userId) { res.status(400).json({ error: "Invalid userId" }); return; }
+  try { res.json(await readLatestTemplateGenerationJob(userId)); }
+  catch (error) { templateError(res, error, "Failed to read latest template job"); }
+});
+
+app.get("/api/template-generator/jobs/:jobId", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) { res.status(400).json({ error: "Invalid jobId" }); return; }
+  try {
+    const job = await readTemplateGenerationJob(jobId);
+    if (!job) { res.status(404).json({ error: "Job not found" }); return; }
+    res.json(job);
+  } catch (error) { templateError(res, error, "Failed to read template job"); }
+});
+
+app.delete("/api/template-generator/jobs/:jobId", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) { res.status(400).json({ error: "Invalid jobId" }); return; }
+  try {
+    if (!(await cancelTemplateGeneration(jobId))) { res.status(404).json({ error: "Job not found" }); return; }
+    res.json({ ok: true });
+  } catch (error) { templateError(res, error, "Failed to cancel template job"); }
+});
+
+app.get("/api/template-generator/jobs/:jobId/events", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) { res.status(400).json({ error: "Invalid jobId" }); return; }
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  const current = await readTemplateGenerationJob(jobId);
+  if (current) res.write(`data: ${JSON.stringify(current)}\n\n`);
+  const unsubscribe = subscribeTemplateGeneration(jobId, (job) => res.write(`data: ${JSON.stringify(job)}\n\n`));
+  const ping = setInterval(() => res.write("event: ping\ndata: {}\n\n"), 15_000);
+  req.on("close", () => { clearInterval(ping); unsubscribe(); res.end(); });
+});
+
+app.get("/api/template-generator/jobs/:jobId/results", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) { res.status(400).json({ error: "Invalid jobId" }); return; }
+  try {
+    const page = parsePositiveInt(req.query.page) ?? 1;
+    const pageSize = parsePositiveInt(req.query.pageSize) ?? 24;
+    res.json(await readTemplateResults(jobId, page, pageSize));
+  } catch (error) { templateError(res, error, "Failed to read template results"); }
+});
+
+app.get("/api/template-generator/jobs/:jobId/results/:resultId/fsh", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  const resultId = parseBigIntStrict(req.params.resultId);
+  if (jobId === null || resultId === null) { res.status(400).json({ error: "Invalid id" }); return; }
+  try {
+    const result = await readTemplateResultBytes(jobId, resultId);
+    if (!result) { res.status(404).json({ error: "Result not found" }); return; }
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="generated_${jobId}_${result.ordinal}.fsh"`);
+    res.send(Buffer.from(result.fshBytes));
+  } catch (error) { templateError(res, error, "Failed to download FSH"); }
+});
+
+app.post("/api/template-generator/jobs/:jobId/zip", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  if (jobId === null) { res.status(400).json({ error: "Invalid jobId" }); return; }
+  let ids: bigint[] | undefined;
+  try { ids = Array.isArray(req.body?.resultIds) ? req.body.resultIds.map((value: unknown) => BigInt(String(value))) : undefined; }
+  catch { res.status(400).json({ error: "Invalid resultIds" }); return; }
+  try {
+    const results = await readTemplateResultSet(jobId, ids);
+    if (!results.length) { res.status(404).json({ error: "No results found" }); return; }
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="templates_${jobId}.zip"`);
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    archive.on("error", (error) => res.destroy(error));
+    archive.pipe(res);
+    for (const result of results) archive.append(Buffer.from(result.fshBytes), { name: `generated_${jobId}_${result.ordinal}.fsh` });
+    await archive.finalize();
+  } catch (error) { if (!res.headersSent) templateError(res, error, "Failed to build ZIP"); }
+});
+
+app.post("/api/template-generator/jobs/:jobId/append", async (req, res) => {
+  const jobId = parseBigIntStrict(req.params.jobId);
+  const issueId = parseBigIntStrict(req.body?.issueId);
+  if (jobId === null || issueId === null) { res.status(400).json({ error: "Invalid jobId or issueId" }); return; }
+  let resultIds: bigint[];
+  try { resultIds = Array.isArray(req.body?.resultIds) ? req.body.resultIds.map((value: unknown) => BigInt(String(value))) : []; }
+  catch { res.status(400).json({ error: "Invalid resultIds" }); return; }
+  if (!resultIds.length) { res.status(400).json({ error: "Select at least one result" }); return; }
+  try { res.json(await appendTemplatesToIssue(jobId, resultIds, issueId)); }
+  catch (error) { templateError(res, error, "Failed to append templates"); }
+});
+
 app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
   if (
     error &&
@@ -413,10 +543,13 @@ app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
 
 const server = app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
+  void resumeTemplateGenerationJobs().catch((error) => console.error("Failed to resume template generation jobs:", error));
 });
+const stopTemplateCleanup = scheduleTemplateGenerationCleanup();
 server.ref();
 
 const closeServer = () => {
+  stopTemplateCleanup();
   server.close((error) => {
     if (error) {
       console.error("Failed to stop server cleanly:", error);

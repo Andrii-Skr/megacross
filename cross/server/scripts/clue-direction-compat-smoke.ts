@@ -1,7 +1,9 @@
 #!/usr/bin/env tsx
 import assert from "node:assert/strict";
 import { buildClueEntries, buildClueLayouts } from "@megacross/cross-clues";
+import { arrowCellForCode, CLUE_MAP } from "@megacross/cross-format";
 import { DIRS, type Grid, type Slot } from "../src/types";
+import { arrowSvg } from "./arrow-utils";
 
 function createCodes(rows: number, cols: number, value = 0x01): number[][] {
   return Array.from({ length: rows }, () => Array(cols).fill(value));
@@ -89,6 +91,13 @@ function runBuildClueLayoutsCompatibilitySmoke(): void {
 }
 
 function main(): void {
+  for (const [codeText, entries] of Object.entries(CLUE_MAP)) {
+    if (!entries.every((entry) => entry.dirKey === 6 || entry.dirKey === 8)) continue;
+    const code = Number(codeText);
+    const svg = arrowSvg("batch", code, arrowCellForCode(code), 0, 0, 40, 20);
+    assert.equal((svg.match(/<g transform/g) ?? []).length, entries.length,
+      `FSH arrow ${code.toString(16)} must render all ${entries.length} component(s)`);
+  }
   runBuildClueEntriesCompatibilitySmoke();
   runBuildClueLayoutsCompatibilitySmoke();
   console.log("clue direction compatibility smoke checks passed");

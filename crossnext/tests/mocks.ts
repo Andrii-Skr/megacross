@@ -73,6 +73,9 @@ export const prisma = {
   issue: {
     count: vi.fn(),
   },
+  scanwordTemplateGenerationJob: {
+    findFirst: vi.fn(),
+  },
   language: {
     findUnique: vi.fn(),
   },

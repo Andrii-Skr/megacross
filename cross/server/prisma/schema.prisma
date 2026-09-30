@@ -210,30 +210,30 @@ model user {
 
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model word_v {
-  id                BigInt              @id @default(autoincrement())
-  word_text         String              @db.VarChar(255)
-  length            Int                 @db.SmallInt
-  file_id           BigInt              @default(-1)
-  user_add          String              @default("system") @db.VarChar(255)
-  create_at         DateTime?           @default(now()) @db.Timestamp(6)
-  using             Int                 @default(1) @db.SmallInt
-  korny             String
-  data_set          DateTime?           @db.Timestamp(6)
-  user_set          String              @default("") @db.VarChar(255)
-  go_flag           Int                 @default(0) @db.SmallInt
-  is_deleted        Boolean             @default(false)
-  langId            Int
-  approvedBy        Int?                @db.SmallInt
-  createBy          Int?                @db.SmallInt
-  updateBy          Int?                @db.SmallInt
-  update_at         DateTime?           @db.Timestamp(6)
-  word_text_norm    String?             @db.VarChar(255)
+  id                     BigInt                   @id @default(autoincrement())
+  word_text              String                   @db.VarChar(255)
+  length                 Int                      @db.SmallInt
+  file_id                BigInt                   @default(-1)
+  user_add               String                   @default("system") @db.VarChar(255)
+  create_at              DateTime?                @default(now()) @db.Timestamp(6)
+  using                  Int                      @default(1) @db.SmallInt
+  korny                  String
+  data_set               DateTime?                @db.Timestamp(6)
+  user_set               String                   @default("") @db.VarChar(255)
+  go_flag                Int                      @default(0) @db.SmallInt
+  is_deleted             Boolean                  @default(false)
+  langId                 Int
+  approvedBy             Int?                     @db.SmallInt
+  createBy               Int?                     @db.SmallInt
+  updateBy               Int?                     @db.SmallInt
+  update_at              DateTime?                @db.Timestamp(6)
+  word_text_norm         String?                  @db.VarChar(255)
   edition_word_hot_state edition_word_hot_state[]
-  edition_word_stat edition_word_stat[]
-  issue_word_usage  issue_word_usage[]
-  opred_v           opred_v[]
-  pending_words     pending_words[]
-  language          language            @relation(fields: [langId], references: [id])
+  edition_word_stat      edition_word_stat[]
+  issue_word_usage       issue_word_usage[]
+  opred_v                opred_v[]
+  pending_words          pending_words[]
+  language               language                 @relation(fields: [langId], references: [id])
 
   @@index([langId], map: "idx_word_v__langId")
   @@index([langId, word_text], map: "idx_word_v__langId_word_text")
@@ -314,17 +314,30 @@ model edition_word_hot_state {
 }
 
 model editions {
-  id                 Int                  @id @default(autoincrement())
-  code               String               @unique @db.VarChar(32)
-  name               String               @db.VarChar(255)
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime
-  deletedAt          DateTime?
-  hidden             Boolean              @default(false)
-  edition_word_hot_state edition_word_hot_state[]
-  edition_opred_stat edition_opred_stat[]
-  edition_word_stat  edition_word_stat[]
-  issues             issues[]
+  id                                   Int                                   @id @default(autoincrement())
+  code                                 String                                @unique @db.VarChar(32)
+  name                                 String                                @db.VarChar(255)
+  createdAt                            DateTime                              @default(now())
+  updatedAt                            DateTime
+  deletedAt                            DateTime?
+  hidden                               Boolean                               @default(false)
+  edition_word_hot_state               edition_word_hot_state[]
+  edition_opred_stat                   edition_opred_stat[]
+  edition_word_stat                    edition_word_stat[]
+  issues                               issues[]
+  scanword_edition_svg_layout_settings scanword_edition_svg_layout_settings?
+}
+
+model scanword_edition_svg_layout_settings {
+  id                 BigInt   @id @default(autoincrement())
+  editionId          Int      @unique
+  templateCellSizeMm Float    @default(11)
+  answerCellSizeMm   Float    @default(10)
+  type0CellSizeMm    Float    @default(8.5)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now())
+
+  editions editions @relation(fields: [editionId], references: [id], onDelete: Cascade)
 }
 
 model issue_numbers {
@@ -445,20 +458,61 @@ model scanword_svg_fonts {
 }
 
 model scanword_issue_svg_settings {
-  id               BigInt   @id @default(autoincrement())
-  issueId          BigInt   @unique
-  clueFontBasePt   Int      @default(9)
-  clueFontMinPt    Int      @default(8)
-  photoCluesGrayscale Boolean @default(true)
-  fontId           BigInt?
-  systemFontFamily String   @default("Arial") @db.VarChar(120)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @default(now())
+  id                  BigInt   @id @default(autoincrement())
+  issueId             BigInt   @unique
+  clueFontBasePt      Int      @default(9)
+  clueFontMinPt       Int      @default(8)
+  photoCluesGrayscale Boolean  @default(true)
+  fontId              BigInt?
+  systemFontFamily    String   @default("Arial") @db.VarChar(120)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now())
 
-  issues issues             @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  issues issues              @relation(fields: [issueId], references: [id], onDelete: Cascade)
   font   scanword_svg_fonts? @relation(fields: [fontId], references: [id], onDelete: SetNull)
 
   @@index([fontId], map: "idx_scanword_issue_svg_settings_font")
+}
+
+model scanword_template_generation_jobs {
+  id                 BigInt                                 @id @default(autoincrement())
+  userId             Int?
+  status             String                                 @default("queued") @db.VarChar(16)
+  phase              String                                 @default("queued") @db.VarChar(32)
+  progress           Int                                    @default(0)
+  requestedCount     Int
+  acceptedCount      Int                                    @default(0)
+  attempts           Int                                    @default(0)
+  parameters         Json
+  seed               String                                 @db.VarChar(128)
+  rngPosition        BigInt                                 @default(0)
+  dictionaryCounts   Json?
+  targetDistribution Json?
+  error              String?
+  createdAt          DateTime                               @default(now())
+  updatedAt          DateTime                               @default(now())
+  expiresAt          DateTime
+  results            scanword_template_generation_results[]
+
+  @@index([status, createdAt], map: "idx_template_generation_jobs_queue")
+  @@index([userId, createdAt], map: "idx_template_generation_jobs_user")
+  @@index([expiresAt], map: "idx_template_generation_jobs_expires")
+}
+
+model scanword_template_generation_results {
+  id          BigInt                            @id @default(autoincrement())
+  jobId       BigInt
+  ordinal     Int
+  fshBytes    Bytes
+  grid        Json
+  metrics     Json
+  fingerprint String                            @db.Text
+  createdAt   DateTime                          @default(now())
+  job         scanword_template_generation_jobs @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, ordinal], map: "template_generation_results_job_ordinal_key")
+  @@unique([jobId, fingerprint], map: "template_generation_results_job_fingerprint_key")
+  @@index([jobId, id], map: "idx_template_generation_results_page")
 }
 
 enum PendingStatus {

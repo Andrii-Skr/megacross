@@ -1,4 +1,5 @@
-import { buildClueLayouts } from "../src/utils/clues";
+import { buildClueLayouts, findAnchorlessEdgeClusterCells } from "../src/utils/clues";
+import { buildStartNumberByCell, isCrosswordTemplate } from "../src/utils/crosswordTextExport";
 import type { Cell, Grid, Slot } from "../src/types";
 import { arrowSvg } from "./arrow-utils";
 import {
@@ -7,6 +8,7 @@ import {
   CLUE_GLYPH_WIDTH_SCALE,
   CLUE_LINE_HEIGHT_SCALE,
   CLUE_PLAQUE_TEXT_INSET_MM,
+  PHOTO_CLUE_PLAQUE_HEIGHT_MM,
   buildClueTextMap,
   convertCluePtToSvgUnits,
   renderClueText,
@@ -23,8 +25,6 @@ import {
   CELL_STROKE_COLOR,
   CELL_STROKE_WIDTH,
   CLUE_TEXT_FILL,
-  COREL_CELL_SIZE_MM,
-  COREL_CELL_SIZE_UNITS,
   COREL_MIN_SVG_HEIGHT_UNITS,
   COREL_MIN_SVG_WIDTH_UNITS,
   COREL_STROKE_WIDTH_UNITS,
@@ -35,8 +35,6 @@ import {
 
 const MM_PER_PT = 25.4 / 72;
 const PX_PER_MM = 96 / 25.4;
-const DEFAULT_CELL = 30;
-const DEFAULT_TYPE0_CELL_MM = 8.5;
 const DEFAULT_TYPE0_NUMBER_FONT_PT = 10;
 const DEFAULT_KEYWORD_MARKER_FONT_PT = 10;
 const DEFAULT_TYPE0_OUTER_STROKE_MM = 2;
@@ -65,12 +63,13 @@ export type BuildCrosswordSvgOptions = {
   debugClusterFill?: boolean;
   debugClusterColor?: string;
   svgTypography?: CrosswordSvgTypography | null;
+  templateCellSizeMm: number;
+  type0CellSizeMm: number;
   photoClues?: Array<{
     clueKey: string;
     href: string;
   }>;
   type0Features?: boolean;
-  type0CellMm?: number;
   type0NumberFontPt?: number;
   type0OuterStrokeMm?: number;
   type0OuterStrokeColor?: string;
@@ -114,20 +113,6 @@ function convertMmToSvgUnits(mm: number, useCorelStyle: boolean): number {
     : Math.round(mm * PX_PER_MM * 1000) / 1000;
 }
 
-function buildStartNumberByCell(slots: Slot[]): Map<string, number> {
-  const uniqueStarts = new Map<string, { r: number; c: number }>();
-  for (const slot of slots) {
-    const key = `${slot.r},${slot.c}`;
-    if (!uniqueStarts.has(key)) uniqueStarts.set(key, { r: slot.r, c: slot.c });
-  }
-  const ordered = [...uniqueStarts.values()].sort((a, b) => a.r - b.r || a.c - b.c);
-  const numbered = new Map<string, number>();
-  ordered.forEach((item, idx) => {
-    numbered.set(`${item.r},${item.c}`, idx + 1);
-  });
-  return numbered;
-}
-
 export function buildCrosswordSvg(
   grid: Grid,
   slots: Slot[],
@@ -138,7 +123,7 @@ export function buildCrosswordSvg(
   const useCorelStyle = options.style === "corel";
   const type0Features = options.type0Features !== false;
   const isType0Template = type0Features && grid.templateTypeCode === "0";
-  const type0CellMm = options.type0CellMm ?? DEFAULT_TYPE0_CELL_MM;
+  const hasCutout = grid.data.some((row) => row.includes("%"));
   const type0NumberFontPt = options.type0NumberFontPt ?? DEFAULT_TYPE0_NUMBER_FONT_PT;
   const type0OuterStrokeMm = options.type0OuterStrokeMm ?? DEFAULT_TYPE0_OUTER_STROKE_MM;
   const type0OuterStrokeColor = options.type0OuterStrokeColor ?? DEFAULT_TYPE0_OUTER_STROKE_COLOR;
@@ -149,10 +134,8 @@ export function buildCrosswordSvg(
   const debugClusterColor = options.debugClusterColor ?? DEFAULT_DEBUG_CLUSTER_COLOR;
   const typography = options.svgTypography ?? null;
 
-  const baseCell = useCorelStyle ? COREL_CELL_SIZE_UNITS : DEFAULT_CELL;
-  const cell = isType0Template && useCorelStyle
-    ? Math.round(type0CellMm * COREL_UNITS_PER_MM * 1000) / 1000
-    : baseCell;
+  const cellSizeMm = isType0Template ? options.type0CellSizeMm : options.templateCellSizeMm;
+  const cell = convertMmToSvgUnits(cellSizeMm, useCorelStyle);
 
   const strokeWidth = useCorelStyle ? COREL_STROKE_WIDTH_UNITS : CELL_STROKE_WIDTH;
   const svgPad = strokeWidth / 2;
@@ -165,11 +148,7 @@ export function buildCrosswordSvg(
   const wordBaselineAttr = useCorelStyle ? ' dominant-baseline="alphabetic"' : "";
   const wordTextAnchorAttr = useCorelStyle ? ' text-anchor="start"' : "";
 
-  const outerStrokeWidth = isType0Template && useCorelStyle
-    ? Math.round(type0OuterStrokeMm * COREL_UNITS_PER_MM * 1000) / 1000
-    : 0;
-
-  const showStartNumbers = isType0Template;
+  const showStartNumbers = isCrosswordTemplate(grid);
   const startNumberFontSize = showStartNumbers && useCorelStyle
     ? Math.round(type0NumberFontPt * MM_PER_PT * COREL_UNITS_PER_MM * 1000) / 1000
     : useCorelStyle
@@ -222,6 +201,13 @@ export function buildCrosswordSvg(
 
   const usedWords = slots.map((slot) => slot.cells.map(([r, c]) => solved[r][c]).join("")).join("\n");
   const clueLayouts = buildClueLayouts(grid, slots, solved, definitions);
+  const anchorlessCutoutCells = findAnchorlessEdgeClusterCells(grid, clueLayouts);
+  const anchorlessCutout = new Set(anchorlessCutoutCells.map(([row, col]) => `${row},${col}`));
+  const outerStrokeWidth = isType0Template && useCorelStyle
+    ? Math.round(type0OuterStrokeMm * COREL_UNITS_PER_MM * 1000) / 1000
+    : hasCutout || anchorlessCutout.size > 0
+      ? strokeWidth
+      : 0;
   const clueTextMap = buildClueTextMap(clueLayouts);
   const photoClueMap = new Map((options.photoClues ?? []).map((item) => [item.clueKey, item.href] as const));
   const clusterCells = new Set<string>();
@@ -263,7 +249,9 @@ export function buildCrosswordSvg(
   }
 
   const renderCellMask: boolean[][] = Array.from({ length: rowCount }, (_, row) =>
-    Array.from({ length: colCount }, (_, col) => !outer02Mask[row][col])
+    Array.from({ length: colCount }, (_, col) =>
+      !outer02Mask[row][col] && grid.data[row]?.[col] !== "%" &&
+      (debugClusterFill || !anchorlessCutout.has(`${row},${col}`)))
   );
   const isRenderedCell = (row: number, col: number): boolean =>
     row >= 0 && row < rowCount && col >= 0 && col < colCount && renderCellMask[row][col];
@@ -316,9 +304,8 @@ export function buildCrosswordSvg(
       ? Number(typography?.clueLineHeightScale)
       : CLUE_LINE_HEIGHT_SCALE;
   const cluePlaqueTextInset = convertMmToSvgUnits(CLUE_PLAQUE_TEXT_INSET_MM, useCorelStyle);
-  const clusterDefinitionPadding = useCorelStyle
-    ? Math.round(COREL_UNITS_PER_MM * 1000) / 1000
-    : cell / COREL_CELL_SIZE_MM;
+  const photoCluePlaqueHeight = convertMmToSvgUnits(PHOTO_CLUE_PLAQUE_HEIGHT_MM, useCorelStyle);
+  const clusterDefinitionPadding = convertMmToSvgUnits(1, useCorelStyle);
 
   if (fontFaceCss) {
     svgDefs.push(`<style type="text/css"><![CDATA[${fontFaceCss}]]></style>`);
@@ -336,7 +323,7 @@ export function buildCrosswordSvg(
       const clueLayout = clueTextMap.get(clueKey);
 
       if (ch === "#") {
-        const isClusterCell = clusterCells.has(clueKey);
+        const isClusterCell = clusterCells.has(clueKey) || anchorlessCutout.has(clueKey);
         const blockFill = debugClusterFill && isClusterCell
           ? debugClusterColor
           : isType0Template && code === 0x02
@@ -377,6 +364,7 @@ export function buildCrosswordSvg(
             backgroundInset: photoHref || isExpandedDefinition ? strokeWidth : 0,
             backgroundAnchor: photoHref ? "bottom-left" : "auto",
             plaqueTextInset: photoHref ? cluePlaqueTextInset : 0,
+            plaqueHeight: photoHref ? photoCluePlaqueHeight : 0,
             frame: photoHref ? "rect" : "none",
             frameWidth: photoHref ? strokeWidth : 0,
             clusterFrame: !photoHref && isClusterDefinition ? "top-right" : "none",
@@ -439,7 +427,7 @@ export function buildCrosswordSvg(
     }
   }
 
-  if (isType0Template && outerStrokeWidth > 0) {
+  if (outerStrokeWidth > 0) {
     for (let row = 0; row < rowCount; row += 1) {
       for (let col = 0; col < colCount; col += 1) {
         if (!isRenderedCell(row, col)) continue;

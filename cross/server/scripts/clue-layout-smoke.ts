@@ -1,13 +1,20 @@
 #!/usr/bin/env tsx
 import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { scanSlotsDetailed } from "@megacross/cross-format";
 import type { Grid, Slot } from "../src/types";
 import { DIRS } from "../src/types";
-import { buildClueLayouts } from "../src/utils/clues";
+import { buildClueLayouts, findAnchorlessEdgeClusterCells } from "../src/utils/clues";
+import { parseFsh } from "../src/utils/parseFsh";
 import { runClueRenderSmokeSuite } from "./clue-layout-smoke-render";
 import { runClueReviewSmokeSuite } from "./clue-layout-smoke-review";
 import { buildCrosswordSvg } from "./crossword-svg";
+import { convertMmToCorelUnits } from "./svg-theme";
 
 const AREA_EXPANSION_ENV_KEY = "CROSS_ENABLE_02_AREA_EXPANSION";
+const TEST_DEFAULT_CELL_SIZE_MM = 30 / (96 / 25.4);
+const TEST_TYPE0_CELL_SIZE_MM = 8.5;
 
 function createCodes(rows: number, cols: number, value = 0x01): number[][] {
   return Array.from({ length: rows }, () => Array(cols).fill(value));
@@ -841,20 +848,19 @@ function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
     style: "default",
     arrowMode: "export",
     arrowScale: 1,
+    templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
+    type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
     photoClues: [{ clueKey: "1,1", href: embeddedPhoto }],
   });
 
   const imageIndex = svg.indexOf(`<image href="${embeddedPhoto}"`);
   const gridIndex = svg.indexOf('<rect x="1" y="1" width="30" height="30" fill="#fff"/>');
-  const textIndex = svg.indexOf(">Фото<");
+  const textIndex = svg.indexOf(">Фото определение<");
   assert.ok(imageIndex >= 0, "expected photo clue image in svg");
   assert.ok(gridIndex >= 0, "expected main grid in svg");
   assert.ok(imageIndex < gridIndex, "expected photo layer under the main grid");
   assert.equal(svg.includes('href="assets/'), false, "photo clue image should not depend on archive assets");
-  assert.ok(
-    svg.includes(">определение</tspan>") || (svg.includes(">определе–</tspan>") && svg.includes(">ние</tspan>")),
-    "expected definition text to be rendered either on one line or split across lines",
-  );
+  assert.ok(svg.includes(">Фото определение</tspan>"), "expected complete definition text on the plaque");
   assert.ok(textIndex >= 0, "expected definition text in svg");
   assert.ok(imageIndex < textIndex, "expected image layer before definition plaque");
   assert.match(
@@ -864,8 +870,37 @@ function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
   const photoFrame = '<rect x="31" y="1" width="60" height="60" fill="none" stroke="#000000" stroke-width="2"/>';
   assert.ok(svg.indexOf(photoFrame, imageIndex) > imageIndex, "expected frame over the photo edge");
   assert.match(svg, /<rect x="31" y="[0-9.]+" width="[0-9.]+" height="[0-9.]+" fill="#fff"\/>/);
-  assert.match(svg, /<rect x="32" y="[0-9.]+" width="[0-9.]+" height="[0-9.]+" fill="none" stroke="#000000" stroke-width="2"\/>/);
-  assert.match(svg, /<text x="[0-9.]+" y="[0-9.]+" font-size="12" text-anchor="middle"/);
+  assert.match(svg, /<rect x="31" y="[0-9.]+" width="[0-9.]+" height="[0-9.]+" fill="none" stroke="#000000" stroke-width="2"\/>/);
+  assert.match(svg, /<text x="[0-9.]+" y="[0-9.]+" font-size="[0-9.]+"[^>]*text-anchor="middle"/);
+  for (const style of ["default", "corel"] as const) {
+    const rendered = buildCrosswordSvg(grid, slots, solved, definitions, {
+      style,
+      arrowMode: "export",
+      arrowScale: 1,
+      templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
+      type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
+      photoClues: [{ clueKey: "1,1", href: embeddedPhoto }],
+    });
+    for (const variant of ["svg", "svgRaw"] as const) {
+      const output = rendered[variant];
+      const photo = output.match(/<image href="data:image\/jpeg;base64,QUJDRA==" x="([^"]+)" y="([^"]+)"/);
+      assert.ok(photo, `${style} ${variant}: expected photo`);
+      const plaque = [...output.matchAll(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="#fff"\/>/g)]
+        .filter((match) => match[1] === photo[1] && Number(match[2]) > Number(photo[2]))
+        .at(-1);
+      assert.ok(plaque, `${style} ${variant}: expected photo plaque`);
+      const unitsPerMm = style === "corel" ? 2480 / 210 : 96 / 25.4;
+      assert.ok(Math.abs(Number(plaque[4]) / unitsPerMm - 3.5) < 0.001,
+        `${style} ${variant}: photo plaque height must be 3.5 mm`);
+      const frame = [...output.matchAll(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="none" stroke="#000000" stroke-width="([^"]+)"\/>/g)]
+        .find((match) => match[1] === plaque[1] && Number(match[2]) > Number(plaque[2]) &&
+          Number(match[2]) < Number(plaque[2]) + Number(plaque[4]));
+      assert.ok(frame, `${style} ${variant}: expected plaque frame`);
+      assert.ok(Math.abs(Number(frame[2]) + Number(frame[4]) - Number(photo[2]) -
+        (style === "corel" ? convertMmToCorelUnits(TEST_DEFAULT_CELL_SIZE_MM) * 2 : 60)) < 0.001,
+      `${style} ${variant}: frame bottom must coincide with cell edge`);
+    }
+  }
 }
 
 function testClusterBackgroundIsTransparent(): void {
@@ -883,6 +918,8 @@ function testClusterBackgroundIsTransparent(): void {
         const definitions = new Map<string, string>(withText ? [["AB", "Фото"]] : []);
         const options = {
           style, arrowMode: "export" as const, arrowScale: 1,
+          templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
+          type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
           photoClues: withPhoto ? [{ clueKey: "1,1", href: "data:image/jpeg;base64,QUJDRA==" }] : [],
         };
         const result = buildCrosswordSvg(grid, slots, solved, definitions, options);
@@ -925,6 +962,96 @@ function testClusterBackgroundIsTransparent(): void {
   }
 }
 
+function testAnchorlessEdgeClusterFixtures(): void {
+  const fixtureDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "anchorless-edge-clusters");
+  const expected = Array.from({ length: 6 }, (_, index) => [14, index + 5]);
+  for (const name of ["12-2026", "14-2026", "16-2026", "18-2026"]) {
+    const grid = parseFsh(path.join(fixtureDirectory, `${name}.fsh`));
+    const slots = scanSlotsDetailed(grid).slots;
+    const layouts = buildClueLayouts(grid, slots, grid.data, new Map());
+    assert.deepEqual(findAnchorlessEdgeClusterCells(grid, layouts), expected, `${name}: only the lower strip is a cutout`);
+    assert.equal(layouts.some((layout) => layout.key === "13,5" && layout.clusterCells?.length), false);
+
+    for (const style of ["default", "corel"] as const) {
+      const options = {
+        style,
+        arrowMode: "export" as const,
+        arrowScale: 1,
+        templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
+        type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
+      };
+      const normal = buildCrosswordSvg(grid, slots, grid.data, new Map(), options);
+      const debug = buildCrosswordSvg(grid, slots, grid.data, new Map(), {
+        ...options,
+        debugClusterFill: true,
+        debugClusterColor: "#abcdef",
+      });
+      for (const variant of ["svg", "svgRaw"] as const) {
+        const highlighted = debug[variant].match(/<rect[^>]*fill="#abcdef"\/>/g) ?? [];
+        assert.ok(highlighted.length >= 6, `${name}: debug view must include the six cutout cells`);
+        const cell = style === "default" ? 30 : convertMmToCorelUnits(TEST_DEFAULT_CELL_SIZE_MM);
+        const offsetX = style === "default" ? 1 : -cell / 2;
+        const offsetY = style === "default" ? 1 : -Math.round(cell * 0.034);
+        for (let col = 5; col <= 10; col += 1) {
+          const geometry = `x="${offsetX + col * cell}" y="${offsetY + 14 * cell}" width="${cell}" height="${cell}"`;
+          assert.ok(highlighted.some((rect) => rect.includes(geometry)), `${name}: debug cell 14,${col}`);
+          assert.ok(!normal[variant].includes(`<rect ${geometry}`), `${name}: cutout cell 14,${col} has no fill or border`);
+        }
+        assert.ok(normal[variant].includes(`x="${offsetX + 5 * cell}" y="${offsetY + 13 * cell}"`),
+          `${name}: neighboring block above the strip remains`);
+        const contourLines = [...normal[variant].matchAll(/<line x1="([^"]+)" y1="([^"]+)" x2="([^"]+)" y2="([^"]+)"/g)];
+        assert.ok(contourLines.some((match) =>
+          Math.abs(Number(match[1]) - (offsetX + 5 * cell)) < 0.001 &&
+          Math.abs(Number(match[2]) - (offsetY + 14 * cell)) < 0.001 &&
+          Math.abs(Number(match[3]) - (offsetX + 6 * cell)) < 0.001 &&
+          Math.abs(Number(match[4]) - (offsetY + 14 * cell)) < 0.001),
+        `${name}: contour follows the cutout edge`);
+      }
+    }
+  }
+}
+
+function testAnchorlessEdgeClusterGuards(): void {
+  const codes = createCodes(5, 7, 0x02);
+  const grid = buildGrid(["*####**", "*******", "###****", "*******", "**##***"], codes);
+  grid.templateType = "scanword";
+  const layouts = [{
+    key: "0,2", row: 0, col: 2, slotIds: [1], definitionSlotIds: [1],
+    areaCells: [[0, 2] as [number, number]], text: "definition",
+  }];
+  assert.deepEqual(findAnchorlessEdgeClusterCells(grid, layouts), [],
+    "an anchor splits the upper run, and shorter edge runs remain ordinary blocks");
+  assert.deepEqual(findAnchorlessEdgeClusterCells(grid, []), [[0, 1], [0, 2], [0, 3], [0, 4]],
+    "a four-cell anchorless run on another edge is cut out");
+  const occupied = [{ ...layouts[0], key: "0,0", row: 0, col: 0, areaCells: [[0, 1] as [number, number]],
+    clusterCells: [[0, 2] as [number, number]] }];
+  assert.deepEqual(findAnchorlessEdgeClusterCells(grid, occupied), [],
+    "existing expanded areas and clusters must not overlap a new cutout");
+}
+
+function testNonScanwordEdgeBlocksRemainVisible(): void {
+  const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "non-scanword-edge", "85.fsh");
+  const grid = parseFsh(fixturePath);
+  const slots = scanSlotsDetailed(grid).slots;
+  const layouts = buildClueLayouts(grid, slots, grid.data, new Map());
+  assert.equal(grid.templateType, "crossword_variant");
+  assert.deepEqual(findAnchorlessEdgeClusterCells(grid, layouts), [], "crossword blocks are not scanword cutouts");
+
+  const result = buildCrosswordSvg(grid, slots, grid.data, new Map(), {
+    style: "default",
+    arrowMode: "export",
+    arrowScale: 1,
+    templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
+    type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
+  });
+  for (const variant of ["svg", "svgRaw"] as const) {
+    assert.ok(result[variant].includes('<rect x="361" y="391" width="30" height="30" fill="#EBECEC"/>'),
+      "right edge block remains visible");
+    assert.ok(result[variant].includes('<rect x="241" y="511" width="30" height="30" fill="#EBECEC"/>'),
+      "bottom edge block remains visible");
+  }
+}
+
 function main(): void {
   const previousValue = process.env[AREA_EXPANSION_ENV_KEY];
   process.env[AREA_EXPANSION_ENV_KEY] = "1";
@@ -950,6 +1077,9 @@ function main(): void {
     testAreaExpansionCanBeDisabledExplicitlyByOption();
     testPhotoClueRendersImageUnderDefinitionPlaque();
     testClusterBackgroundIsTransparent();
+    testAnchorlessEdgeClusterFixtures();
+    testAnchorlessEdgeClusterGuards();
+    testNonScanwordEdgeBlocksRemainVisible();
   } finally {
     if (previousValue === undefined) {
       delete process.env[AREA_EXPANSION_ENV_KEY];

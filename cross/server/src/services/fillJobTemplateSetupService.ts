@@ -210,9 +210,8 @@ export function resolveTemplateSetupForEntry(
 }
 
 export function buildSolveRows(rawRows: string[], fixedLetters: Map<string, string>): string[] {
-  if (!fixedLetters.size) return rawRows;
   return rawRows.map((row, rowIndex) => {
-    const chars = Array.from(row);
+    const chars = Array.from(row, (cell) => cell === "%" ? "#" : cell);
     for (let colIndex = 0; colIndex < chars.length; colIndex += 1) {
       const letter = fixedLetters.get(`${rowIndex},${colIndex}`);
       if (letter) chars[colIndex] = letter;

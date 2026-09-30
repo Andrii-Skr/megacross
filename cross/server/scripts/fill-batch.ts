@@ -7,7 +7,7 @@
 //  • сохраняет SVG + used-words.txt в out/<basename>/
 //------------------------------------------------------------------
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, basename, dirname, extname }               from "node:path";
 import { parseArgs }                             from "node:util";
 import { Prisma, createPrismaClient } from "../src/db/prisma";
@@ -78,10 +78,16 @@ import {
 import type { TemplateEntry } from "../src/services/fillJobTemplateService";
 import { buildCrw }            from "../src/utils/writeCrw";
 import { buildClueEntries } from "../src/utils/clues";
+import { buildCrosswordTextFiles } from "../src/utils/crosswordTextExport";
 import { Grid, Slot }    from "../src/types";
 import { buildAnswersOnlySvg } from "./answer-only-svg";
 import { buildCrosswordSvg } from "./crossword-svg";
-import { CELL_STROKE_COLOR } from "./svg-theme";
+import {
+  CELL_STROKE_COLOR,
+  DEFAULT_ANSWER_CELL_SIZE_MM,
+  DEFAULT_TEMPLATE_CELL_SIZE_MM,
+  DEFAULT_TYPE0_CELL_SIZE_MM,
+} from "./svg-theme";
 import { exportSvgFilesToEps } from "../src/utils/epsExport";
 
 const SAMPLE_DIR = "sample";
@@ -173,6 +179,17 @@ function parseSvgCluePtOption(value: string | undefined, optionName: string): nu
     );
   }
   return Math.round(parsed * 1000) / 1000;
+}
+
+function parseCellSizeMmOption(value: string | undefined, fallback: number, optionName: string): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${optionName}: "${value}". Expected a positive number.`);
+  }
+  const rounded = Number(parsed.toFixed(3));
+  if (rounded <= 0) throw new Error(`Invalid ${optionName}: "${value}". Expected at least 0.001 mm.`);
+  return rounded;
 }
 
 type IssueTemplateContext = {
@@ -1379,6 +1396,12 @@ const parsedCli = (() => {
         "keyword-template": { type: "string" },
         clueFontMinPt: { type: "string" },
         "clue-font-min-pt": { type: "string" },
+        templateCellMm: { type: "string" },
+        "template-cell-mm": { type: "string" },
+        answerCellMm: { type: "string" },
+        "answer-cell-mm": { type: "string" },
+        type0CellMm: { type: "string" },
+        "type0-cell-mm": { type: "string" },
       },
     });
   } catch (error) {
@@ -1439,6 +1462,21 @@ const sampleSubdir = parseSampleSubdirOption(sampleSubdirRaw);
 const clueFontMinPt = parseSvgCluePtOption(
   values.clueFontMinPt ?? values["clue-font-min-pt"],
   "--clue-font-min-pt"
+);
+const templateCellSizeMm = parseCellSizeMmOption(
+  values.templateCellMm ?? values["template-cell-mm"],
+  DEFAULT_TEMPLATE_CELL_SIZE_MM,
+  "--template-cell-mm"
+);
+const answerCellSizeMm = parseCellSizeMmOption(
+  values.answerCellMm ?? values["answer-cell-mm"],
+  DEFAULT_ANSWER_CELL_SIZE_MM,
+  "--answer-cell-mm"
+);
+const type0CellSizeMm = parseCellSizeMmOption(
+  values.type0CellMm ?? values["type0-cell-mm"],
+  DEFAULT_TYPE0_CELL_SIZE_MM,
+  "--type0-cell-mm"
 );
 const filterTemplateIdRaw = values.filterTemplateId ?? values["filter-template-id"];
 const filterTemplateId = parseFilterTemplateIdOption(filterTemplateIdRaw);
@@ -2440,6 +2478,7 @@ if (!files.length) {
         ...(definitionWhere ? { definitionWhere } : {}),
       });
 	      const clues = buildClueEntries(grid, slots, solvedRows, definitions);
+	      const crosswordText = buildCrosswordTextFiles(grid, slots, solvedRows, definitions);
 	      const { svg, svgRaw, usedWords } = buildCrosswordSvg(grid, slots, solvedRows, definitions, {
         style: useCorelStyle ? "corel" : "default",
         arrowMode: "batch",
@@ -2447,6 +2486,8 @@ if (!files.length) {
         fontFamily: FONT_FAMILY,
         debugClusterFill: DEBUG_CLUSTER_FILL,
         debugClusterColor: DEBUG_CLUSTER_COLOR,
+        templateCellSizeMm,
+        type0CellSizeMm,
         svgTypography: {
           clueFontMinPt,
         },
@@ -2454,7 +2495,7 @@ if (!files.length) {
         cellStrokeColor: CELL_STROKE_COLOR,
         keyword: keywordResult,
       });
-	      const svgAnswers = buildAnswersOnlySvg(grid, solvedRows);
+	      const svgAnswers = buildAnswersOnlySvg(grid, solvedRows, answerCellSizeMm);
 
       /* 6. write */
       const dstDir = join(OUT_DIR, name);
@@ -2463,14 +2504,16 @@ if (!files.length) {
       writeFileSync(join(dstDir, "crossword-no-text.svg"), svgRaw);
       writeFileSync(join(dstDir, "crossword-answers.svg"), svgAnswers);
       if (writeEps) {
-        exportSvgFilesToEps([
+        await exportSvgFilesToEps([
           join(dstDir, "crossword.svg"),
           join(dstDir, "crossword-no-text.svg"),
           join(dstDir, "crossword-answers.svg"),
         ]);
       }
-      writeFileSync(join(dstDir, "used-words.txt"), usedWords);
+      writeFileSync(join(dstDir, "used-words.txt"), crosswordText?.words ?? usedWords);
+      if (!crosswordText || !writeDefsJson) rmSync(join(dstDir, "clues.txt"), { force: true });
       if (writeDefsJson) {
+        if (crosswordText) writeFileSync(join(dstDir, "clues.txt"), crosswordText.clues);
         writeFileSync(join(dstDir, "definitions-down.json"), JSON.stringify(clues.down, null, 2));
         writeFileSync(join(dstDir, "definitions-right.json"), JSON.stringify(clues.right, null, 2));
       }

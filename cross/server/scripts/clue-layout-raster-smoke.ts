@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import sharp from "sharp";
 import {
-  CLUE_DISPLAY_DASH,
   CLUE_EDGE_INSET_MM,
   CLUE_FONT_BASE_PT,
   CLUE_FONT_MIN_PT,
@@ -10,7 +9,7 @@ import {
   convertCluePtToSvgUnits,
   renderClueText,
 } from "./clue-svg";
-import { COREL_CELL_SIZE_UNITS, COREL_UNITS_PER_MM } from "./svg-theme";
+import { convertMmToCorelUnits, COREL_UNITS_PER_MM, DEFAULT_TEMPLATE_CELL_SIZE_MM } from "./svg-theme";
 import { getBundledArimoFontResource } from "./svg-font-metrics";
 
 const ARIMO = getBundledArimoFontResource();
@@ -105,7 +104,7 @@ async function assertClueRasterFits(
     expectedLines?: number;
   } = {}
 ): Promise<void> {
-  const cell = COREL_CELL_SIZE_UNITS;
+  const cell = convertMmToCorelUnits(DEFAULT_TEMPLATE_CELL_SIZE_MM);
   const basePt = options.basePt ?? CLUE_FONT_BASE_PT;
   const minPt = options.minPt ?? CLUE_FONT_MIN_PT;
   const rendered = renderClueText(
@@ -135,10 +134,6 @@ async function assertClueRasterFits(
     assert.equal(values.length, options.expectedLines, `expected ${options.expectedLines} lines for: ${text}`);
   }
   assert.equal(canonicalClueText(values.join(" ")), canonicalClueText(text), `expected full clue text for: ${text}`);
-  assert.doesNotMatch(values.join(""), /-/u, `expected no ASCII hyphen for: ${text}`);
-  if (/[-‐‑‒–—−]/u.test(text)) {
-    assert.ok(values.join("").includes(CLUE_DISPLAY_DASH), `expected en dash for: ${text}`);
-  }
   if (options.expectedMinPt != null) {
     assert.ok(
       usedFontSize >= convertCluePtToSvgUnits(options.expectedMinPt, "corel"),

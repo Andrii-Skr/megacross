@@ -20,6 +20,7 @@ COPY crossnext/package.json ./package.json
 COPY crossnext/pnpm-lock.yaml ./pnpm-lock.yaml
 COPY crossnext/pnpm-config.yaml ./pnpm-workspace.yaml
 COPY packages/cross-clues /packages/cross-clues
+COPY packages/cross-format /packages/cross-format
 # Copy Prisma schema (folder-based schema)
 COPY crossnext/prisma/schema prisma/schema
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
@@ -31,6 +32,7 @@ FROM deps AS dev
 ENV NODE_ENV=development
 COPY crossnext/. .
 COPY packages/cross-clues /packages/cross-clues
+COPY packages/cross-format /packages/cross-format
 RUN pnpm prisma generate
 EXPOSE 3000
 CMD ["pnpm","dev"]
@@ -47,6 +49,7 @@ ARG NEXT_PUBLIC_CROSS_API_URL=http://localhost:3001
 ENV NEXTAUTH_SECRET=$NEXTAUTH_SECRET NEXTAUTH_URL=$NEXTAUTH_URL NEXT_PUBLIC_CROSS_API_URL=$NEXT_PUBLIC_CROSS_API_URL
 COPY crossnext/. .
 COPY packages/cross-clues /packages/cross-clues
+COPY packages/cross-format /packages/cross-format
 RUN pnpm prisma generate \
   && pnpm build \
   && pnpm prune --prod

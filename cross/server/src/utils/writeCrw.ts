@@ -68,6 +68,9 @@ function encodeGridBlock(grid: Grid): Buffer {
         bytes.push(0x01);
       } else if (ch === "#") {
         bytes.push(0x02);
+      } else if (ch === "%") {
+        if (!grid.marker.startsWith("S")) throw new Error("legacy CRW grid cannot encode cutouts");
+        bytes.push(0x25);
       } else {
         bytes.push(0x04, grid.codes[row][col]);
       }

@@ -129,7 +129,7 @@ export function buildSolvedGridFromSlots(
   states: Map<number, FinalSlotState>
 ): string[] {
   const rows: string[][] = Array.from({ length: template.grid.rows }, (_, row) =>
-    Array.from({ length: template.grid.cols }, (_, col) => (template.grid.data[row]?.[col] === "#" ? "#" : "."))
+    Array.from({ length: template.grid.cols }, (_, col) => (["#", "%"].includes(template.grid.data[row]?.[col] ?? "") ? "#" : "."))
   );
 
   for (const slot of template.slots) {

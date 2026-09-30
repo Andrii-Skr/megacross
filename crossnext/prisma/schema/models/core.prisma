@@ -51,30 +51,30 @@ model DictionaryFilterTemplate {
 
 /// Added @@index([langId]) for FK lookups; added composite @@index([langId, word_text]) for language-scoped search by word
 model word_v {
-  id             BigInt            @id @default(autoincrement())
-  word_text      String            @db.VarChar(255)
-  word_text_norm String?           @db.VarChar(255)
-  length         Int               @db.SmallInt
-  file_id        BigInt            @default(-1)
-  user_add       String            @default("system") @db.VarChar(255)
-  createdAt      DateTime?         @default(now()) @map("create_at") @db.Timestamp(6)
-  updatedAt      DateTime?         @updatedAt @map("update_at") @db.Timestamp(6)
-  createBy       Int?              @db.SmallInt
-  updateBy       Int?              @db.SmallInt
-  approvedBy     Int?              @db.SmallInt
-  using          Int               @default(1) @db.SmallInt
+  id             BigInt              @id @default(autoincrement())
+  word_text      String              @db.VarChar(255)
+  word_text_norm String?             @db.VarChar(255)
+  length         Int                 @db.SmallInt
+  file_id        BigInt              @default(-1)
+  user_add       String              @default("system") @db.VarChar(255)
+  createdAt      DateTime?           @default(now()) @map("create_at") @db.Timestamp(6)
+  updatedAt      DateTime?           @updatedAt @map("update_at") @db.Timestamp(6)
+  createBy       Int?                @db.SmallInt
+  updateBy       Int?                @db.SmallInt
+  approvedBy     Int?                @db.SmallInt
+  using          Int                 @default(1) @db.SmallInt
   korny          String
-  data_set       DateTime?         @db.Timestamp(6)
-  user_set       String            @default("") @db.VarChar(255)
-  go_flag        Int               @default(0) @db.SmallInt
-  is_deleted     Boolean           @default(false)
+  data_set       DateTime?           @db.Timestamp(6)
+  user_set       String              @default("") @db.VarChar(255)
+  go_flag        Int                 @default(0) @db.SmallInt
+  is_deleted     Boolean             @default(false)
   langId         Int
   opred_v        opred_v[]
   pendings       PendingWords[]
   issueUsages    IssueWordUsage[]
   editionStats   EditionWordStat[]
   images         ScanwordWordImage[]
-  language       language          @relation(fields: [langId], references: [id])
+  language       language            @relation(fields: [langId], references: [id])
 
   @@index([is_deleted])
   @@index([langId], map: "idx_word_v__langId")
@@ -99,8 +99,8 @@ model ScanwordWordImage {
   updatedAt      DateTime @updatedAt
   word           word_v   @relation(fields: [wordId], references: [id], onDelete: Cascade)
 
-  @@index([wordId], map: "idx_scanword_word_images_word")
   @@unique([wordId, sha256], map: "scanword_word_images_wordId_sha256_key")
+  @@index([wordId], map: "idx_scanword_word_images_word")
   @@map("scanword_word_images")
 }
 
@@ -166,18 +166,33 @@ model OpredTag {
 }
 
 model Edition {
-  id         Int                @id @default(autoincrement())
-  code       String             @unique @db.VarChar(32)
-  name       String             @db.VarChar(255)
-  hidden     Boolean            @default(false)
-  deletedAt  DateTime?
-  createdAt  DateTime           @default(now())
-  updatedAt  DateTime           @updatedAt
-  issues     Issue[]
-  wordStats  EditionWordStat[]
-  opredStats EditionOpredStat[]
+  id                Int                               @id @default(autoincrement())
+  code              String                            @unique @db.VarChar(32)
+  name              String                            @db.VarChar(255)
+  hidden            Boolean                           @default(false)
+  deletedAt         DateTime?
+  createdAt         DateTime                          @default(now())
+  updatedAt         DateTime                          @updatedAt
+  issues            Issue[]
+  wordStats         EditionWordStat[]
+  opredStats        EditionOpredStat[]
+  svgLayoutSettings ScanwordEditionSvgLayoutSettings?
 
   @@map("editions")
+}
+
+model ScanwordEditionSvgLayoutSettings {
+  id                 BigInt   @id @default(autoincrement())
+  editionId          Int      @unique
+  templateCellSizeMm Float    @default(11)
+  answerCellSizeMm   Float    @default(10)
+  type0CellSizeMm    Float    @default(8.5)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now()) @updatedAt
+
+  edition Edition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+
+  @@map("scanword_edition_svg_layout_settings")
 }
 
 model IssueNumber {
@@ -242,17 +257,17 @@ model ScanwordSvgFont {
 }
 
 model ScanwordIssueSvgSettings {
-  id                BigInt   @id @default(autoincrement())
-  issueId           BigInt   @unique
-  clueFontBasePt    Float    @default(9)
-  clueFontMinPt     Float    @default(7.6)
-  clueGlyphWidthPct Int      @default(80)
-  clueLineHeightPct Int      @default(80)
-  photoCluesGrayscale Boolean @default(true)
-  fontId            BigInt?
-  systemFontFamily  String   @default("Arial") @db.VarChar(120)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                  BigInt   @id @default(autoincrement())
+  issueId             BigInt   @unique
+  clueFontBasePt      Float    @default(9)
+  clueFontMinPt       Float    @default(7.6)
+  clueGlyphWidthPct   Int      @default(80)
+  clueLineHeightPct   Int      @default(80)
+  photoCluesGrayscale Boolean  @default(true)
+  fontId              BigInt?
+  systemFontFamily    String   @default("Arial") @db.VarChar(120)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   issue Issue            @relation(fields: [issueId], references: [id], onDelete: Cascade)
   font  ScanwordSvgFont? @relation(fields: [fontId], references: [id], onDelete: SetNull)
@@ -285,18 +300,18 @@ model ScanwordFillJob {
 }
 
 model ScanwordUploadSnapshot {
-  id           BigInt   @id @default(autoincrement())
-  issueId      BigInt   @unique
-  templateId   Int?
-  templateName String?  @db.VarChar(120)
-  fileCount    Int      @default(0)
-  errorCount   Int      @default(0)
-  neededStats  Json?
+  id            BigInt   @id @default(autoincrement())
+  issueId       BigInt   @unique
+  templateId    Int?
+  templateName  String?  @db.VarChar(120)
+  fileCount     Int      @default(0)
+  errorCount    Int      @default(0)
+  neededStats   Json?
   templateSetup Json?
-  files        Json?
-  errors       Json?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  files         Json?
+  errors        Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
 
@@ -340,6 +355,49 @@ model ScanwordFillReviewDraft {
   @@index([updatedAt], map: "idx_scanword_fill_review_drafts_updatedAt")
   @@index([expiresAt], map: "idx_scanword_fill_review_drafts_expiresAt")
   @@map("scanword_fill_review_drafts")
+}
+
+model ScanwordTemplateGenerationJob {
+  id                 BigInt                             @id @default(autoincrement())
+  userId             Int?
+  status             String                             @default("queued") @db.VarChar(16)
+  phase              String                             @default("queued") @db.VarChar(32)
+  progress           Int                                @default(0)
+  requestedCount     Int
+  acceptedCount      Int                                @default(0)
+  attempts           Int                                @default(0)
+  parameters         Json
+  seed               String                             @db.VarChar(128)
+  rngPosition        BigInt                             @default(0)
+  dictionaryCounts   Json?
+  targetDistribution Json?
+  error              String?
+  createdAt          DateTime                           @default(now())
+  updatedAt          DateTime                           @updatedAt
+  expiresAt          DateTime
+  results            ScanwordTemplateGenerationResult[]
+
+  @@index([status, createdAt], map: "idx_template_generation_jobs_queue")
+  @@index([userId, createdAt], map: "idx_template_generation_jobs_user")
+  @@index([expiresAt], map: "idx_template_generation_jobs_expires")
+  @@map("scanword_template_generation_jobs")
+}
+
+model ScanwordTemplateGenerationResult {
+  id          BigInt                        @id @default(autoincrement())
+  jobId       BigInt
+  ordinal     Int
+  fshBytes    Bytes
+  grid        Json
+  metrics     Json
+  fingerprint String                        @db.Text
+  createdAt   DateTime                      @default(now())
+  job         ScanwordTemplateGenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, ordinal], map: "template_generation_results_job_ordinal_key")
+  @@unique([jobId, fingerprint], map: "template_generation_results_job_fingerprint_key")
+  @@index([jobId, id], map: "idx_template_generation_results_page")
+  @@map("scanword_template_generation_results")
 }
 
 model IssueWordUsage {

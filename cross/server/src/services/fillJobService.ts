@@ -52,6 +52,7 @@ import {
   sortDictionaryByUsagePriority,
 } from "../utils/fillShared";
 import { buildCrw } from "../utils/writeCrw";
+import { buildCrosswordTextFiles } from "../utils/crosswordTextExport";
 import { type Grid, type Slot } from "../types";
 import { loadDefinitions, loadDictionaryByTemplate, type DictionaryFilterTemplate } from "./dictionary";
 import {
@@ -145,6 +146,10 @@ import {
 } from "./fillJobRepository";
 import { buildAnswersOnlySvg } from "../../scripts/answer-only-svg";
 import { buildCrosswordSvg } from "../../scripts/crossword-svg";
+import {
+  resolveSvgCellSizesMm,
+  type SvgCellSizesMm,
+} from "../../scripts/svg-theme";
 import { exportSvgFilesToEps } from "../utils/epsExport";
 
 type FillJobStatus = "queued" | "running" | "review" | "done" | "error";
@@ -211,6 +216,7 @@ type FinalizePayload = {
   templates?: FinalizeTemplateInput[] | null;
   definitionLimits?: DefinitionLengthLimits | null;
   svgTypography?: FinalizeSvgTypographyInput | null;
+  svgLayout?: unknown;
 };
 
 type RegenerateTemplatePayload = {
@@ -238,6 +244,7 @@ type ResolvedFinalizeSvgTypography = {
   fontFamily: string | null;
   fontFaceCss: string | null;
   fontData: Uint8Array | null;
+  fontFormat: "ttf" | "otf" | "woff" | "woff2" | null;
 };
 
 export type FillMaskCandidate = {
@@ -1291,6 +1298,7 @@ function buildSvg(
   options: {
     style: "default" | "corel";
     svgTypography?: ResolvedFinalizeSvgTypography | null;
+    svgLayout: SvgCellSizesMm;
     photoClues?: Array<{
       clueKey: string;
       href: string;
@@ -1312,6 +1320,8 @@ function buildSvg(
     arrowScale: 0.6,
     fontFamily,
     debugClusterFill,
+    templateCellSizeMm: options.svgLayout.templateCellSizeMm,
+    type0CellSizeMm: options.svgLayout.type0CellSizeMm,
     svgTypography: {
       clueFontBasePt: typography?.clueFontBasePt ?? null,
       clueFontMinPt: typography?.clueFontMinPt ?? null,
@@ -2210,7 +2220,12 @@ function resolveSafeFontPath(fontsRoot: string, storageRelPath: string): string 
 
 async function loadEmbeddedSvgFont(
   fontId: bigint
-): Promise<{ familyName: string; fontFaceCss: string; fontData: Uint8Array } | null> {
+): Promise<{
+  familyName: string;
+  fontFaceCss: string;
+  fontData: Uint8Array;
+  fontFormat: "ttf" | "otf" | "woff" | "woff2";
+} | null> {
   try {
     const rows = await prisma.$queryRaw<
       Array<{
@@ -2238,7 +2253,7 @@ async function loadEmbeddedSvgFont(
     const fontData = rawFontData.toString("base64");
     const escapedFamily = familyName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     const fontFaceCss = `@font-face{font-family:'${escapedFamily}';src:url('data:${mimeType};base64,${fontData}') format('${cssFormat}');font-weight:normal;font-style:normal;}`;
-    return { familyName, fontFaceCss, fontData: rawFontData };
+    return { familyName, fontFaceCss, fontData: rawFontData, fontFormat: format };
   } catch {
     return null;
   }
@@ -2250,14 +2265,15 @@ async function resolveFinalizeSvgTypography(
   let fontFamily = parsed.systemFontFamily;
   let fontFaceCss: string | null = null;
   let fontData: Uint8Array | null = null;
+  let fontFormat: "ttf" | "otf" | "woff" | "woff2" | null = null;
 
   if (parsed.fontId != null) {
     const embedded = await loadEmbeddedSvgFont(parsed.fontId);
-    if (embedded) {
-      fontFamily = embedded.familyName;
-      fontFaceCss = embedded.fontFaceCss;
-      fontData = embedded.fontData;
-    }
+    if (!embedded) throw new Error(`Selected SVG font ${parsed.fontId} is unavailable`);
+    fontFamily = embedded.familyName;
+    fontFaceCss = embedded.fontFaceCss;
+    fontData = embedded.fontData;
+    fontFormat = embedded.fontFormat;
   }
 
   return {
@@ -2272,6 +2288,7 @@ async function resolveFinalizeSvgTypography(
     fontFamily,
     fontFaceCss,
     fontData,
+    fontFormat,
   };
 }
 
@@ -2783,6 +2800,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const effectiveReview = applyReviewTemplateOverrides(review, Array.isArray(payload.templates) ? payload.templates : []);
     const definitionLengthLimits = parseDefinitionLengthLimits(payload.definitionLimits);
     const parsedSvgTypography = parseFinalizeSvgTypography(payload.svgTypography);
+    const svgLayout = resolveSvgCellSizesMm(payload.svgLayout);
     const resolvedSvgTypography = await resolveFinalizeSvgTypography(parsedSvgTypography);
     const templateInputMap = new Map<string, FinalizeTemplateInput>();
     for (const item of payload.templates ?? []) {
@@ -2829,6 +2847,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     }))
   );
   const finalizeErrors: string[] = [];
+  const svgPathsToExport: string[] = [];
   let completedTemplates = 0;
   const totalTemplates = templatesState.length || review.templates.length;
 
@@ -2992,19 +3011,25 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const { svg, svgRaw, usedWords } = buildSvg(template.grid, slots, solvedRows, definitions, {
       style: effectiveReview.options.style,
       svgTypography: resolvedSvgTypography,
+      svgLayout,
       photoClues,
       keyword: template.keyword ?? null,
     });
-    const svgAnswers = buildAnswersOnlySvg(template.grid, solvedRows);
+    const crosswordText = buildCrosswordTextFiles(template.grid, slots, solvedRows, definitions);
+    const svgAnswers = buildAnswersOnlySvg(template.grid, solvedRows, svgLayout.answerCellSizeMm, {
+      familyName: resolvedSvgTypography.fontFamily,
+      fontFaceCss: resolvedSvgTypography.fontFaceCss,
+    });
     writeFileSync(path.join(templateDir, "crossword.svg"), svg);
     writeFileSync(path.join(templateDir, "crossword-no-text.svg"), svgRaw);
     writeFileSync(path.join(templateDir, "crossword-answers.svg"), svgAnswers);
-    exportSvgFilesToEps([
+    svgPathsToExport.push(
       path.join(templateDir, "crossword.svg"),
       path.join(templateDir, "crossword-no-text.svg"),
-      path.join(templateDir, "crossword-answers.svg"),
-    ]);
-    writeFileSync(path.join(templateDir, "used-words.txt"), usedWords);
+      path.join(templateDir, "crossword-answers.svg")
+    );
+    writeFileSync(path.join(templateDir, "used-words.txt"), crosswordText?.words ?? usedWords);
+    if (crosswordText) writeFileSync(path.join(templateDir, "clues.txt"), crosswordText.clues);
 
     if (options.writeCrw && template.path) {
       const crw = buildCrw(template.grid, slots, solvedRows, {
@@ -3023,6 +3048,18 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     }
     completedTemplates += 1;
   }
+
+  await exportSvgFilesToEps(
+    svgPathsToExport,
+    resolvedSvgTypography.fontData && resolvedSvgTypography.fontFaceCss && resolvedSvgTypography.fontFamily && resolvedSvgTypography.fontFormat
+      ? {
+          familyName: resolvedSvgTypography.fontFamily,
+          fontFaceCss: resolvedSvgTypography.fontFaceCss,
+          data: resolvedSvgTypography.fontData,
+          format: resolvedSvgTypography.fontFormat,
+        }
+      : null,
+  );
 
   if (finalizeErrors.length > 0) {
     writeFileSync(path.join(issueDir, "failures.json"), JSON.stringify(finalizeErrors, null, 2));

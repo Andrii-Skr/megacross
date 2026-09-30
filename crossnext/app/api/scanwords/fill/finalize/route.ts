@@ -54,10 +54,24 @@ const svgTypographySchema = z
     }
   });
 
+const positiveMillimetersSchema = z
+  .number()
+  .positive()
+  .refine((value) => Number(value.toFixed(3)) > 0, {
+    message: "Value must remain positive at millimeter precision",
+  });
+
+const svgLayoutSchema = z.object({
+  templateCellSizeMm: positiveMillimetersSchema,
+  answerCellSizeMm: positiveMillimetersSchema,
+  type0CellSizeMm: positiveMillimetersSchema,
+});
+
 const finalizePayloadSchema = z.object({
   templates: z.array(templateSchema).min(1).max(200),
   definitionLimits: definitionLimitsSchema.optional(),
   svgTypography: svgTypographySchema.optional(),
+  svgLayout: svgLayoutSchema.optional(),
 });
 
 const schema = z.object({

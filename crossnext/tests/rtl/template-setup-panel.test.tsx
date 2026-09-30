@@ -118,6 +118,45 @@ function makeTemplate(): TemplateSetupPreviewTemplate {
 }
 
 describe("TemplateSetupPanel", () => {
+  it("keeps the template list position while updating the independently scrollable preview", () => {
+    const templates = Array.from({ length: 100 }, (_, index) => ({
+      ...makeTemplate(),
+      key: `tpl-${index + 1}`,
+      sourceName: `${index + 1}.fsh`,
+      order: index,
+    }));
+
+    renderPanel({
+      active: true,
+      loading: false,
+      error: null,
+      dictionaryFilter: null,
+      dictionaryLanguage: "ru",
+      dictionaryReady: true,
+      templates,
+      templateMap: new Map(),
+      onKeywordChange: vi.fn(),
+      onFixedSlotChange: vi.fn(),
+      onFixedSlotClear: vi.fn(),
+    });
+
+    const list = document.querySelector('[data-slot="template-setup-template-list"]') as HTMLElement;
+    const preview = document.querySelector('[data-slot="template-setup-preview-scroll"]') as HTMLElement;
+    expect(list).toHaveClass("lg:overflow-y-auto", "lg:overscroll-contain");
+    expect(preview).toHaveClass("lg:overflow-y-auto", "lg:overscroll-contain");
+    expect(list).not.toHaveClass("overflow-y-auto");
+    expect(preview).not.toHaveClass("overflow-y-auto");
+
+    list.scrollTop = 500;
+    fireEvent.click(within(list).getByRole("button", { name: "100.fsh" }));
+    expect(within(preview).getByText("100.fsh")).toBeInTheDocument();
+    expect(list.scrollTop).toBe(500);
+
+    fireEvent.click(within(list).getByRole("button", { name: "1.fsh" }));
+    expect(within(preview).getByText("1.fsh")).toBeInTheDocument();
+    expect(list.scrollTop).toBe(500);
+  });
+
   it("opens the photo slot from its image area while keeping start-cell clicks unchanged", () => {
     const template = makeTemplate();
 

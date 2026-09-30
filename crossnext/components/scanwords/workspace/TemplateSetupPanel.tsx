@@ -953,7 +953,7 @@ export function TemplateSetupPanel({
   if (!active) return <div className="hidden" aria-hidden />;
 
   return (
-    <div aria-hidden={!active}>
+    <div className="lg:flex lg:min-h-0 lg:flex-1 lg:flex-col" aria-hidden={!active}>
       <Dialog open={Boolean(pendingStarts?.length)} onOpenChange={(next) => (!next ? setPendingStarts(null) : null)}>
         <DialogContent className="sm:max-w-sm" aria-describedby={undefined}>
           <DialogHeader>
@@ -1324,7 +1324,7 @@ export function TemplateSetupPanel({
         </DialogContent>
       </Dialog>
 
-      <div className="grid gap-3">
+      <div className="grid gap-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
         {error && <p className="text-xs text-destructive">{error}</p>}
         {!dictionaryReady && (
           <p className="text-xs text-amber-700">
@@ -1345,12 +1345,15 @@ export function TemplateSetupPanel({
         )}
 
         {!loading && hasPreview && (
-          <div className="grid gap-3 lg:grid-cols-[260px_minmax(0,1fr)]">
-            <Card>
-              <CardHeader>
+          <div className="grid gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-[260px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]">
+            <Card className="min-w-0 lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
+              <CardHeader className="lg:shrink-0">
                 <CardTitle className="text-sm">Шаблоны</CardTitle>
               </CardHeader>
-              <CardContent className="grid gap-2">
+              <CardContent
+                data-slot="template-setup-template-list"
+                className="grid content-start gap-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
+              >
                 {templates.map((template) => {
                   const config = templateMap.get(template.key);
                   return (
@@ -1377,7 +1380,10 @@ export function TemplateSetupPanel({
             </Card>
 
             {selectedTemplate && (
-              <div className="grid gap-3">
+              <div
+                data-slot="template-setup-preview-scroll"
+                className="grid min-w-0 content-start gap-3 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain"
+              >
                 <Card>
                   <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2 text-sm">
@@ -1409,18 +1415,21 @@ export function TemplateSetupPanel({
                               const fixedLetter = fixedLetterByCell.get(cellKey) ?? "";
                               const isPhotoAreaHighlighted = photoSlot?.slotId === hoveredPhotoSlotId;
                               const visibleLetter =
-                                fixedLetter || (cell === "*" || cell === "#" || previewArrow ? "" : cell);
+                                fixedLetter ||
+                                (cell === "*" || cell === "#" || cell === "%" || previewArrow ? "" : cell);
                               const visibleLetterIsFixed = fixedLetter.length > 0;
                               return (
                                 <div
                                   key={cellKey}
                                   className={cn(
                                     "relative flex aspect-square min-h-6 min-w-6 items-center justify-center rounded-[2px] border text-[10px] transition-colors",
-                                    cell === "#"
-                                      ? "border-slate-500 bg-slate-700 text-slate-50"
-                                      : cell === "*"
-                                        ? "border-border bg-background text-muted-foreground"
-                                        : "border-emerald-200 bg-emerald-50 text-emerald-900",
+                                    cell === "%"
+                                      ? "border-transparent bg-transparent"
+                                      : cell === "#"
+                                        ? "border-slate-500 bg-slate-700 text-slate-50"
+                                        : cell === "*"
+                                          ? "border-border bg-background text-muted-foreground"
+                                          : "border-emerald-200 bg-emerald-50 text-emerald-900",
                                     previewCell?.isIntersection ? "ring-1 ring-amber-400/60" : "",
                                     isFixed ? "bg-sky-100 text-sky-900 ring-1 ring-sky-500/60" : "",
                                     isPhotoAreaHighlighted

@@ -27,6 +27,7 @@ export function AppHeader() {
   const [menuOpen, setMenuOpen] = useState(false);
   const hide = second === "auth";
   const isScanwords = second === "scanwords";
+  const isTemplateGenerator = second === "template-generator";
   const { data: session } = useSession();
   const role = (session?.user as { role?: string | null } | undefined)?.role ?? null;
   const canSeePendingNav = canSeePending(role);
@@ -36,7 +37,7 @@ export function AppHeader() {
   if (hide) return null;
 
   return (
-    <header className={cn("border-b", isScanwords && "sticky top-0 z-30 bg-background")}>
+    <header className={cn("border-b", (isScanwords || isTemplateGenerator) && "sticky top-0 z-30 bg-background")}>
       <div className="w-full h-12 px-3 sm:px-5 flex items-center gap-2">
         {/* Mobile: menu */}
         <div className="md:hidden">
@@ -84,6 +85,15 @@ export function AppHeader() {
                     {t("scanwords")}
                   </Link>
                 )}
+                {canSeeScanwords && (
+                  <Link
+                    href={`/${locale}/template-generator`}
+                    className="px-2 py-1 rounded hover:bg-accent"
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    {t("templateGenerator.nav")}
+                  </Link>
+                )}
               </div>
             </PopoverContent>
           </Popover>
@@ -106,6 +116,11 @@ export function AppHeader() {
           {canSeeScanwords && (
             <Link href={`/${locale}/scanwords`} className="underline-offset-4 hover:underline">
               {t("scanwords")}
+            </Link>
+          )}
+          {canSeeScanwords && (
+            <Link href={`/${locale}/template-generator`} className="underline-offset-4 hover:underline">
+              {t("templateGenerator.nav")}
             </Link>
           )}
         </nav>

@@ -17,6 +17,42 @@ describe("scanword fill settings", () => {
     });
   });
 
+  it("defaults SVG cell sizes independently", () => {
+    expect(normalizeFillSettings(null)).toMatchObject({
+      templateCellSizeMm: 11,
+      answerCellSizeMm: 10,
+      type0CellSizeMm: 8.5,
+    });
+  });
+
+  it("keeps positive SVG cell sizes and rounds them to three decimals", () => {
+    expect(
+      normalizeFillSettings({
+        templateCellSizeMm: 12.3456,
+        answerCellSizeMm: "9.8764",
+        type0CellSizeMm: 7.25,
+      }),
+    ).toMatchObject({
+      templateCellSizeMm: 12.346,
+      answerCellSizeMm: 9.876,
+      type0CellSizeMm: 7.25,
+    });
+  });
+
+  it("falls back to independent defaults for invalid SVG cell sizes", () => {
+    expect(
+      normalizeFillSettings({
+        templateCellSizeMm: 0,
+        answerCellSizeMm: -1,
+        type0CellSizeMm: Number.POSITIVE_INFINITY,
+      }),
+    ).toMatchObject({
+      templateCellSizeMm: 11,
+      answerCellSizeMm: 10,
+      type0CellSizeMm: 8.5,
+    });
+  });
+
   it("clamps SVG clue typography percentages to supported bounds", () => {
     expect(
       normalizeFillSettings({
