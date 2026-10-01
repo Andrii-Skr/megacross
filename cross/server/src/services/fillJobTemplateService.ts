@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseFsh } from "../utils/parseFsh";
-import { scanSlotsDetailed, type SlotStart, validate } from "../utils/grid";
+import { scanSlotsDetailed, type SlotStart, validate, validateSlotCoverage } from "../utils/grid";
 import type { Grid, Slot } from "../types";
 
 export type SnapshotFile = {
@@ -444,6 +444,7 @@ export function buildEntries(templates: ResolvedTemplate[]): {
       validate(grid);
       const slotScan = scanSlotsDetailed(grid);
       const slots = slotScan.slots;
+      validateSlotCoverage(grid, slots);
       const lenCounts = buildLenCounts(slots);
       const stats = analyzeTemplate(slots);
       entries.push({

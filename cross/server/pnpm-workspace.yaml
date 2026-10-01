@@ -5,8 +5,11 @@ onlyBuiltDependencies:
   - esbuild
 
 overrides:
-  'ajv>fast-uri': 4.1.2
-  'minimatch>brace-expansion': 5.0.9
+  mysql2: ^3.23.1
+  '@prisma/dev>hono': 4.13.5
+  '@napi-rs/cli>js-yaml': 5.4.1
+  'ajv>fast-uri': 4.1.5
+  'minimatch>brace-expansion': 5.0.12
   '@hono/node-server': ^2.0.5
   '@hono/node-server@<2.0.5': '>=2.0.5'
   archiver-utils>lodash: ^4.18.0
@@ -31,7 +34,7 @@ overrides:
   hono@>=4.7.0 <4.12.34: '>=4.12.34'
   js-yaml: ^4.3.0
   js-yaml@>=4.0.0 <4.3.0: '>=4.3.0'
-  qs: ^6.15.2
+  qs: ^6.16.0
   readdir-glob>minimatch: ^5.1.7
   router>path-to-regexp: ^8.4.2
   sharp@<0.35.0: '>=0.35.0'

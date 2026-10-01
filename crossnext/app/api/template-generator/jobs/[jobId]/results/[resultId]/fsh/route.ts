@@ -8,5 +8,5 @@ export const GET = apiRoute<unknown, Params>(
     proxyCrossTemplate(
       `/api/template-generator/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(resultId)}/fsh`,
     ),
-  { permissions: [Permissions.AdminAccess] },
+  { roles: ["ADMIN"], permissions: [Permissions.AdminAccess] },
 );

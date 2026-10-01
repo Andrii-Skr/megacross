@@ -1,4 +1,5 @@
-import type { Cell, Grid } from "../src/types";
+import type { Cell, Grid, Slot } from "../src/types";
+import { buildClueLayouts, findAnchorlessEdgeClusterCells } from "../src/utils/clues";
 import { convertMmToCorelUnits, COREL_UNITS_PER_MM, formatCorelSizeMm } from "./svg-theme";
 import { resolveCenteredTextStartX } from "./text-position";
 
@@ -23,6 +24,11 @@ const ANSWER_FONT_FAMILY = "Arial";
 type AnswerSvgFont = {
   familyName?: string | null;
   fontFaceCss?: string | null;
+};
+
+type AnswerSvgLayoutContext = {
+  slots: Slot[];
+  definitions: Map<string, string>;
 };
 
 function escapeXmlAttr(value: string): string {
@@ -52,7 +58,26 @@ function resolveAnswerTextBaselineY(cellTop: number, cellSize: number): number {
   return textTopY + ascent;
 }
 
-export function buildAnswersOnlySvg(grid: Grid, solved: string[], cellSizeMm: number, font?: AnswerSvgFont): string {
+export function buildAnswersOnlySvg(
+  grid: Grid,
+  solved: string[],
+  cellSizeMm: number,
+  font?: AnswerSvgFont,
+  layoutContext?: AnswerSvgLayoutContext,
+): string {
+  const transparentCells = new Set<string>();
+  if (layoutContext) {
+    const layouts = buildClueLayouts(grid, layoutContext.slots, solved, layoutContext.definitions);
+    for (const layout of layouts) {
+      if (layout.areaKind === "paired") continue;
+      const cells = layout.clusterCells?.length ? layout.clusterCells : layout.areaCells;
+      if (cells.length <= 1) continue;
+      for (const [row, col] of cells) transparentCells.add(`${row},${col}`);
+    }
+    for (const [row, col] of findAnchorlessEdgeClusterCells(grid, layouts)) {
+      transparentCells.add(`${row},${col}`);
+    }
+  }
   const rows = grid.rows;
   const cols = grid.cols;
   const cellSize = convertMmToCorelUnits(cellSizeMm);
@@ -72,6 +97,7 @@ export function buildAnswersOnlySvg(grid: Grid, solved: string[], cellSizeMm: nu
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
+      if (grid.data[row][col] === "%" || transparentCells.has(`${row},${col}`)) continue;
       const x = pad + col * cellSize;
       const y = pad + row * cellSize;
       const ch = solved[row][col] as Cell;

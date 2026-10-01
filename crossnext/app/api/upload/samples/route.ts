@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { parseFshBytes, SlotCoverageError, scanSlots, validateSlotCoverage } from "@megacross/cross-format";
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
@@ -46,22 +47,30 @@ async function pickUniqueName(dir: string, rawName: string, used: Set<string>): 
   return candidate;
 }
 
-async function hasActiveFillJob(issueId: bigint): Promise<boolean> {
+async function getUploadBlocker(issueId: bigint): Promise<"running" | "review" | null> {
   try {
-    const row = await prisma.scanwordFillJob.findFirst({
+    const active = await prisma.scanwordFillJob.findFirst({
       where: {
         issueId,
         status: {
-          in: ["queued", "running", "review"],
+          in: ["queued", "running"],
         },
       },
       select: { id: true },
     });
-    return Boolean(row);
+    if (active) return "running";
+    // Old reviews remain in history even after a newer job has finished.
+    // Only the current review still depends on the uploaded templates.
+    const latest = await prisma.scanwordFillJob.findFirst({
+      where: { issueId },
+      orderBy: { id: "desc" },
+      select: { status: true },
+    });
+    return latest?.status === "review" ? "review" : null;
   } catch (err: unknown) {
     // Table may not exist in environments where migrations haven't been applied yet.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2021") {
-      return false;
+      return null;
     }
     throw err;
   }
@@ -98,6 +107,33 @@ export async function POST(req: Request) {
     if (!baseDir) {
       return error(500, "CROSS_SAMPLES_DIR is not configured", "UPLOAD_CONFIG_MISSING");
     }
+    // Validate the whole batch before replacing any existing templates.
+    const validatedFiles: { file: File; buf: Buffer }[] = [];
+    for (const file of files) {
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        return error(413, "File too large", "UPLOAD_FILE_TOO_LARGE");
+      }
+      const buf = Buffer.from(await file.arrayBuffer());
+      try {
+        const grid = parseFshBytes(buf);
+        validateSlotCoverage(grid, scanSlots(grid));
+      } catch (err) {
+        return NextResponse.json(
+          {
+            success: false,
+            errorCode: err instanceof SlotCoverageError ? "UPLOAD_UNCOVERED_CELLS" : "UPLOAD_INVALID_TEMPLATE",
+            message: err instanceof Error ? err.message : "Invalid template",
+            fileName: file.name,
+            cells:
+              err instanceof SlotCoverageError
+                ? err.cells.map(([row, col]) => ({ row: row + 1, column: col + 1 }))
+                : undefined,
+          },
+          { status: 400 },
+        );
+      }
+      validatedFiles.push({ file, buf });
+    }
     let dest = baseDir;
     if (issueId) {
       const issue = await prisma.issue.findUnique({
@@ -110,8 +146,12 @@ export async function POST(req: Request) {
       if (!issue) {
         return error(404, "Issue not found", "UPLOAD_ISSUE_NOT_FOUND");
       }
-      if (await hasActiveFillJob(issueId)) {
+      const blocker = await getUploadBlocker(issueId);
+      if (blocker === "running") {
         return error(409, "Generation is running for this issue", "UPLOAD_FILL_RUNNING");
+      }
+      if (blocker === "review") {
+        return error(409, "Complete the current review before replacing templates", "UPLOAD_REVIEW_PENDING");
       }
       const editionDir = sanitizeName(issue.edition.code);
       const issueDir = sanitizeName(issue.issueNumber.label);
@@ -122,11 +162,7 @@ export async function POST(req: Request) {
 
     const usedNames = new Set<string>();
     const saved: { name: string; size: number }[] = [];
-    for (const f of files) {
-      if (f.size > MAX_FILE_SIZE_BYTES) {
-        return error(413, "File too large", "UPLOAD_FILE_TOO_LARGE");
-      }
-      const buf = Buffer.from(await f.arrayBuffer());
+    for (const { file: f, buf } of validatedFiles) {
       const name = await pickUniqueName(dest, sanitizeName(f.name || "file"), usedNames);
       const target = path.join(dest, name);
       await fs.writeFile(target, buf);
@@ -134,7 +170,8 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ ok: true, saved, dest });
-  } catch {
+  } catch (err) {
+    console.error("Failed to upload scanword templates", err);
     return error(500, "Internal server error", "UPLOAD_INTERNAL_ERROR");
   }
 }

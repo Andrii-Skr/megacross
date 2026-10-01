@@ -36,6 +36,20 @@ describe("/api/template-generator/jobs", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("denies the generator to chief editors who have general AdminAccess", async () => {
+    setAuthed({ id: "13", role: "CHIEF_EDITOR" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const getResponse = await GET(makeReq("GET", "http://localhost/api/template-generator/jobs"), makeCtx({}));
+    const postResponse = await POST(
+      makeReq("POST", "http://localhost/api/template-generator/jobs", requestBody),
+      makeCtx({}),
+    );
+    expect(getResponse.status).toBe(403);
+    expect(postResponse.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("restores the current user's latest job without trusting a browser-stored ID", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: "91", status: "running", acceptedCount: 2 }), {

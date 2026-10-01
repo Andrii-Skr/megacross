@@ -13,7 +13,7 @@ export const POST = apiRoute(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...body, userId: getNumericUserId(user) }),
     }),
-  { schema: templateGenerationSchema, permissions: [Permissions.AdminAccess] },
+  { schema: templateGenerationSchema, roles: ["ADMIN"], permissions: [Permissions.AdminAccess] },
 );
 
 export const GET = apiRoute(
@@ -51,5 +51,5 @@ export const GET = apiRoute(
         : null,
     );
   },
-  { permissions: [Permissions.AdminAccess] },
+  { roles: ["ADMIN"], permissions: [Permissions.AdminAccess] },
 );

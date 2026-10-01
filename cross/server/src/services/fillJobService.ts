@@ -3019,7 +3019,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const svgAnswers = buildAnswersOnlySvg(template.grid, solvedRows, svgLayout.answerCellSizeMm, {
       familyName: resolvedSvgTypography.fontFamily,
       fontFaceCss: resolvedSvgTypography.fontFaceCss,
-    });
+    }, { slots, definitions });
     writeFileSync(path.join(templateDir, "crossword.svg"), svg);
     writeFileSync(path.join(templateDir, "crossword-no-text.svg"), svgRaw);
     writeFileSync(path.join(templateDir, "crossword-answers.svg"), svgAnswers);

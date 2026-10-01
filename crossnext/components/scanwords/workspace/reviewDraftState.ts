@@ -13,6 +13,7 @@ export type PersistedReviewRow = {
   templateKey: string;
   slotId: number;
   word: string;
+  baseWord?: string;
   definition: string;
   wordId: string | null;
   opredId: string | null;
@@ -178,6 +179,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
     templateKey?: unknown;
     slotId?: unknown;
     word?: unknown;
+    baseWord?: unknown;
     definition?: unknown;
     wordId?: unknown;
     opredId?: unknown;
@@ -197,6 +199,7 @@ export function normalizePersistedSlot(value: unknown): PersistedReviewRow | nul
     templateKey: row.templateKey,
     slotId,
     word,
+    ...(typeof row.baseWord === "string" ? { baseWord: normalizeWordInput(row.baseWord) } : {}),
     definition,
     wordId,
     opredId,
@@ -229,11 +232,53 @@ export function mapPersistedRowsByTemplate(rows: PersistedReviewRow[]): Map<stri
 export function mergeTemplateStateWithDraft(
   initialRows: EditableReviewSlotState[],
   draftRowsBySlotId: Map<number, PersistedReviewRow> | undefined,
+  template?: FillReviewTemplate,
+  onStaleDraft?: (slotId: number) => void,
 ): EditableReviewSlotState[] {
   if (!draftRowsBySlotId?.size) return initialRows;
+  const staleSlotIds = new Set<number>();
+  const initialBySlotId = new Map(initialRows.map((row) => [row.slotId, row]));
+  const candidateRows = new Map(initialRows.map((row) => [row.slotId, { word: row.word }]));
+  for (const row of initialRows) {
+    const draft = draftRowsBySlotId.get(row.slotId);
+    if (!draft) continue;
+    if (draft.baseWord != null && normalizeWordInput(draft.baseWord) !== row.word) {
+      staleSlotIds.add(row.slotId);
+    } else {
+      candidateRows.set(row.slotId, { word: normalizeWordInput(draft.word) || row.word });
+    }
+  }
+  // Legacy drafts have no base identity. Keep jointly compatible edits, and
+  // reject conflicting replacements until the remaining crossings are stable.
+  if (template) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const rejected: number[] = [];
+      for (const slot of template.slots) {
+        const draft = draftRowsBySlotId.get(slot.slotId);
+        if (!draft || draft.baseWord != null || staleSlotIds.has(slot.slotId)) continue;
+        const initialWord = initialBySlotId.get(slot.slotId)?.word;
+        const word = candidateRows.get(slot.slotId)?.word ?? "";
+        if (word === initialWord) continue;
+        if (word.length !== slot.len || !wordMatchesFixedLetters(word, buildSlotFixedLetters(slot, candidateRows))) {
+          rejected.push(slot.slotId);
+        }
+      }
+      for (const slotId of rejected) {
+        staleSlotIds.add(slotId);
+        candidateRows.set(slotId, { word: initialBySlotId.get(slotId)?.word ?? "" });
+        changed = true;
+      }
+    }
+  }
   return initialRows.map((initialRow) => {
     const draft = draftRowsBySlotId.get(initialRow.slotId);
     if (!draft) return initialRow;
+    if (staleSlotIds.has(initialRow.slotId)) {
+      onStaleDraft?.(initialRow.slotId);
+      return { ...initialRow, bookmarked: draft.bookmarked };
+    }
     const nextWord = normalizeWordInput(draft.word);
     const nextDefinitionOptions = [...initialRow.definitionOptions];
     const nextDefinition = draft.definition ?? "";
@@ -271,7 +316,11 @@ export function buildEditableTemplateStates(
 ): EditableReviewTemplateState[] {
   return templates.map((template) => ({
     key: template.key,
-    slots: mergeTemplateStateWithDraft(buildInitialTemplateState(template), draftRowsByTemplate?.get(template.key)),
+    slots: mergeTemplateStateWithDraft(
+      buildInitialTemplateState(template),
+      draftRowsByTemplate?.get(template.key),
+      template,
+    ),
   }));
 }
 
@@ -310,6 +359,7 @@ export function buildPersistedRows(
         templateKey: template.key,
         slotId: currentRow.slotId,
         word: currentWord,
+        baseWord: initialWord,
         definition: currentDefinition,
         wordId: currentWordId,
         opredId: currentOpredId,

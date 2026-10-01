@@ -10,5 +10,5 @@ export const POST = apiRoute(
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
-  { schema: templateGenerationSchema, permissions: [Permissions.AdminAccess] },
+  { schema: templateGenerationSchema, roles: ["ADMIN"], permissions: [Permissions.AdminAccess] },
 );

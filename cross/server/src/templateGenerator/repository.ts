@@ -85,8 +85,8 @@ export async function patchTemplateJob(
     dictionaryCounts?: Record<number, number>;
     targetDistribution?: Record<number, number>;
   },
-): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+): Promise<boolean> {
+  const updated = await prisma.$executeRaw(Prisma.sql`
     UPDATE scanword_template_generation_jobs SET
       status = CASE WHEN ${patch.status !== undefined} THEN ${patch.status ?? null} ELSE status END,
       phase = CASE WHEN ${patch.phase !== undefined} THEN ${patch.phase ?? null} ELSE phase END,
@@ -98,8 +98,9 @@ export async function patchTemplateJob(
       "dictionaryCounts" = CASE WHEN ${patch.dictionaryCounts !== undefined} THEN ${JSON.stringify(patch.dictionaryCounts ?? {})}::jsonb ELSE "dictionaryCounts" END,
       "targetDistribution" = CASE WHEN ${patch.targetDistribution !== undefined} THEN ${JSON.stringify(patch.targetDistribution ?? {})}::jsonb ELSE "targetDistribution" END,
       "updatedAt" = now()
-    WHERE id = ${id}
+    WHERE id = ${id} AND status IN ('queued', 'running')
   `);
+  return updated > 0;
 }
 
 export async function insertTemplateResult(
@@ -110,12 +111,17 @@ export async function insertTemplateResult(
   grid: Grid,
   metrics: TemplateMetrics,
   fingerprint: string,
-): Promise<void> {
-  await prisma.$executeRaw(Prisma.sql`
+): Promise<boolean> {
+  const inserted = await prisma.$executeRaw(Prisma.sql`
+    WITH active_job AS (
+      SELECT id FROM scanword_template_generation_jobs
+      WHERE id = ${jobId} AND status = 'running' FOR UPDATE
+    )
     INSERT INTO scanword_template_generation_results ("jobId", ordinal, "fshBytes", grid, metrics, fingerprint)
-    VALUES (${jobId}, ${ordinal}, ${Buffer.from(fshBytes)}, ${JSON.stringify(grid)}::jsonb, ${JSON.stringify(metrics)}::jsonb, ${fingerprint})
+    SELECT id, ${ordinal}, ${Buffer.from(fshBytes)}, ${JSON.stringify(grid)}::jsonb, ${JSON.stringify(metrics)}::jsonb, ${fingerprint} FROM active_job
     ON CONFLICT DO NOTHING
   `);
+  return inserted > 0;
 }
 
 export async function listTemplateResults(

@@ -1,3 +1,4 @@
+import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { ensureAdminAccess } from "@/app/actions/admin";
 import { TemplateGeneratorClient } from "@/components/template-generator/TemplateGeneratorClient";
@@ -11,7 +12,8 @@ export async function generateMetadata() {
 }
 
 export default async function TemplateGeneratorPage() {
-  await ensureAdminAccess();
+  const session = await ensureAdminAccess();
+  if (session?.user?.role !== "ADMIN") notFound();
   const [filters, editions] = await Promise.all([
     prisma.dictionaryFilterTemplate.findMany({
       where: { is_deleted: false, language: "ru" },

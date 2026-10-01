@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PropsWithChildren, ReactNode } from "react";
 import { vi } from "vitest";
@@ -274,6 +274,90 @@ describe("FillReviewDialog", () => {
         dispatchEvent: vi.fn(),
       })),
     });
+  });
+
+  it.each([false, true])("keeps unsaved edits when limits change with remote storage %s", async (available) => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      jsonResponse({ available, rows: [] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const props = {
+      open: true,
+      onOpenChange: vi.fn(),
+      reviewJobId: "job-limit-change",
+      reviewData: makeReviewPayload(),
+      templateSetup: null,
+      definitionLimits: { maxPerCell: 30, maxPerHalfCell: 15 },
+      loading: false,
+      finalizing: false,
+      error: null,
+      onFinalize: vi.fn().mockResolvedValue(undefined),
+      onRequestCandidates: vi.fn().mockResolvedValue([]),
+    };
+    const { rerender } = render(<FillReviewDialog {...props} />);
+    await waitFor(() => expect(screen.getByText("Кот")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "scanwordsReviewTabProofreading" }));
+    await userEvent.click(screen.getByRole("button", { name: "scanwordsReviewAddBookmark" }));
+    expect(screen.getByRole("button", { name: "scanwordsReviewRemoveBookmark" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    rerender(<FillReviewDialog {...props} definitionLimits={{ maxPerCell: 40, maxPerHalfCell: 15 }} />);
+    await waitFor(() => expect(screen.getByText("Кот")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "scanwordsReviewRemoveBookmark" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await waitFor(
+      () => {
+        const rows = available
+          ? JSON.parse(fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")?.[1]?.body as string).rows
+          : JSON.parse(window.localStorage.getItem("scanwords:fillReviewDraft:job-limit-change") ?? "{}").rows;
+        expect(rows?.[0]?.bookmarked).toBe(true);
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  it("uses the latest character limit when the initial draft finishes loading", async () => {
+    let resolveDraft!: (response: Response) => void;
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveDraft = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const payload = makeReviewPayload();
+    const template = payload.templates[0];
+    const slot = template.slots[0];
+    const longerDefinition = "Подсказка для объединённой клетки ".repeat(2).trim();
+    expect(longerDefinition.length).toBeGreaterThan(60);
+    expect(longerDefinition.length).toBeLessThanOrEqual(80);
+    slot.clueCell = { key: "0,0", row: 0, col: 0 };
+    slot.definitionOptions.push({ opredId: "long", text: longerDefinition, difficulty: null });
+    template.clueGroups = [{ key: "0,0", row: 0, col: 0, slotIds: [slot.slotId], areaCellCount: 2 }];
+    const props = {
+      open: true,
+      onOpenChange: vi.fn(),
+      reviewJobId: "job-delayed-limit",
+      reviewData: payload,
+      templateSetup: null,
+      definitionLimits: { maxPerCell: 30, maxPerHalfCell: 15 },
+      loading: false,
+      finalizing: false,
+      error: null,
+      onFinalize: vi.fn().mockResolvedValue(undefined),
+      onRequestCandidates: vi.fn().mockResolvedValue([]),
+    };
+    const { rerender } = render(<FillReviewDialog {...props} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    rerender(<FillReviewDialog {...props} definitionLimits={{ maxPerCell: 40, maxPerHalfCell: 15 }} />);
+    await act(async () => resolveDraft(jsonResponse({ available: false, rows: [] })));
+    await waitFor(() => expect(screen.getByText(longerDefinition)).toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("clears persisted draft after successful finalize", async () => {

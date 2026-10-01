@@ -6,4 +6,11 @@ export type {
   SlotScanModeOption,
   SlotStart,
 } from "@megacross/cross-format";
-export { lengthStats, scanSlots, scanSlotsDetailed, validate } from "@megacross/cross-format";
+export {
+  lengthStats,
+  SlotCoverageError,
+  scanSlots,
+  scanSlotsDetailed,
+  validate,
+  validateSlotCoverage,
+} from "@megacross/cross-format";

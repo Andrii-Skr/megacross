@@ -178,6 +178,60 @@ describe("review draft state helpers", () => {
     ]);
   });
 
+  it("records the base word and rejects drafts from a different filling", () => {
+    const payload = makeReviewPayload();
+    const editable = buildEditableTemplateStates(payload.templates);
+    editable[0].slots[0].definition = "Правка";
+    editable[0].slots[0].bookmarked = true;
+    const rows = buildPersistedRows(
+      payload.templates,
+      Object.fromEntries(editable.map((item) => [item.key, item.slots])),
+    );
+    expect(rows[0].baseWord).toBe("КОТ");
+    expect(normalizePersistedRows(rows)[0].baseWord).toBe("КОТ");
+    payload.templates[0].slots[0].word = "ДОМ";
+    expect(buildEditableTemplateStates(payload.templates, mapPersistedRowsByTemplate(rows))[0].slots[0]).toMatchObject({
+      word: "ДОМ",
+      definition: "Кот",
+      bookmarked: true,
+    });
+  });
+
+  it("rejects incompatible legacy replacements and keeps compatible edits", () => {
+    const template = makeReviewPayload().templates[0];
+    template.slots.push({
+      ...template.slots[0],
+      slotId: 11,
+      word: "ТОК",
+      intersections: [{ slotId: 10, index: 0, otherIndex: 2, row: 0, col: 0, letter: "Т" }],
+    });
+    template.slots[0].intersections = [{ slotId: 11, index: 2, otherIndex: 0, row: 0, col: 0, letter: "Т" }];
+    const draft = normalizePersistedRows([
+      { templateKey: "tpl-1", slotId: 10, word: "ДОМ", definition: "Старое", bookmarked: true },
+      { templateKey: "tpl-1", slotId: 11, word: "ТОК", definition: "Правка" },
+    ]);
+    const restored = buildEditableTemplateStates([template], mapPersistedRowsByTemplate(draft));
+    expect(restored[0].slots[0]).toMatchObject({ word: "КОТ", definition: "Кот", bookmarked: true });
+    expect(restored[0].slots[1]).toMatchObject({ word: "ТОК", definition: "Правка" });
+    draft[0].word = "КИТ";
+    expect(buildEditableTemplateStates([template], mapPersistedRowsByTemplate(draft))[0].slots[0].word).toBe("КИТ");
+    draft[0].word = "ДОМ";
+    draft[1].word = "МАК";
+    expect(
+      buildEditableTemplateStates([template], mapPersistedRowsByTemplate(draft))[0].slots.map((row) => row.word),
+    ).toEqual(["ДОМ", "МАК"]);
+  });
+
+  it("keeps edits with a matching base identity for normal validation", () => {
+    const payload = makeReviewPayload();
+    const draft = normalizePersistedRows([
+      { templateKey: "tpl-1", slotId: 10, baseWord: "кот", word: "ДОМ", definition: "Правка" },
+    ]);
+    expect(buildEditableTemplateStates(payload.templates, mapPersistedRowsByTemplate(draft))[0].slots[0].word).toBe(
+      "ДОМ",
+    );
+  });
+
   it("builds finalize payload for all templates and normalizes limits", () => {
     const payload = makeReviewPayload();
     const finalizePayload = buildFinalizePayload(

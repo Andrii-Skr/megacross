@@ -113,7 +113,7 @@ if (!inFile) {
     type0CellSizeMm,
     type0Features: true,
   });
-  const svgAnswers = buildAnswersOnlySvg(grid, solved, answerCellSizeMm);
+  const svgAnswers = buildAnswersOnlySvg(grid, solved, answerCellSizeMm, undefined, { slots, definitions });
 
   /* 5. output */
   mkdirSync("out", { recursive: true });

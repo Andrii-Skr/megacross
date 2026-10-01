@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getActionErrorMeta } from "@/lib/action-error";
 import { fetcher } from "@/lib/fetcher";
 import { cn } from "@/lib/utils";
-import { lengthStats, scanSlots, validate } from "@/utils/cross/grid";
+import { lengthStats, SlotCoverageError, scanSlots, validate, validateSlotCoverage } from "@/utils/cross/grid";
 import { parseFshBytes } from "@/utils/cross/parseFsh";
 
 type UploadPanelProps = {
@@ -93,7 +93,7 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
     accept: { "application/octet-stream": [".fsh"] },
   });
 
-  const disabled = uploading || files.length === 0;
+  const disabled = uploading || parsing || parseErrors.length > 0 || files.length === 0;
   const countText = useMemo(() => t("selectedFiles", { count: files.length }), [files.length, t]);
   const parseErrorMap = useMemo(() => new Map(parseErrors.map((err) => [err.key, err])), [parseErrors]);
   const fileStatsMap = useMemo(() => new Map(fileStats.map((row) => [row.key, row.stats])), [fileStats]);
@@ -174,10 +174,16 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
             const grid = parseFshBytes(buf);
             validate(grid);
             const slots = scanSlots(grid);
+            validateSlotCoverage(grid, slots);
             const stats = lengthStats(slots);
             results.push({ key, name: f.name, size: f.size, stats });
           } catch (e: unknown) {
-            const reason = (e as { message?: string } | null)?.message?.trim() || t("parseErrorUnknown");
+            const reason =
+              e instanceof SlotCoverageError
+                ? t("uploadUncoveredCells", {
+                    cells: e.cells.map(([row, col]) => `(${row + 1}, ${col + 1})`).join(", "),
+                  })
+                : (e as { message?: string } | null)?.message?.trim() || t("parseErrorUnknown");
             errors.push({ key: `${f.name}:${f.size}`, name: f.name, reason });
             if (!cancelled) toast.error(t("parseError", { name: f.name }));
           }
@@ -205,7 +211,11 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
 
   const handleUpload = useCallback(async () => {
     try {
-      if (!files.length) return;
+      if (!files.length || parsing) return;
+      if (parseErrors.length) {
+        toast.error(t("uploadInvalidTemplates"));
+        return;
+      }
       setUploading(true);
       const fd = new FormData();
       if (issueId != null) {
@@ -230,13 +240,17 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
       onUploadComplete?.({ count: savedCount, files: savedFiles });
       setFiles([]);
     } catch (e: unknown) {
-      const { status } = getActionErrorMeta(e);
+      const { status, code } = getActionErrorMeta(e);
       if (status === 403) toast.error(t("forbidden"));
+      else if (code === "UPLOAD_FILL_RUNNING") toast.error(t("uploadFillRunning"));
+      else if (code === "UPLOAD_REVIEW_PENDING") toast.error(t("uploadReviewPending"));
+      else if (code === "UPLOAD_UNCOVERED_CELLS" || code === "UPLOAD_INVALID_TEMPLATE")
+        toast.error(t("uploadInvalidTemplates"));
       else toast.error(t("uploadError"));
     } finally {
       setUploading(false);
     }
-  }, [files, issueId, onUploadComplete, t]);
+  }, [files, issueId, onUploadComplete, parseErrors.length, parsing, t]);
 
   useImperativeHandle(
     ref,
@@ -355,6 +369,11 @@ export const UploadPanel = forwardRef<UploadPanelHandle, UploadPanelProps>(funct
                       </TooltipProvider>
                     </div>
                   </div>
+                  {parseError && (
+                    <p role="alert" className="mt-1 text-xs text-destructive break-words">
+                      {parseError.reason}
+                    </p>
+                  )}
                   {stats && (
                     <div className="mt-1 text-xs text-muted-foreground">
                       <div>{t("totalWords", { count: stats.total ?? 0 })}</div>

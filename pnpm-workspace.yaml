@@ -13,6 +13,16 @@ allowBuilds:
   prisma: true
   sharp: true
 overrides:
+  mysql2: ^3.23.1
+  baseline-browser-mapping: ^2.11.0
+  '@vitest/mocker': ^4.1.11
+  vitest: ^4.1.11
+  '@vitest/ui': ^4.1.11
+  '@vitest/coverage-v8': ^4.1.11
+  'ajv>fast-uri': 4.1.5
+  '@prisma/dev>hono': 4.13.5
+  'minimatch>brace-expansion': 5.0.12
+  '@napi-rs/cli>js-yaml': 5.4.1
   '@hono/node-server': ^1.19.13
   '@hono/node-server@<2.0.5': '>=2.0.5'
   brace-expansion: ^2.0.3
@@ -43,7 +53,7 @@ overrides:
   postcss: ^8.5.15
   postcss@<=8.5.17: '>=8.5.18'
   preact: ^10.27.3
-  qs: ^6.14.2
+  qs: ^6.16.0
   rollup: ^4.59.0
   sharp@<0.35.0: '>=0.35.0'
   underscore: ^1.13.8

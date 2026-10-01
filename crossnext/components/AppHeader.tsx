@@ -33,6 +33,7 @@ export function AppHeader() {
   const canSeePendingNav = canSeePending(role);
   const canSeeAdminNav = canSeeAdmin(role);
   const canSeeScanwords = canSeeAdminNav;
+  const canSeeTemplateGenerator = role === "ADMIN";
 
   if (hide) return null;
 
@@ -85,7 +86,7 @@ export function AppHeader() {
                     {t("scanwords")}
                   </Link>
                 )}
-                {canSeeScanwords && (
+                {canSeeTemplateGenerator && (
                   <Link
                     href={`/${locale}/template-generator`}
                     className="px-2 py-1 rounded hover:bg-accent"
@@ -118,7 +119,7 @@ export function AppHeader() {
               {t("scanwords")}
             </Link>
           )}
-          {canSeeScanwords && (
+          {canSeeTemplateGenerator && (
             <Link href={`/${locale}/template-generator`} className="underline-offset-4 hover:underline">
               {t("templateGenerator.nav")}
             </Link>

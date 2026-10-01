@@ -13,6 +13,7 @@ const draftRowSchema = z.object({
   templateKey: z.string().min(1).max(128),
   slotId: z.number().int().nonnegative(),
   word: z.string().max(255),
+  baseWord: z.string().max(255).optional(),
   definition: z.string().max(1024),
   wordId: z.string().min(1).max(32).nullable(),
   opredId: z.string().min(1).max(32).nullable(),

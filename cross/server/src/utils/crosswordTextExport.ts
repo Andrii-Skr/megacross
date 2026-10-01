@@ -1,5 +1,9 @@
 import type { Grid, Slot } from "../types";
 
+function capitalizeFirstLetter(value: string): string {
+  return value.replace(/\p{L}/u, (letter) => letter.toLocaleUpperCase("ru"));
+}
+
 export function isCrosswordTemplate(grid: Grid): boolean {
   return grid.templateTypeCode === "0" || grid.templateTypeCode === "<";
 }
@@ -29,8 +33,8 @@ export function buildCrosswordTextFiles(
     return {
       number: numberByCell.get(`${slot.r},${slot.c}`) ?? 0,
       direction: slot.dir.dr === 0 ? "right" : "down",
-      word,
-      clue: (definitions.get(word.toUpperCase()) ?? "").replace(/\s+/gu, " ").trim(),
+      word: capitalizeFirstLetter(word.toLocaleLowerCase("ru")),
+      clue: capitalizeFirstLetter((definitions.get(word.toUpperCase()) ?? "").replace(/\s+/gu, " ").trim()),
     };
   });
 

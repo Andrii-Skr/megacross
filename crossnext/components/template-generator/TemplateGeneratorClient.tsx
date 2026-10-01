@@ -4,7 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Download, LoaderCircle, Play, RotateCcw, Square, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Badge } from "@/components/ui/badge";
@@ -105,6 +105,8 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [items, setItems] = useState<GenerationResult[]>([]);
+  const resultRequestVersion = useRef(0);
+  const currentJobId = useRef<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const [issueId, setIssueId] = useState(issues[0]?.id ?? "");
@@ -175,22 +177,32 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
   }, [runPreflight, preflightKey]);
 
   const loadResults = useCallback(async (jobId: string) => {
-    const response = await fetch(`/api/template-generator/jobs/${jobId}/results?page=1&pageSize=50`);
-    const first = (await readJson(response)) as { items: GenerationResult[]; total: number };
-    const remainingPages = Array.from(
-      { length: Math.max(0, Math.ceil(first.total / 50) - 1) },
-      (_, index) => index + 2,
-    );
-    const remaining = await Promise.all(
-      remainingPages.map(async (page) => {
-        const next = await fetch(`/api/template-generator/jobs/${jobId}/results?page=${page}&pageSize=50`);
-        return readJson(next) as Promise<{ items: GenerationResult[] }>;
-      }),
-    );
-    setItems([...first.items, ...remaining.flatMap((page) => page.items)]);
+    if (currentJobId.current !== jobId) return;
+    const version = ++resultRequestVersion.current;
+    const isCurrent = () => currentJobId.current === jobId && resultRequestVersion.current === version;
+    try {
+      const response = await fetch(`/api/template-generator/jobs/${jobId}/results?page=1&pageSize=50`);
+      const first = (await readJson(response)) as { items: GenerationResult[]; total: number };
+      if (!isCurrent()) return;
+      const remainingPages = Array.from(
+        { length: Math.max(0, Math.ceil(first.total / 50) - 1) },
+        (_, index) => index + 2,
+      );
+      const remaining = await Promise.all(
+        remainingPages.map(async (page) => {
+          const next = await fetch(`/api/template-generator/jobs/${jobId}/results?page=${page}&pageSize=50`);
+          return readJson(next) as Promise<{ items: GenerationResult[] }>;
+        }),
+      );
+      if (isCurrent()) setItems([...first.items, ...remaining.flatMap((page) => page.items)]);
+    } catch (error) {
+      if (isCurrent()) setMessage(error instanceof Error ? error.message : String(error));
+    }
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    const restoreVersion = resultRequestVersion.current;
     const savedJobId = window.localStorage.getItem(LAST_JOB_STORAGE_KEY);
     void (async () => {
       let restored: GenerationJob | null = null;
@@ -208,33 +220,41 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
           // Keep the saved ID so a transient service failure does not lose the job.
         }
       }
-      if (restored) {
+      if (restored && !disposed && resultRequestVersion.current === restoreVersion) {
+        currentJobId.current = restored.id;
         setJob(restored);
         window.localStorage.setItem(LAST_JOB_STORAGE_KEY, restored.id);
         if (restored.acceptedCount > 0) await loadResults(restored.id);
       }
     })();
+    return () => {
+      disposed = true;
+      currentJobId.current = null;
+      resultRequestVersion.current += 1;
+    };
   }, [loadResults]);
 
   useEffect(() => {
     if (!activeJobId || !activeJobStatus || !["queued", "running"].includes(activeJobStatus)) return;
     const events = new EventSource(`/api/template-generator/jobs/${activeJobId}/events`);
+    let disposed = false;
     events.onmessage = (event) => {
+      if (disposed || currentJobId.current !== activeJobId) return;
       const next = JSON.parse(event.data) as GenerationJob;
       setJob(next);
       if (next.acceptedCount > 0) void loadResults(next.id);
       if (!["queued", "running"].includes(next.status)) events.close();
     };
     events.onerror = () => undefined;
-    return () => events.close();
+    return () => {
+      disposed = true;
+      events.close();
+    };
   }, [activeJobId, activeJobStatus, loadResults]);
 
   const start = form.handleSubmit(async (values) => {
     setBusyAction("start");
     setMessage(null);
-    setItems([]);
-    setSelected(new Set());
-    setRejected(new Set());
     try {
       const response = await fetch("/api/template-generator/jobs", {
         method: "POST",
@@ -242,6 +262,11 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
         body: JSON.stringify(toRequest(values)),
       });
       const created = (await readJson(response)) as GenerationJob;
+      currentJobId.current = created.id;
+      resultRequestVersion.current += 1;
+      setItems([]);
+      setSelected(new Set());
+      setRejected(new Set());
       setJob(created);
       window.localStorage.setItem(LAST_JOB_STORAGE_KEY, created.id);
     } catch (error) {

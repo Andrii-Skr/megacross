@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { scanSlotsDetailed } from "@megacross/cross-format";
 import type { Grid, Slot } from "../src/types";
 import { DIRS } from "../src/types";
-import { buildClueLayouts, findAnchorlessEdgeClusterCells } from "../src/utils/clues";
+import { buildClueLayouts, buildPhotoAreaBoundsBySlotId, findAnchorlessEdgeClusterCells } from "../src/utils/clues";
 import { parseFsh } from "../src/utils/parseFsh";
 import { runClueRenderSmokeSuite } from "./clue-layout-smoke-render";
 import { runClueReviewSmokeSuite } from "./clue-layout-smoke-review";
@@ -60,12 +60,12 @@ function testExpandFor02GroupSizeAtLeast4SingleSlot(): void {
   ];
   const solved = ["*##*", "*##*", "*A**", "*B**"];
   const definitions = new Map<string, string>([["AB", "Определение"]]);
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const clue = layoutByKey(layouts, "1,1");
   assert.equal(clue.areaCells.length, 4);
 }
 
-function testNoExpandFor02GroupSizeLessThan4(): void {
+function testSmall02GroupUsesPairWithoutPhoto(): void {
   const data = ["##**", "#↓**", "****", "****"];
   const codes = createCodes(4, 4, 0x01);
   codes[0][0] = 0x02;
@@ -92,7 +92,8 @@ function testNoExpandFor02GroupSizeLessThan4(): void {
   const definitions = new Map<string, string>([["CDE", "Определение"]]);
   const layouts = buildClueLayouts(grid, slots, solved, definitions);
   const clue = layoutByKey(layouts, "0,0");
-  assert.equal(clue.areaCells.length, 1);
+  assert.deepEqual(clue.areaCells, [[0, 0], [0, 1]]);
+  assert.equal(clue.areaKind, "paired");
 }
 
 function testNoExpandWhenTwoSlotsPointToSame02Group(): void {
@@ -137,7 +138,7 @@ function testNoExpandWhenTwoSlotsPointToSame02Group(): void {
     ["CGH", "Первое"],
     ["DEF", "Второе"],
   ]);
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const first = layoutByKey(layouts, "0,0");
   const second = layoutByKey(layouts, "0,1");
   assert.equal(first.areaCells.length, 1);
@@ -170,7 +171,7 @@ function testNoExpandWhenGroupIsNot02(): void {
   ];
   const solved = ["##AA", "#CAA", "#DAA", "AEAA"];
   const definitions = new Map<string, string>([["CDE", "Определение"]]);
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const clue = layoutByKey(layouts, "0,0");
   assert.equal(clue.areaCells.length, 1);
 }
@@ -231,7 +232,7 @@ function testRectAreaWithAttachedTailDefinitionCanExpand(): void {
     ["BD", "Хвост"],
   ]);
 
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const top = layoutByKey(layouts, "3,1");
   const tail = layoutByKey(layouts, "4,2");
   assert.equal(top.areaCells.length, 20);
@@ -294,7 +295,7 @@ function testTwoCellSideTailDoesNotExpand(): void {
     ["AC", "Большая область"],
     ["DE", "Хвост справа"],
   ]);
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const top = layoutByKey(layouts, "3,1");
   const tail = layoutByKey(layouts, "1,5");
   assert.equal(top.areaCells.length, 20);
@@ -357,7 +358,7 @@ function testClusterAppliesOnlyToClusterDefinitionSlot(): void {
     ["AB", "Кластер"],
     ["CD", "Хвост"],
   ]);
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const clusterDef = layoutByKey(layouts, "3,1");
   const tailDef = layoutByKey(layouts, "4,2");
   assert.equal(clusterDef.areaCells.length, 16);
@@ -419,7 +420,7 @@ function testNoExpansionForOverlappingCandidatesFromDifferentDefinitions(): void
     ["CD", "Второе"],
   ]);
 
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const first = layoutByKey(layouts, "3,0");
   const second = layoutByKey(layouts, "3,1");
   assert.equal(first.areaCells.length, 1);
@@ -486,7 +487,7 @@ function testAnchorCanExpandToLocalRectangleWhenAnotherRectangleIsBigger(): void
   ];
   const definitions = new Map<string, string>([["ABCDEF", "Верхний прямоугольник"]]);
 
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const top = layoutByKey(layouts, "3,1");
   assert.equal(top.areaCells.length, 20);
 }
@@ -545,7 +546,7 @@ function testNoClusterForMultiDefinitionComponent(): void {
     ["BD", "Хвост снизу"],
   ]);
 
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const top = layoutByKey(layouts, "3,1");
   assert.equal(top.areaCells.length, 1);
   assert.equal(top.clusterCells, undefined);
@@ -588,12 +589,12 @@ function testExpandUsesVisibleDefinitionCountNotRawSlotCount(): void {
     ["AC", "Видимое определение"],
   ]);
 
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const clue = layoutByKey(layouts, "1,1");
   assert.equal(clue.areaCells.length, 4);
 }
 
-function testNoExpandForOneByFourStripe(): void {
+function testOneByFourStripeUsesPairWithoutPhoto(): void {
   const data = ["####↓*", "******"];
   const codes = createCodes(2, 6, 0x01);
   codes[0][0] = 0x02;
@@ -619,7 +620,45 @@ function testNoExpandForOneByFourStripe(): void {
   const definitions = new Map<string, string>([["AC", "Полоса"]]);
   const layouts = buildClueLayouts(grid, slots, solved, definitions);
   const clue = layoutByKey(layouts, "0,3");
-  assert.equal(clue.areaCells.length, 1);
+  assert.deepEqual(clue.areaCells, [[0, 2], [0, 3]]);
+  assert.equal(clue.areaKind, "paired");
+}
+
+function testPairedClueSvgHasOneFrameAndNoPhotoArea(): void {
+  const data = ["##↓*", "****"];
+  const codes = createCodes(2, 4, 0x01);
+  codes[0][0] = 0x02;
+  codes[0][1] = 0x02;
+  codes[0][2] = 0x03;
+  const grid = buildGrid(data, codes);
+  const slots: Slot[] = [{
+    id: 1,
+    r: 0,
+    c: 2,
+    dir: DIRS.down,
+    len: 2,
+    cells: [[0, 2], [1, 2]],
+  }];
+  const solved = ["##A*", "**B*"];
+  const definitions = new Map([["AB", "Текст"]]);
+  const clue = layoutByKey(buildClueLayouts(grid, slots, solved, definitions), "0,1");
+  assert.deepEqual(clue.areaCells, [[0, 0], [0, 1]]);
+  assert.equal(clue.areaKind, "paired");
+  assert.equal(buildPhotoAreaBoundsBySlotId(grid, slots, solved, definitions).size, 0);
+
+  const result = buildCrosswordSvg(grid, slots, solved, definitions, {
+    style: "default",
+    arrowMode: "export",
+    arrowScale: 1,
+    templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
+    type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
+  });
+  for (const variant of ["svg", "svgRaw"] as const) {
+    const output = result[variant];
+    assert.ok(output.includes('<rect x="1" y="1" width="60" height="30" fill="none" stroke="#000000" stroke-width="2"/>'));
+    assert.equal(output.includes('<rect x="31" y="1" width="30" height="30" fill="none"'), false);
+    assert.ok(output.includes(">Текст</tspan>"));
+  }
 }
 
 function testTailAnchorCanExpandToDetachedTwoBySevenRectangle(): void {
@@ -653,7 +692,7 @@ function testTailAnchorCanExpandToDetachedTwoBySevenRectangle(): void {
   ];
   const solved = ["***#A***", "*###B###", "*#######", "********"];
   const definitions = new Map<string, string>([["AB", "Большой нижний прямоугольник"]]);
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const clue = layoutByKey(layouts, "0,3");
   assert.equal(clue.areaCells.length, 1);
   assert.equal(clue.clusterCells?.length, 14);
@@ -694,7 +733,7 @@ function testClusterHighlightWithoutDefinitionTexts(): void {
   ];
   const solved = ["##*", "##*", "AB*", "CD*"];
   const definitions = new Map<string, string>();
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const first = layoutByKey(layouts, "1,0");
   const second = layoutByKey(layouts, "1,1");
   assert.equal(first.text, "");
@@ -742,7 +781,7 @@ function testNoClusterHighlightForTwoDefinitionsInRectangle(): void {
     ["AC", "Первое"],
     ["BD", "Второе"],
   ]);
-  const layouts = buildClueLayouts(grid, slots, solved, definitions);
+  const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
   const first = layoutByKey(layouts, "1,0");
   const second = layoutByKey(layouts, "1,1");
   assert.equal(first.areaCells.length, 1);
@@ -778,7 +817,7 @@ function testAreaExpansionIsEnabledByDefaultEvenWhenEnvDisabled(): void {
     ];
     const solved = ["*##*", "*##*", "*A**", "*B**"];
     const definitions = new Map<string, string>([["AB", "Определение"]]);
-    const layouts = buildClueLayouts(grid, slots, solved, definitions);
+    const layouts = buildClueLayouts(grid, slots, solved, definitions, { expandPairedClues: false });
     const clue = layoutByKey(layouts, "1,1");
     assert.equal(clue.areaCells.length, 4);
   } finally {
@@ -820,7 +859,7 @@ function testAreaExpansionCanBeDisabledExplicitlyByOption(): void {
   assert.equal(clue.clusterCells, undefined);
 }
 
-function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
+function testExpandedCluePlaqueWithAndWithoutPhoto(): void {
   const data = ["*##*", "*##*", "*↓**", "****"];
   const codes = createCodes(4, 4, 0x01);
   codes[1][1] = 0x02;
@@ -873,32 +912,37 @@ function testPhotoClueRendersImageUnderDefinitionPlaque(): void {
   assert.match(svg, /<rect x="31" y="[0-9.]+" width="[0-9.]+" height="[0-9.]+" fill="none" stroke="#000000" stroke-width="2"\/>/);
   assert.match(svg, /<text x="[0-9.]+" y="[0-9.]+" font-size="[0-9.]+"[^>]*text-anchor="middle"/);
   for (const style of ["default", "corel"] as const) {
-    const rendered = buildCrosswordSvg(grid, slots, solved, definitions, {
-      style,
-      arrowMode: "export",
-      arrowScale: 1,
-      templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
-      type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
-      photoClues: [{ clueKey: "1,1", href: embeddedPhoto }],
-    });
-    for (const variant of ["svg", "svgRaw"] as const) {
-      const output = rendered[variant];
-      const photo = output.match(/<image href="data:image\/jpeg;base64,QUJDRA==" x="([^"]+)" y="([^"]+)"/);
-      assert.ok(photo, `${style} ${variant}: expected photo`);
-      const plaque = [...output.matchAll(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="#fff"\/>/g)]
-        .filter((match) => match[1] === photo[1] && Number(match[2]) > Number(photo[2]))
-        .at(-1);
-      assert.ok(plaque, `${style} ${variant}: expected photo plaque`);
-      const unitsPerMm = style === "corel" ? 2480 / 210 : 96 / 25.4;
-      assert.ok(Math.abs(Number(plaque[4]) / unitsPerMm - 3.5) < 0.001,
-        `${style} ${variant}: photo plaque height must be 3.5 mm`);
-      const frame = [...output.matchAll(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="none" stroke="#000000" stroke-width="([^"]+)"\/>/g)]
-        .find((match) => match[1] === plaque[1] && Number(match[2]) > Number(plaque[2]) &&
-          Number(match[2]) < Number(plaque[2]) + Number(plaque[4]));
-      assert.ok(frame, `${style} ${variant}: expected plaque frame`);
-      assert.ok(Math.abs(Number(frame[2]) + Number(frame[4]) - Number(photo[2]) -
-        (style === "corel" ? convertMmToCorelUnits(TEST_DEFAULT_CELL_SIZE_MM) * 2 : 60)) < 0.001,
-      `${style} ${variant}: frame bottom must coincide with cell edge`);
+    for (const withPhoto of [false, true]) {
+      const rendered = buildCrosswordSvg(grid, slots, solved, definitions, {
+        style,
+        arrowMode: "export",
+        arrowScale: 1,
+        templateCellSizeMm: TEST_DEFAULT_CELL_SIZE_MM,
+        type0CellSizeMm: TEST_TYPE0_CELL_SIZE_MM,
+        photoClues: withPhoto ? [{ clueKey: "1,1", href: embeddedPhoto }] : [],
+      });
+      const cellUnits = style === "corel" ? convertMmToCorelUnits(TEST_DEFAULT_CELL_SIZE_MM) : 30;
+      const areaX = style === "corel" ? cellUnits / 2 : 31;
+      const areaY = style === "corel" ? -Math.round(cellUnits * 0.034) : 1;
+      const areaBottom = areaY + cellUnits * 2;
+      for (const variant of ["svg", "svgRaw"] as const) {
+        const output = rendered[variant];
+        assert.equal(output.includes(`<image href="${embeddedPhoto}"`), withPhoto,
+          `${style} ${variant}: photo presence`);
+        const plaque = [...output.matchAll(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="#fff"\/>/g)]
+          .filter((match) => Math.abs(Number(match[1]) - areaX) < 0.001 && Number(match[2]) < areaBottom)
+          .at(-1);
+        assert.ok(plaque, `${style} ${variant} photo=${withPhoto}: expected plaque`);
+        const unitsPerMm = style === "corel" ? 2480 / 210 : 96 / 25.4;
+        assert.ok(Math.abs(Number(plaque[4]) / unitsPerMm - 3.5) < 0.001,
+          `${style} ${variant} photo=${withPhoto}: plaque height must be 3.5 mm`);
+        const frame = [...output.matchAll(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)" fill="none" stroke="#000000" stroke-width="([^"]+)"\/>/g)]
+          .find((match) => Math.abs(Number(match[1]) - areaX) < 0.001 &&
+            Number(match[2]) > Number(plaque[2]) && Number(match[2]) < Number(plaque[2]) + Number(plaque[4]));
+        assert.ok(frame, `${style} ${variant} photo=${withPhoto}: expected plaque frame`);
+        assert.ok(Math.abs(Number(frame[2]) + Number(frame[4]) - areaBottom) < 0.001,
+          `${style} ${variant} photo=${withPhoto}: frame bottom must coincide with cell edge`);
+      }
     }
   }
 }
@@ -1057,7 +1101,7 @@ function main(): void {
   process.env[AREA_EXPANSION_ENV_KEY] = "1";
   try {
     testExpandFor02GroupSizeAtLeast4SingleSlot();
-    testNoExpandFor02GroupSizeLessThan4();
+    testSmall02GroupUsesPairWithoutPhoto();
     testNoExpandWhenTwoSlotsPointToSame02Group();
     testNoExpandWhenGroupIsNot02();
     testRectAreaWithAttachedTailDefinitionCanExpand();
@@ -1069,13 +1113,14 @@ function main(): void {
     runClueReviewSmokeSuite();
     runClueRenderSmokeSuite();
     testExpandUsesVisibleDefinitionCountNotRawSlotCount();
-    testNoExpandForOneByFourStripe();
+    testOneByFourStripeUsesPairWithoutPhoto();
+    testPairedClueSvgHasOneFrameAndNoPhotoArea();
     testTailAnchorCanExpandToDetachedTwoBySevenRectangle();
     testNoClusterHighlightForTwoDefinitionsInRectangle();
     testClusterHighlightWithoutDefinitionTexts();
     testAreaExpansionIsEnabledByDefaultEvenWhenEnvDisabled();
     testAreaExpansionCanBeDisabledExplicitlyByOption();
-    testPhotoClueRendersImageUnderDefinitionPlaque();
+    testExpandedCluePlaqueWithAndWithoutPhoto();
     testClusterBackgroundIsTransparent();
     testAnchorlessEdgeClusterFixtures();
     testAnchorlessEdgeClusterGuards();

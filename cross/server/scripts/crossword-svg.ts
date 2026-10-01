@@ -211,7 +211,14 @@ export function buildCrosswordSvg(
   const clueTextMap = buildClueTextMap(clueLayouts);
   const photoClueMap = new Map((options.photoClues ?? []).map((item) => [item.clueKey, item.href] as const));
   const clusterCells = new Set<string>();
+  const pairedCells = new Set<string>();
+  const pairedLayouts = new Map<string, (typeof clueLayouts)[number]>();
   for (const layout of clueLayouts) {
+    if (layout.areaKind === "paired") {
+      pairedLayouts.set(layout.key, layout);
+      for (const [row, col] of layout.areaCells) pairedCells.add(`${row},${col}`);
+      continue;
+    }
     const cells = layout.clusterCells?.length ? layout.clusterCells : layout.areaCells;
     if (cells.length <= 1) continue;
     for (const [row, col] of cells) clusterCells.add(`${row},${col}`);
@@ -324,6 +331,8 @@ export function buildCrosswordSvg(
 
       if (ch === "#") {
         const isClusterCell = clusterCells.has(clueKey) || anchorlessCutout.has(clueKey);
+        const isPairedCell = pairedCells.has(clueKey);
+        const pairedLayout = pairedLayouts.get(clueKey);
         const blockFill = debugClusterFill && isClusterCell
           ? debugClusterColor
           : isType0Template && code === 0x02
@@ -335,10 +344,20 @@ export function buildCrosswordSvg(
           svgRawParts.push(rect);
         }
 
+        if (pairedLayout) {
+          const bounds = buildAreaBounds(pairedLayout.areaCells);
+          if (bounds) {
+            const frame = `<rect x="${gridOffsetX + bounds.minCol * cell}" y="${gridOffsetY + bounds.minRow * cell}" width="${(bounds.maxCol - bounds.minCol + 1) * cell}" height="${(bounds.maxRow - bounds.minRow + 1) * cell}" fill="none" stroke="${cellStrokeColor}" stroke-width="${strokeWidth}"/>`;
+            borderLayer.push(frame);
+            borderRawLayer.push(frame);
+          }
+        }
+
         if (clueLayout?.text) {
           const { definitionAreaCells, isExpandedDefinition, isClusterDefinition } =
             resolveClueRenderLayout(clueLayout);
           const photoHref = photoClueMap.get(clueKey);
+          const hasPlaque = Boolean(photoHref) || isExpandedDefinition;
           if (photoHref) {
             const bounds = buildAreaBounds(definitionAreaCells);
             if (bounds) {
@@ -359,17 +378,17 @@ export function buildCrosswordSvg(
             mode: clueMode,
             areaCells: definitionAreaCells,
             anchorCell: [row, col],
-            textAlign: photoHref ? "center" : isExpandedDefinition ? "bottom-left" : "center",
-            background: photoHref || isExpandedDefinition ? "text-block" : "none",
-            backgroundInset: photoHref || isExpandedDefinition ? strokeWidth : 0,
-            backgroundAnchor: photoHref ? "bottom-left" : "auto",
-            plaqueTextInset: photoHref ? cluePlaqueTextInset : 0,
-            plaqueHeight: photoHref ? photoCluePlaqueHeight : 0,
-            frame: photoHref ? "rect" : "none",
-            frameWidth: photoHref ? strokeWidth : 0,
-            clusterFrame: !photoHref && isClusterDefinition ? "top-right" : "none",
-            clusterPadding: !photoHref && isClusterDefinition ? clusterDefinitionPadding : 0,
-            clusterBorderWidth: !photoHref && isClusterDefinition ? strokeWidth : 0,
+            textAlign: "center",
+            background: hasPlaque ? "text-block" : "none",
+            backgroundInset: hasPlaque ? strokeWidth : 0,
+            backgroundAnchor: hasPlaque ? "bottom-left" : "auto",
+            plaqueTextInset: hasPlaque ? cluePlaqueTextInset : 0,
+            plaqueHeight: hasPlaque ? photoCluePlaqueHeight : 0,
+            frame: hasPlaque ? "rect" : "none",
+            frameWidth: hasPlaque ? strokeWidth : 0,
+            clusterFrame: !hasPlaque && isClusterDefinition ? "top-right" : "none",
+            clusterPadding: !hasPlaque && isClusterDefinition ? clusterDefinitionPadding : 0,
+            clusterBorderWidth: !hasPlaque && isClusterDefinition ? strokeWidth : 0,
             minFontSize: clueMinFontSize,
             glyphWidthScale: clueGlyphWidthScale,
             lineHeightScale: clueLineHeightScale,
@@ -380,7 +399,7 @@ export function buildCrosswordSvg(
           clueRawLayer.push(clueSvg.text);
         }
 
-        if (!isClusterCell) {
+        if (!isClusterCell && !isPairedCell) {
           const border = `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="none" stroke="${cellStrokeColor}" stroke-width="${strokeWidth}"/>`;
           borderLayer.push(border);
           borderRawLayer.push(border);

@@ -12,5 +12,5 @@ export const POST = apiRoute<z.infer<typeof schema>, Params>(
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
-  { schema, permissions: [Permissions.AdminAccess] },
+  { schema, roles: ["ADMIN"], permissions: [Permissions.AdminAccess] },
 );

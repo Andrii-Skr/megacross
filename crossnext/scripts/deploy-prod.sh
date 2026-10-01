@@ -20,7 +20,7 @@ BRANCH="${BRANCH:-${ROOT_BRANCH:-${APP_BRANCH:-main}}}"
 REMOTE="${GIT_REMOTE:-origin}"
 SEED="${SEED:-0}"
 PRUNE="${PRUNE:-0}"
-RUN_MIGRATIONS="${MIGRATE:-0}"
+RUN_MIGRATIONS="${MIGRATE:-1}"
 CROSS_BRANCH="${CROSS_BRANCH:-}"
 CROSS_REMOTE="${CROSS_GIT_REMOTE:-origin}"
 
@@ -114,10 +114,8 @@ fi
 echo "🏗️ Building Docker images (profile=$PROFILE)..."
 make -C "$APP_DIR" build PROFILE="$PROFILE"
 
-echo "🚀 Starting/Updating services (profile=$PROFILE)..."
-make -C "$APP_DIR" up PROFILE="$PROFILE"
-
 echo "⏳ Waiting for Postgres to be healthy..."
+docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.yml" --profile "$PROFILE" up -d --wait db
 make -C "$APP_DIR" pg-wait PROFILE="$PROFILE"
 
 if [[ "$RUN_MIGRATIONS" == "1" || "$RUN_MIGRATIONS" == "true" || "$RUN_MIGRATIONS" == "TRUE" ]]; then
@@ -126,6 +124,9 @@ if [[ "$RUN_MIGRATIONS" == "1" || "$RUN_MIGRATIONS" == "true" || "$RUN_MIGRATION
 else
   echo "⏭️  Skipping migrations (MIGRATE=$RUN_MIGRATIONS)"
 fi
+
+echo "🚀 Starting/Updating services (profile=$PROFILE)..."
+make -C "$APP_DIR" up PROFILE="$PROFILE"
 
 if [[ "$SEED" == "1" || "$SEED" == "true" || "$SEED" == "TRUE" ]]; then
   echo "🌱 Seeding database..."

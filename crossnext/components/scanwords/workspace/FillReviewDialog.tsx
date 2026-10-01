@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import NextImage from "next/image";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { toast } from "sonner";
 import { type AddDefinitionCreatedPayload, AddDefinitionModal } from "@/components/dictionary/AddDefinitionModal";
@@ -48,6 +48,13 @@ import type {
   TemplateSetupPayload,
   WordImageOption,
 } from "./model";
+import {
+  getPairedDefinitionMaxLength,
+  isPreferredPairedDefinition,
+  PAIRED_DEFINITION_MIN_LENGTH,
+  pickReviewDefinition,
+  preferPairedReviewDefinitions,
+} from "./reviewDefinitionPolicy";
 import {
   buildFinalizePayload,
   buildInitialTemplateState,
@@ -456,6 +463,7 @@ export function FillReviewDialog({
   const [finalizeConfirmationInput, setFinalizeConfirmationInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [draftHydrated, setDraftHydrated] = useState(false);
+  const [staleDraftCount, setStaleDraftCount] = useState(0);
   const [imageBusyRowKey, setImageBusyRowKey] = useState<string | null>(null);
   const [imageErrorByRowKey, setImageErrorByRowKey] = useState<Record<string, string | null>>({});
   const draftStorageKey = useMemo(() => (reviewJobId ? buildReviewDraftStorageKey(reviewJobId) : null), [reviewJobId]);
@@ -483,6 +491,11 @@ export function FillReviewDialog({
   const finalizeConfirmationMatched =
     finalizeConfirmationInput.trim().toLocaleUpperCase() === finalizeConfirmKeyword.trim().toLocaleUpperCase();
   const templateNeighbors = useMemo(() => buildTemplateNeighborMap(templates), [templates]);
+
+  const preferInitialPairedDefinitions = useEffectEvent(
+    (initial: Record<string, EditableSlot[]>, drafts: Map<string, Map<number, PersistedReviewRow>>) =>
+      preferPairedReviewDefinitions(templates, initial, definitionLimits.maxPerCell, drafts),
+  );
 
   useEffect(() => {
     let active = true;
@@ -516,15 +529,28 @@ export function FillReviewDialog({
       const persistedDraft =
         draftRemoteEnabledRef.current && persistedServerDraft != null ? persistedServerDraft : persistedLocalDraft;
 
-      const initial: Record<string, EditableSlot[]> = {};
+      let initial: Record<string, EditableSlot[]> = {};
+      let skippedDraftCount = 0;
+      const restoredDrafts = new Map<string, Map<number, PersistedReviewRow>>();
       for (const template of templates) {
         const initialRows = mergeTemplateStateWithTemplateSetup(
           template.key,
           buildInitialTemplateState(template),
           templateSetup,
         );
-        initial[template.key] = mergeTemplateStateWithDraft(initialRows, persistedDraft?.get(template.key));
+        const templateDraft = new Map(persistedDraft?.get(template.key));
+        restoredDrafts.set(template.key, templateDraft);
+        initial[template.key] = mergeTemplateStateWithDraft(
+          initialRows,
+          persistedDraft?.get(template.key),
+          template,
+          (slotId) => {
+            skippedDraftCount += 1;
+            templateDraft.delete(slotId);
+          },
+        );
       }
+      initial = preferInitialPairedDefinitions(initial, restoredDrafts);
       const hydrateImageRequests: Array<Promise<void>> = [];
       for (const template of templates) {
         const serverSlotById = new Map(template.slots.map((slot) => [slot.slotId, slot]));
@@ -560,6 +586,7 @@ export function FillReviewDialog({
       if (!active) return;
 
       setSlotsByTemplate(initial);
+      setStaleDraftCount(skippedDraftCount);
       setCandidateMap({});
       moderationCreatedRef.current.newWords.clear();
       moderationCreatedRef.current.newDefinitions.clear();
@@ -1297,7 +1324,12 @@ export function FillReviewDialog({
         }))
         .filter((item) => item.text.length > 0)
         .map((item) => ({ opredId: null, text: item.text, difficulty: item.difficulty }));
-      const firstDefinition = nextOptions[0]?.text ?? "";
+      const template = templates.find((item) => item.key === target.templateKey);
+      const pairedMaxLength = template
+        ? getPairedDefinitionMaxLength(template, target.slotId, definitionLimits.maxPerCell)
+        : null;
+      const firstDefinition =
+        pickReviewDefinition(nextOptions, { definition: "", opredId: null }, pairedMaxLength)?.text ?? "";
 
       for (const definition of nextOptions) {
         moderationCreatedRef.current.newWords.add(`${target.language}:${normalizedWord}:${definition.text}`);
@@ -1314,7 +1346,7 @@ export function FillReviewDialog({
         selectedImageId: null,
       }));
     },
-    [t, updateSlot],
+    [definitionLimits.maxPerCell, t, templates, updateSlot],
   );
 
   const applyAddedDefinitions = useCallback(
@@ -1564,6 +1596,7 @@ export function FillReviewDialog({
     const selectedWordOption = wordOptions.find((option) => option.value === selectedWordValue) ?? null;
     const currentDefinition = (row.definition ?? "").trim();
     const currentDefinitionKey = normalizeDefinitionKey(currentDefinition);
+    const pairedMaxLength = getPairedDefinitionMaxLength(template, slot.slotId, definitionLimits.maxPerCell);
     const filteredDefinitionOptions = row.definitionOptions.filter((option) => {
       const text = (option.text ?? "").trim();
       if (!text) return false;
@@ -1574,6 +1607,20 @@ export function FillReviewDialog({
       const usedByCurrentRow = key === currentDefinitionKey && currentDefinition.length > 0 ? 1 : 0;
       return totalUsed - usedByCurrentRow <= 0;
     });
+    if (pairedMaxLength != null) {
+      filteredDefinitionOptions.sort(
+        (a, b) =>
+          Number(isPreferredPairedDefinition(b.text, pairedMaxLength)) -
+          Number(isPreferredPairedDefinition(a.text, pairedMaxLength)),
+      );
+    }
+    const pairedDefinitionWarning =
+      pairedMaxLength != null &&
+      currentDefinition.length > 0 &&
+      currentDefinition.length < PAIRED_DEFINITION_MIN_LENGTH;
+    const hasPreferredPairedDefinition =
+      pairedMaxLength != null &&
+      filteredDefinitionOptions.some((option) => isPreferredPairedDefinition(option.text, pairedMaxLength));
     const selectedDefIndex = filteredDefinitionOptions.findIndex(
       (option) => option.text === row.definition && option.opredId === row.opredId,
     );
@@ -1678,12 +1725,20 @@ export function FillReviewDialog({
                   if (!wordMatchesFixedLetters(selectedOption.word, fixedLetters)) return;
                   updateSlot(template.key, slot.slotId, (prev) => {
                     const nextDefinitions = selectedOption.definitions;
+                    const unusedDefinitions = nextDefinitions.filter((option) => {
+                      const key = normalizeDefinitionKey(option.text);
+                      return (
+                        (definitionUsageCountByKey.get(key) ?? 0) -
+                          (key === normalizeDefinitionKey(prev.definition) ? 1 : 0) <=
+                        0
+                      );
+                    });
                     const selectedDefinition =
-                      nextDefinitions.find(
-                        (option) => option.text === prev.definition && option.opredId === prev.opredId,
-                      ) ??
-                      nextDefinitions.find((option) => option.text === prev.definition) ??
-                      nextDefinitions[0];
+                      pickReviewDefinition(
+                        pairedMaxLength == null ? nextDefinitions : unusedDefinitions,
+                        prev,
+                        pairedMaxLength,
+                      ) ?? pickReviewDefinition(nextDefinitions, prev, null);
                     return {
                       ...prev,
                       word: selectedOption.word,
@@ -1833,7 +1888,14 @@ export function FillReviewDialog({
             )}
             {!compact && (
               <div className={cn("flex items-center gap-2", rowMetaClass)}>
-                <span>{t("scanwordsReviewDefinitionLen", { count: row.definition.trim().length })}</span>
+                <span>
+                  {pairedMaxLength == null
+                    ? t("scanwordsReviewDefinitionLen", { count: row.definition.trim().length })
+                    : t("scanwordsReviewPairedDefinitionLength", {
+                        count: currentDefinition.length,
+                        max: pairedMaxLength,
+                      })}
+                </span>
                 {isEffectivePhotoDefinition(template, slot) && (
                   <span
                     className="inline-flex items-center rounded border border-sky-500/40 bg-sky-500/10 p-0.5 text-sky-700 dark:text-sky-300"
@@ -1998,6 +2060,19 @@ export function FillReviewDialog({
                 <TooltipContent>{t("editDefinition")}</TooltipContent>
               </Tooltip>
             </div>
+            {pairedDefinitionWarning && (
+              <output className="flex items-start gap-1 text-[11px] text-amber-700 dark:text-amber-400">
+                <CircleAlert className="mt-0.5 size-3 shrink-0" aria-hidden />
+                <span>
+                  {t(
+                    hasPreferredPairedDefinition
+                      ? "scanwordsReviewPairedDefinitionShort"
+                      : "scanwordsReviewPairedDefinitionUnavailable",
+                    { min: PAIRED_DEFINITION_MIN_LENGTH, max: pairedMaxLength },
+                  )}
+                </span>
+              </output>
+            )}
             {!compact && isEffectivePhotoDefinition(template, slot) && (
               <div className="rounded-md border border-sky-500/25 bg-sky-500/5 p-3">
                 <div className="flex items-center justify-between gap-3">
@@ -2172,6 +2247,11 @@ export function FillReviewDialog({
             {!reviewLoading && !reviewData && <div className="text-sm text-muted-foreground">{t("noData")}</div>}
             {!reviewLoading && reviewData && (
               <div className={cn("grid gap-3", reviewTab === "proofreading" && "gap-2")}>
+                {staleDraftCount > 0 && (
+                  <output className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                    {t("scanwordsReviewStaleDraftWarning", { count: staleDraftCount })}
+                  </output>
+                )}
                 <div
                   className={cn(
                     "sticky -top-6 z-30 -mx-1 flex h-12 flex-nowrap items-center gap-2 border-b bg-background px-1",

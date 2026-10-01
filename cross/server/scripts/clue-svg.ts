@@ -519,14 +519,14 @@ export function buildClueTextMap(
 }
 
 export function resolveClueRenderLayout(
-  layout: Pick<ClueLayout, "areaCells" | "clusterCells">
+  layout: Pick<ClueLayout, "areaCells" | "clusterCells"> & Partial<Pick<ClueLayout, "areaKind">>
 ): {
   definitionAreaCells: Array<[number, number]>;
   isExpandedDefinition: boolean;
   isClusterDefinition: boolean;
 } {
   const definitionAreaCells = [...layout.areaCells];
-  const isExpandedDefinition = definitionAreaCells.length > 1;
+  const isExpandedDefinition = definitionAreaCells.length > 1 && layout.areaKind !== "paired";
   const hasAttachedClusterCells =
     (layout.clusterCells?.length ?? 0) > 1 &&
     definitionAreaCells.some(([areaRow, areaCol]) =>

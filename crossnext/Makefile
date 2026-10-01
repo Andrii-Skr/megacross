@@ -55,7 +55,7 @@ migrate:
 ifneq ($(PROFILE),prod)
 	$(COMPOSE) --profile $(PROFILE) exec $(APP_SERVICE) sh -lc 'pnpm prisma migrate dev'
 else
-	$(COMPOSE) --profile $(PROFILE) run --rm $(APP_SERVICE) sh -lc '/app/node_modules/.bin/prisma migrate deploy'
+	$(COMPOSE) --profile $(PROFILE) run --rm --no-deps $(APP_SERVICE) /app/node_modules/.bin/prisma migrate deploy
 endif
 
 # dev: prisma db push (через pnpm), prod: prisma db push (без pnpm)

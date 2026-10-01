@@ -6,11 +6,11 @@ import { buildCrosswordSvg } from "./crossword-svg";
 
 const solved = ["ABC", "DEF", "GHI"];
 const definitions = new Map([
-  ["ABC", "Первая строка."],
-  ["DEF", "Вторая\nстрока."],
-  ["ADG", "Первый столбец."],
-  ["BEH", "Второй столбец."],
-  ["CFI", "Третий столбец."],
+  ["ABC", "первая строка."],
+  ["DEF", "вторая\nстрока."],
+  ["ADG", "первый столбец."],
+  ["BEH", "«второй столбец»."],
+  ["CFI", "третий столбец."],
 ]);
 
 function grid(type: "0" | "<" | "2"): Grid {
@@ -30,8 +30,11 @@ for (const type of ["0", "<"] as const) {
   const slots = scanSlots(template);
   const files = buildCrosswordTextFiles(template, slots, solved, definitions);
   assert.ok(files);
-  assert.equal(files.words, "По горизонтали:\n1. ABC\n4. DEF\n5. GHI\n\nПо вертикали:\n1. ADG\n2. BEH\n3. CFI\n");
-  assert.equal(files.clues, "По горизонтали:\n1. Первая строка.\n4. Вторая строка.\n5. \n\nПо вертикали:\n1. Первый столбец.\n2. Второй столбец.\n3. Третий столбец.\n");
+  assert.equal(files.words, "По горизонтали:\n1. Abc\n4. Def\n5. Ghi\n\nПо вертикали:\n1. Adg\n2. Beh\n3. Cfi\n");
+  assert.equal(files.clues, "По горизонтали:\n1. Первая строка.\n4. Вторая строка.\n5. \n\nПо вертикали:\n1. Первый столбец.\n2. «Второй столбец».\n3. Третий столбец.\n");
+  const cyrillicFiles = buildCrosswordTextFiles(template, slots, ["МАЙ", "ЛОР", "ИОН"], new Map([["МАЙ", "текст."]]));
+  assert.ok(cyrillicFiles?.words.includes("1. Май\n"));
+  assert.ok(cyrillicFiles?.clues.includes("1. Текст.\n"));
 
   const rendered = buildCrosswordSvg(template, slots, solved, definitions, {
     style: "default",

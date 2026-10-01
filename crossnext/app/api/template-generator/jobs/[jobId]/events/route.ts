@@ -18,5 +18,5 @@ export const GET = apiRoute<unknown, Params>(
       },
     });
   },
-  { permissions: [Permissions.AdminAccess] },
+  { roles: ["ADMIN"], permissions: [Permissions.AdminAccess] },
 );

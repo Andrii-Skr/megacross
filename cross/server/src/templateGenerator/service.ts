@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Prisma, createPrismaClient } from "../db/prisma";
 import { loadDictionary, loadDictionaryByTemplate, type DictionaryFilterTemplate } from "../services/dictionary";
+import { getSamplesDirForIssue } from "../services/fillJobTemplateService";
 import { solveCspNativeAsync } from "../utils/nativeDlx";
 import { parseFsh } from "../utils/parseFsh";
 import {
@@ -92,7 +93,7 @@ async function runJob(jobId: bigint): Promise<void> {
   try {
     const job = await getTemplateJob(prisma, jobId);
     if (!job || job.status === "cancelled") return;
-    await patchTemplateJob(prisma, jobId, { status: "running", phase: "dictionary", progress: 1, error: null });
+    if (!(await patchTemplateJob(prisma, jobId, { status: "running", phase: "dictionary", progress: 1, error: null }))) return;
     await emit(jobId);
     const request = normalizeGenerationRequest(job.parameters);
     const dictionary = await loadGenerationDictionary(request);
@@ -102,8 +103,11 @@ async function runJob(jobId: bigint): Promise<void> {
     await patchTemplateJob(prisma, jobId, { phase: "structure", dictionaryCounts: counts, targetDistribution: weights });
     const restoredState = Number(job.rngPosition);
     const rng = new SeededRandom(job.seed, restoredState > 0 ? restoredState : undefined);
-    const fingerprints = new Set((await getTemplateResultsByIds(prisma, jobId)).map((result) => result.fingerprint));
-    let accepted = job.acceptedCount;
+    const persistedResults = await getTemplateResultsByIds(prisma, jobId);
+    const fingerprints = new Set(persistedResults.map((result) => result.fingerprint));
+    let accepted = persistedResults.length;
+    let nextOrdinal = persistedResults.reduce((maximum, result) => Math.max(maximum, result.ordinal), 0) + 1;
+    await patchTemplateJob(prisma, jobId, { acceptedCount: accepted });
     let attempts = job.attempts;
     const deadline = job.createdAt.getTime() + PACKAGE_MAX_MS;
     const maxAttempts = Math.max(250, request.resultCount * 250);
@@ -130,13 +134,21 @@ async function runJob(jobId: bigint): Promise<void> {
         maxMs: SOLVER_MAX_MS,
         maxNodes: SOLVER_MAX_NODES,
       });
+      const afterSolver = await getTemplateJob(prisma, jobId);
+      if (!afterSolver || afterSolver.status === "cancelled") return;
       if (!solved) continue;
-      accepted += 1;
-      fingerprints.add(candidate.fingerprint);
       candidate.metrics.dictionaryVerified = true;
       candidate.solved = solved;
       const persistedGrid = { ...candidate.grid, witness: solved };
-      await insertTemplateResult(prisma, jobId, accepted, candidate.fsh, persistedGrid, candidate.metrics, candidate.fingerprint);
+      const inserted = await insertTemplateResult(prisma, jobId, nextOrdinal, candidate.fsh, persistedGrid, candidate.metrics, candidate.fingerprint);
+      if (!inserted) {
+        const current = await getTemplateJob(prisma, jobId);
+        if (!current || current.status !== "running") return;
+        throw new Error("template result conflicts with a previously persisted result");
+      }
+      accepted += 1;
+      nextOrdinal += 1;
+      fingerprints.add(candidate.fingerprint);
       await patchTemplateJob(prisma, jobId, {
         acceptedCount: accepted,
         attempts,
@@ -252,8 +264,6 @@ export function scheduleTemplateGenerationCleanup(): () => void {
   return () => clearInterval(timer);
 }
 
-function safeSegment(value: string): string { return value.normalize("NFC").replace(/[^\p{L}\p{N}\p{M}_. -]+/gu, "_").replace(/\s+/gu, "_"); }
-
 export async function appendTemplatesToIssue(jobId: bigint, resultIds: bigint[], issueId: bigint) {
   const prisma = createPrismaClient();
   const written: string[] = [];
@@ -269,7 +279,7 @@ export async function appendTemplatesToIssue(jobId: bigint, resultIds: bigint[],
     if (!issue) throw Object.assign(new Error("issue not found"), { status: 404 });
     const base = process.env.CROSS_SAMPLES_DIR?.trim();
     if (!base) throw new Error("CROSS_SAMPLES_DIR is not configured");
-    const directory = path.join(base, safeSegment(issue.editionCode), safeSegment(issue.issueLabel));
+    const directory = getSamplesDirForIssue(issue);
     await mkdir(directory, { recursive: true });
     const results = await getTemplateResultsByIds(prisma, jobId, resultIds);
     if (results.length !== resultIds.length) throw Object.assign(new Error("one or more results were not found"), { status: 404 });
@@ -287,6 +297,10 @@ export async function appendTemplatesToIssue(jobId: bigint, resultIds: bigint[],
       written.push(name);
     }
     const files = (await readdir(directory)).filter((name) => name.toLowerCase().endsWith(".fsh")).sort();
+    const snapshotFiles = await Promise.all(files.map(async (name) => {
+      const { size } = await stat(path.join(directory, name));
+      return { key: `${name}:${size}`, name, size };
+    }));
     const neededStats: Record<string, number> = { total: 0 };
     for (const name of files) {
       try {
@@ -298,7 +312,7 @@ export async function appendTemplatesToIssue(jobId: bigint, resultIds: bigint[],
     }
     await prisma.$executeRaw(Prisma.sql`
       INSERT INTO scanword_upload_snapshots ("issueId", "fileCount", "errorCount", "neededStats", files, errors, "createdAt", "updatedAt")
-      VALUES (${issueId}, ${files.length}, 0, ${JSON.stringify(neededStats)}::jsonb, ${JSON.stringify(files.map((name) => ({ name })))}::jsonb, '[]'::jsonb, now(), now())
+      VALUES (${issueId}, ${files.length}, 0, ${JSON.stringify(neededStats)}::jsonb, ${JSON.stringify(snapshotFiles)}::jsonb, '[]'::jsonb, now(), now())
       ON CONFLICT ("issueId") DO UPDATE SET "fileCount" = EXCLUDED."fileCount", "errorCount" = 0, "neededStats" = EXCLUDED."neededStats", files = EXCLUDED.files, errors = EXCLUDED.errors, "updatedAt" = now()
     `);
     return { written, fileCount: files.length, neededStats };

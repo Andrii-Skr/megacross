@@ -1,5 +1,7 @@
-import { type Grid, type Slot } from "./types";
+import type { Grid, Slot } from "./types";
+
 export { CLUE_MAP } from "@megacross/cross-format";
+
 import { CLUE_MAP } from "@megacross/cross-format";
 export type ClueEntry = {
   arrowR: number;
@@ -19,6 +21,7 @@ export type ClueLayout = {
   slotIds: number[];
   definitionSlotIds: number[];
   areaCells: Array<[number, number]>;
+  areaKind?: "paired";
   clusterCells?: Array<[number, number]>;
   text: string;
 };
@@ -491,6 +494,163 @@ function setsIntersect(left: Set<string>, right: Set<string>): boolean {
   return false;
 }
 
+function assignUnambiguousSquarePhotoAreas(grid: Grid, layouts: ClueLayout[], size: 3 | 4): void {
+  // Legacy templates can contain an exact photo square inside a larger connected
+  // 0x02 region. The general rectangle resolver may leave its owner undecided.
+  const candidates: Array<{ row: number; col: number; layout: ClueLayout }> = [];
+  for (let row = 0; row <= grid.rows - size; row += 1) {
+    for (let col = 0; col <= grid.cols - size; col += 1) {
+      let fullRectangle = true;
+      for (let r = row; r < row + size && fullRectangle; r += 1) {
+        for (let c = col; c < col + size; c += 1) {
+          if (grid.data[r]?.[c] !== "#" || grid.codes[r]?.[c] !== 0x02) {
+            fullRectangle = false;
+            break;
+          }
+        }
+      }
+      if (!fullRectangle) continue;
+      if (size === 3) {
+        const extendsToRectangle = (
+          top: number, left: number, bottom: number, right: number,
+        ): boolean => {
+          if (top < 0 || left < 0 || bottom >= grid.rows || right >= grid.cols) return false;
+          for (let r = top; r <= bottom; r += 1) {
+            for (let c = left; c <= right; c += 1) {
+              if (grid.data[r]?.[c] !== "#" || grid.codes[r]?.[c] !== 0x02) return false;
+            }
+          }
+          return true;
+        };
+        if (
+          extendsToRectangle(row - 1, col, row + 2, col + 2) ||
+          extendsToRectangle(row, col, row + 3, col + 2) ||
+          extendsToRectangle(row, col - 1, row + 2, col + 2) ||
+          extendsToRectangle(row, col, row + 2, col + 3)
+        ) continue;
+      }
+      const inside = layouts.filter(
+        (layout) => layout.row >= row && layout.row < row + size && layout.col >= col && layout.col < col + size,
+      );
+      if (inside.length === 1 && inside[0]?.slotIds.length === 1) {
+        candidates.push({ row, col, layout: inside[0] });
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    const { row, col, layout } = candidate;
+    if (layout.areaCells.length > 1 || layout.definitionSlotIds.some((slotId) => slotId !== layout.slotIds[0]))
+      continue;
+    if (size === 3) {
+      const alreadyOccupied = layouts.some((other) =>
+        other !== layout &&
+        [...other.areaCells, ...(other.clusterCells ?? [])].some(
+          ([cellRow, cellCol]) => cellRow >= row && cellRow < row + size && cellCol >= col && cellCol < col + size,
+        ),
+      );
+      if (alreadyOccupied) continue;
+    }
+    const overlaps = candidates.some(
+      (other) => other !== candidate && Math.abs(other.row - row) < size && Math.abs(other.col - col) < size,
+    );
+    if (overlaps) continue;
+    const occupiedByAnotherPhoto = layouts.some((other) => {
+      if (other === layout || other.definitionSlotIds.length === 0) return false;
+      const bounds = computeBounds(other.clusterCells?.length ? other.clusterCells : other.areaCells);
+      return (
+        bounds &&
+        bounds.minRow < row + size &&
+        bounds.maxRow >= row &&
+        bounds.minCol < col + size &&
+        bounds.maxCol >= col
+      );
+    });
+    if (occupiedByAnotherPhoto) continue;
+
+    layout.areaCells = Array.from({ length: size * size }, (_, index) => [
+      row + Math.floor(index / size),
+      col + (index % size),
+    ]);
+    layout.definitionSlotIds = [layout.slotIds[0]];
+  }
+}
+
+function assignPairedClueAreas(
+  grid: Grid,
+  layouts: ClueLayout[],
+  photoBounds: Iterable<PhotoAreaBounds>,
+): void {
+  const protectedCells = new Set<string>();
+  const anchors = new Map<string, ClueLayout>();
+  for (const bounds of photoBounds) {
+    for (let row = bounds.minRow; row <= bounds.maxRow; row += 1) {
+      for (let col = bounds.minCol; col <= bounds.maxCol; col += 1) {
+        protectedCells.add(`${row},${col}`);
+      }
+    }
+  }
+  for (const [row, col] of findAnchorlessEdgeClusterCells(grid, layouts)) {
+    protectedCells.add(`${row},${col}`);
+  }
+  for (const layout of layouts) {
+    anchors.set(layout.key, layout);
+    if (layout.areaCells.length > 1 || (layout.clusterCells?.length ?? 0) > 1) {
+      for (const [row, col] of [...layout.areaCells, ...(layout.clusterCells ?? [])]) {
+        protectedCells.add(`${row},${col}`);
+      }
+    }
+  }
+
+  const available = (row: number, col: number): boolean =>
+    row >= 0 && row < grid.rows && col >= 0 && col < grid.cols &&
+    grid.data[row]?.[col] === "#" && grid.codes[row]?.[col] === 0x02 &&
+    !protectedCells.has(`${row},${col}`);
+  const anchorAt = (row: number, col: number): ClueLayout | undefined => {
+    const layout = anchors.get(`${row},${col}`);
+    return layout?.areaCells.length === 1 && layout.slotIds.length === 1 ? layout : undefined;
+  };
+  const occupied = new Set<string>();
+
+  const pairLine = (length: number, cellAt: (index: number) => [number, number]) => {
+    // Maximum non-overlapping matching. On ties, use the first pair in the line.
+    const best = Array<number>(length + 2).fill(0);
+    const canPair = (index: number): boolean => {
+      const [r1, c1] = cellAt(index);
+      const [r2, c2] = cellAt(index + 1);
+      const key1 = `${r1},${c1}`;
+      const key2 = `${r2},${c2}`;
+      if (!available(r1, c1) || !available(r2, c2) || occupied.has(key1) || occupied.has(key2)) return false;
+      return (
+        (Boolean(anchorAt(r1, c1)) && !anchors.has(key2)) ||
+        (Boolean(anchorAt(r2, c2)) && !anchors.has(key1))
+      );
+    };
+    for (let index = length - 2; index >= 0; index -= 1) {
+      best[index] = Math.max(best[index + 1], canPair(index) ? 1 + best[index + 2] : 0);
+    }
+    for (let index = 0; index < length - 1;) {
+      if (!canPair(index) || 1 + best[index + 2] < best[index + 1]) {
+        index += 1;
+        continue;
+      }
+      const first = cellAt(index);
+      const second = cellAt(index + 1);
+      const layout = anchorAt(...first) ?? anchorAt(...second);
+      if (layout) {
+        layout.areaCells = [first, second];
+        layout.areaKind = "paired";
+        occupied.add(`${first[0]},${first[1]}`);
+        occupied.add(`${second[0]},${second[1]}`);
+      }
+      index += 2;
+    }
+  };
+
+  for (let row = 0; row < grid.rows; row += 1) pairLine(grid.cols, (col) => [row, col]);
+  for (let col = 0; col < grid.cols; col += 1) pairLine(grid.rows, (row) => [row, col]);
+}
+
 export function buildClueEntries(
   grid: Grid,
   slots: Slot[],
@@ -538,6 +698,7 @@ export function buildClueLayouts(
   options: {
     expand02Area?: boolean;
     anchorFromSlotIdsWhenNoDefinitions?: boolean;
+    expandPairedClues?: boolean;
   } = {},
 ): ClueLayout[] {
   if (!hasArrowCells(grid)) return [];
@@ -762,7 +923,8 @@ export function buildClueLayouts(
           effectiveDefinitionSlotIds.add(currentCandidate.slotId);
         }
 
-        const anchorDefinitionSlotId = effectiveDefinitionSlotIds.size === 1 ? [...effectiveDefinitionSlotIds][0] : null;
+        const anchorDefinitionSlotId =
+          effectiveDefinitionSlotIds.size === 1 ? [...effectiveDefinitionSlotIds][0] : null;
 
         let didExpandArea = false;
         if (anchorDefinitionSlotId !== null) {
@@ -834,7 +996,11 @@ export function buildClueLayouts(
       definitionSlotIds: (() => {
         const currentKey = `${group.row},${group.col}`;
         const componentIdForKey = componentByCellKey.get(currentKey);
-        if (!anchorFromSlotIdsWhenNoDefinitions || componentIdForKey === undefined || group.definitionSlotIds.size > 0) {
+        if (
+          !anchorFromSlotIdsWhenNoDefinitions ||
+          componentIdForKey === undefined ||
+          group.definitionSlotIds.size > 0
+        ) {
           return [...group.definitionSlotIds].sort((a, b) => a - b);
         }
         const inferred = componentExpandedCandidatesById.get(componentIdForKey)?.get(currentKey)?.slotId;
@@ -857,6 +1023,14 @@ export function buildClueLayouts(
     });
   }
 
+  if (expand02Area) {
+    assignUnambiguousSquarePhotoAreas(grid, layouts, 4);
+    assignUnambiguousSquarePhotoAreas(grid, layouts, 3);
+  }
+  if (expand02Area && options.expandPairedClues !== false) {
+    const photoBounds = buildPhotoAreaBoundsBySlotId(grid, slots, grid.data, new Map());
+    assignPairedClueAreas(grid, layouts, photoBounds.values());
+  }
   layouts.sort((a, b) => a.row - b.row || a.col - b.col);
   return layouts;
 }
@@ -870,7 +1044,7 @@ export function buildPhotoAreaBoundsBySlotId(
     anchorFromSlotIdsWhenNoDefinitions?: boolean;
   } = {},
 ): Map<number, PhotoAreaBounds> {
-  const layoutOptions = { anchorFromSlotIdsWhenNoDefinitions: true } as const;
+  const layoutOptions = { anchorFromSlotIdsWhenNoDefinitions: true, expandPairedClues: false } as const;
   const geometryRows = grid.data;
   const noDefinitions = new Map<string, string>();
   const clues = buildClueLayouts(grid, slots, geometryRows, noDefinitions, layoutOptions);

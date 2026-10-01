@@ -10,5 +10,5 @@ export const GET = apiRoute<unknown, Params>(
       `/api/template-generator/jobs/${encodeURIComponent(jobId)}/results?page=${encodeURIComponent(query.get("page") ?? "1")}&pageSize=${encodeURIComponent(query.get("pageSize") ?? "24")}`,
     );
   },
-  { permissions: [Permissions.AdminAccess] },
+  { roles: ["ADMIN"], permissions: [Permissions.AdminAccess] },
 );

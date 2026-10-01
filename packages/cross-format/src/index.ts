@@ -157,7 +157,7 @@ export function buildFsh(grid: Grid): Uint8Array {
   validate(grid);
   const marker = grid.marker || markerFor(grid.rows, grid.cols, grid.formatVersion ?? 2);
   const version = marker[0] === "S" ? 2 : 1;
-  const bytes = [...HEADER, ...new TextEncoder().encode(marker)];
+  const bytes = [...HEADER, ...Array.from(marker, (character) => character.charCodeAt(0))];
   for (let col = 0; col < grid.cols; col += 1) {
     for (let row = 0; row < grid.rows; row += 1) {
       const cell = grid.data[row][col] as Cell;
@@ -255,6 +255,29 @@ export function scanSlotsDetailed(grid: Grid, options: ScanSlotsDetailedOptions 
     return { number, r: slot.r, c: slot.c, dir: directionName(slot.dir), slotId: slot.id };
   });
   return { mode, slots, starts, startNumberBySlotId, numberGrid };
+}
+
+export class SlotCoverageError extends Error {
+  readonly cells: [number, number][];
+
+  constructor(cells: [number, number][]) {
+    super(`Letter cells do not belong to any word: ${cells.map(([row, col]) => `(${row + 1},${col + 1})`).join(", ")}`);
+    this.name = "SlotCoverageError";
+    this.cells = cells;
+  }
+}
+
+/** Check coverage using the same slots that will be sent to the solver. */
+export function validateSlotCoverage(grid: Grid, slots: readonly Slot[]): void {
+  const covered = new Set(slots.flatMap((slot) => slot.cells.map(([row, col]) => row * grid.cols + col)));
+  const cells: [number, number][] = [];
+  for (let row = 0; row < grid.rows; row += 1) {
+    for (let col = 0; col < grid.cols; col += 1) {
+      const cell = grid.data[row][col];
+      if (cell !== "#" && cell !== "%" && !covered.has(row * grid.cols + col)) cells.push([row, col]);
+    }
+  }
+  if (cells.length) throw new SlotCoverageError(cells);
 }
 
 export function scanSlots(grid: Grid): Slot[] { return scanSlotsDetailed(grid).slots; }
