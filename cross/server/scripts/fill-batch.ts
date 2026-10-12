@@ -15,6 +15,7 @@ import { Prisma, createPrismaClient } from "../src/db/prisma";
 import { parseFsh }            from "../src/utils/parseFsh";
 import { validate, scanSlots } from "../src/utils/grid";
 import type { SolveFailInfo, SolveProgress } from "../src/utils/solver";
+import { resolveFillSolverEngine, fillSolverSearchProfile } from "../src/utils/fillSolverProfile";
 import {
   resolveProbeBudget,
   resolveProbeOutcome,
@@ -1439,10 +1440,8 @@ const debugDlx = !!values.debugDlx || !!values["debug-dlx"];
 const nativeDlxFlag = !!values.nativeDlx || !!values["native-dlx"];
 const nativeCspFlag = !!values.nativeCsp || !!values["native-csp"];
 const engineRaw = typeof values.engine === "string" ? values.engine.trim().toLowerCase() : "";
-const engineFromValue = engineRaw === "dlx" || engineRaw === "csp" ? engineRaw : "";
-const solverEngine: "dlx" | "csp" =
-  engineFromValue === "csp" || (!engineFromValue && nativeCspFlag) ? "csp" : "dlx";
-if (nativeDlxFlag && nativeCspFlag) {
+const solverEngine = resolveFillSolverEngine(engineRaw, { nativeDlx: nativeDlxFlag, nativeCsp: nativeCspFlag });
+if (nativeDlxFlag && nativeCspFlag && !["dlx", "csp"].includes(engineRaw)) {
   console.warn("Both --native-dlx and --native-csp passed; using CSP.");
 }
 const restartsRaw = values.restarts ? Number(values.restarts) : 1;
@@ -2019,6 +2018,7 @@ if (!files.length) {
         const solveCallStartedAt = Date.now();
         let solveCallResult: string[] | null = null;
         const solveBaseOptions = {
+          ...fillSolverSearchProfile(solverEngine),
           engine: solverEngine,
           shuffle: overrides.shuffle ?? shuffleOpt,
           lcv: overrides.lcv ?? doLcv,
@@ -2246,9 +2246,10 @@ if (!files.length) {
                   const budget = resolveProbeBudget(maxNodes, maxMs);
                   let probeFailInfo: SolveFailInfo | null = null;
                   const solvedProbe = await solveCspNativeAsync(currentSolveRows, slots, strictDict, {
+                    ...fillSolverSearchProfile("csp", true),
                     engine: "csp",
                     nativeDlx: true,
-                    shuffle: false,
+                    shuffle: shuffleOpt,
                     lcv: true,
                     lcvPrioritySlack: rebalanceLcvPrioritySlack,
                     uniqueWords: true,

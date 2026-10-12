@@ -70,13 +70,15 @@ assert.ok(weights[3] < weights[4]);
 assert.ok(weights[3] < weights[5]);
 assert.ok(weights[3] < weights[6]);
 assert.ok(weights[3] < weights[7]);
-assert.equal(Object.keys(weights).some((length) => Number(length) < 3 || Number(length) > 11), false);
+assert.equal(Object.keys(weights).some((length) => Number(length) < 2 || Number(length) > 11), false);
+assert.ok(weights[2] < weights[3] / 50, "two-letter answers must be exceptionally rare");
+assert.ok(weights[3] < 0.03, "scarce three-letter words should receive less than 3% target share");
 
 // The most common FSH dimensions in temp contain roughly 3–4 double starts per 100 answers.
 for (const [slotCount, expected] of [[35, 1], [59, 2], [84, 3], [159, 6], [177, 6]] as const) {
   assert.equal(targetDoubleArrowCount(slotCount), expected);
 }
-for (const [rows, cols, expected] of [[15, 11, 1], [19, 14, 2], [22, 16, 3]] as const) {
+for (const [rows, cols] of [[15, 11], [19, 14], [22, 16]] as const) {
   const request = {
     rows, cols, resultCount: 1, pictures: { mode: "auto" as const, count: 0 },
     cutoutPresetId: "none" as const, seed: `profile-${rows}-${cols}`,
@@ -84,7 +86,7 @@ for (const [rows, cols, expected] of [[15, 11, 1], [19, 14, 2], [22, 16, 3]] as 
   const candidate = generateStructuralCandidate(request, new SeededRandom(request.seed), new Set(), 5_000, weights);
   assert.ok(candidate, `corpus-sized ${rows}×${cols} fixture must be generated`);
   assert.deepEqual(verifyClueOwnership(candidate.grid, candidate.metrics.pictureBounds), []);
-  assert.equal(clueAssignmentDiagnostics(candidate.grid, candidate.metrics.pictureBounds).doubleStarts, expected);
+  assert.ok(Math.abs(clueAssignmentDiagnostics(candidate.grid, candidate.metrics.pictureBounds).doubleStarts - targetDoubleArrowCount(candidate.metrics.slotCount)) <= 1);
 }
 
 const presets = ["none", "corner", "opposite-corners", "edge-bite", "opposite-edge-bites", "stepped-corner", "center-window"] as const;

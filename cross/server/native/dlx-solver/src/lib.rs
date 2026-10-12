@@ -35,6 +35,12 @@ struct SolveOptionsInput {
   progress_stdout: Option<bool>,
   fail_stdout: Option<bool>,
   word_priority: Option<HashMap<String, i64>>,
+  strong_propagation: Option<bool>,
+  seed: Option<u64>,
+  search_portfolio: Option<bool>,
+  first_solution: Option<bool>,
+  dlx_preprocess: Option<bool>,
+  dlx_legacy_heuristic: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +77,13 @@ struct ResolveOptions {
   progress_stdout: bool,
   fail_stdout: bool,
   word_priority: Option<HashMap<String, i64>>,
+  strong_propagation: bool,
+  seed: Option<u64>,
+  search_portfolio: bool,
+  first_solution: bool,
+  dlx_preprocess: bool,
+  dlx_legacy_heuristic: bool,
+  stop_flag: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone)]
@@ -150,6 +163,7 @@ struct DlxMatrix {
   nodes: Vec<DlxNode>,
   rows: Vec<DlxRow>,
   header: usize,
+  undo_nodes: Vec<usize>,
 }
 
 struct SearchState {
@@ -570,7 +584,7 @@ impl Task for SolveCspTask {
 fn solve_csp_internal(
   env: Option<Env>,
   input: SolveInput,
-  options: ResolveOptions,
+  mut options: ResolveOptions,
   progress_js: Option<&JsFunction>,
   progress_tsfn: Option<Arc<ThreadsafeFunction<String>>>,
 ) -> Option<Vec<String>> {
@@ -598,6 +612,7 @@ fn solve_csp_internal(
   };
 
   let parallel_restarts = options.parallel_restarts.min(options.restarts).max(1);
+  if options.first_solution && parallel_restarts > 1 { options.stop_flag = Some(Arc::new(AtomicBool::new(false))); }
   let use_tsfn = progress_tsfn.is_some();
 
   if parallel_restarts > 1 {
@@ -610,6 +625,7 @@ fn solve_csp_internal(
 
     let run = || {
       (1..=options.restarts).into_par_iter().for_each(|attempt| {
+        if options.stop_flag.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) { return; }
         let solved = match progress.as_ref() {
           Some(tsfn) => solve_attempt_with_progress_tsfn_csp(
             tsfn,
@@ -642,6 +658,7 @@ fn solve_csp_internal(
           if replace {
             *guard = Some((score, as_strings));
           }
+          if let Some(flag) = &options.stop_flag { flag.store(true, Ordering::Relaxed); }
         }
       });
     };
@@ -702,6 +719,7 @@ fn solve_csp_internal(
     if replace {
       best = Some((score, rows));
     }
+    if options.first_solution { break; }
   }
 
   best.map(|(_, rows)| rows)
@@ -1047,6 +1065,13 @@ fn resolve_options(raw: SolveOptionsInput) -> ResolveOptions {
     progress_stdout,
     fail_stdout,
     word_priority: raw.word_priority,
+    strong_propagation: raw.strong_propagation.unwrap_or(false),
+    seed: raw.seed,
+    search_portfolio: raw.search_portfolio.unwrap_or(false),
+    first_solution: raw.first_solution.unwrap_or(false),
+    dlx_preprocess: raw.dlx_preprocess.unwrap_or(true),
+    dlx_legacy_heuristic: raw.dlx_legacy_heuristic.unwrap_or(true),
+    stop_flag: None,
   }
 }
 
@@ -1415,6 +1440,7 @@ impl<'a> CspSearch<'a> {
       priority_by_len[len] = priorities;
     }
 
+    let weighted_degree = if options.strong_propagation { adjacency.iter().map(|neighbors| neighbors.len().max(1) as u32).collect() } else { vec![1; slots.len()] };
     Self {
       slots,
       dict,
@@ -1427,7 +1453,7 @@ impl<'a> CspSearch<'a> {
       assigned: vec![None; slots.len()],
       assigned_count: 0,
       trail: Vec::new(),
-      weighted_degree: vec![1; slots.len()],
+      weighted_degree,
       slot_ids_by_len,
       word_gid_by_len,
       gid_indices_by_len,
@@ -1703,9 +1729,14 @@ impl<'a> CspSearch<'a> {
         })
         .unwrap_or(0);
       let weight = *self.weighted_degree.get(slot_id).unwrap_or(&0);
+      let (smaller, equal) = if self.options.strong_propagation {
+        let left = (count as u128) * (best_weight.max(1) as u128);
+        let right = (best_count as u128) * (weight.max(1) as u128);
+        (left < right, left == right)
+      } else { (count < best_count, count == best_count) };
       let replace = best_slot.is_none()
-        || count < best_count
-        || (count == best_count
+        || smaller
+        || (equal
           && (degree > best_degree
             || (degree == best_degree
               && (weight > best_weight
@@ -1719,6 +1750,48 @@ impl<'a> CspSearch<'a> {
     }
 
     best_slot
+  }
+
+  fn maintain_consistency(&mut self, state: &mut SearchState, abort_flag: Option<&AtomicBool>, changed: Option<&[usize]>) -> bool {
+    let seeds: Vec<usize> = changed.map(|ids| ids.to_vec()).unwrap_or_else(|| (0..self.slots.len()).collect());
+    let mut queue = Vec::new();
+    let mut pending = vec![false; self.slots.len()];
+    for id in seeds { if self.assigned[id].is_none() && !pending[id] { queue.push(id); pending[id] = true; } }
+    let mut cursor = 0;
+    while cursor < queue.len() {
+      if should_abort(state, self.options, abort_flag) { return true; }
+      let source = queue[cursor]; cursor += 1; pending[source] = false;
+      if self.domain_counts[source] == 0 { self.set_forward_fail(state, source); return false; }
+      let source_len = self.slots[source].len;
+      if self.options.unique_words && self.domain_counts[source] == 1 {
+        let mut indices = Vec::new(); collect_set_bits(&self.domains[source], &mut indices);
+        let gid = self.word_gid_by_len[source_len][indices[0]];
+        let duplicates = self.gid_indices_by_len[source_len][&gid].clone();
+        for other in self.slot_ids_by_len[&source_len].clone() {
+          if other == source || self.assigned[other].is_some() { continue; }
+          let before = self.domain_counts[other];
+          for &word in &duplicates { self.remove_word_from_domain(other, word); }
+          if self.domain_counts[other] == 0 { self.weighted_degree[source] = self.weighted_degree[source].saturating_add(1); self.weighted_degree[other] = self.weighted_degree[other].saturating_add(1); self.set_forward_fail(state, other); return false; }
+          if self.domain_counts[other] != before && !pending[other] { queue.push(other); pending[other] = true; }
+        }
+      }
+      for cross in self.crosses[source].clone() {
+        let other = cross.other;
+        if self.assigned[other].is_some() { continue; }
+        if self.domain_counts[other] == 0 { self.set_forward_fail(state, other); return false; }
+        let mut allowed = vec![0u64; self.domains[other].len()];
+        let target_index = &self.index.pos_index[self.slots[other].len][cross.i_other];
+        for (letter, support) in &self.index.pos_index[source_len][cross.i_self] {
+          if !support.bits.iter().zip(&self.domains[source]).any(|(a, b)| a & b != 0) { continue; }
+          if let Some(target) = target_index.get(letter) { for (out, bits) in allowed.iter_mut().zip(&target.bits) { *out |= *bits; } }
+        }
+        let before = self.domain_counts[other];
+        self.apply_allowed_mask(other, Some(&allowed));
+        if self.domain_counts[other] == 0 { self.weighted_degree[source] = self.weighted_degree[source].saturating_add(1); self.weighted_degree[other] = self.weighted_degree[other].saturating_add(1); self.set_forward_fail(state, other); return false; }
+        if self.domain_counts[other] != before && !pending[other] { queue.push(other); pending[other] = true; }
+      }
+    }
+    true
   }
 
   fn lcv_support(&self, slot_id: usize, word_idx: usize) -> Option<i32> {
@@ -1881,7 +1954,7 @@ impl<'a> CspSearch<'a> {
 
     if self.assigned_count == self.slots.len() {
       self.update_best_if_complete();
-      return false;
+      return self.options.first_solution;
     }
 
     if self.best_assignment.is_some() {
@@ -1963,7 +2036,11 @@ impl<'a> CspSearch<'a> {
       self.current_score = self.current_score.saturating_add(self.score_delta(len, word_idx));
 
       let mark = self.trail.len();
-      let ok = self.apply_forward(slot_id, word_idx, state);
+      let mut ok = self.apply_forward(slot_id, word_idx, state);
+      if ok && self.options.strong_propagation {
+        let changed: Vec<usize> = self.trail[mark..].iter().map(|entry| entry.slot).collect();
+        ok = self.maintain_consistency(state, abort_flag, Some(&changed));
+      }
       let aborted = if ok {
         self.search(state, progress_ctx, abort_flag)
       } else {
@@ -2031,14 +2108,17 @@ fn run_attempt_csp<'a>(
   next_log_at: &mut u64,
   abort_flag: Option<&AtomicBool>,
 ) -> Option<(Vec<Vec<char>>, i64)> {
+  let attempt_options = if options.search_portfolio { let mut selected = options.clone(); selected.strong_propagation = attempt % 2 == 0; Some(selected) } else { None };
+  let options = attempt_options.as_ref().unwrap_or(options);
+  let abort_flag = abort_flag.or(options.stop_flag.as_deref());
   let fixed_grid = init_grid(raw_rows);
   let index = build_word_index(dict);
   let (crosses, adjacency, _) = build_cross_data(slots);
   let total_slots = slots.len();
-  let seed = SystemTime::now()
+  let seed = options.seed.unwrap_or_else(|| SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
-    .as_nanos() as u64
+    .as_nanos() as u64)
     ^ ((attempt as u64) << 1);
 
   let mut state = SearchState {
@@ -2078,7 +2158,7 @@ fn run_attempt_csp<'a>(
   maybe_report(&state, &mut progress_ctx, 0, total_slots, true, None);
 
   let mut search = CspSearch::new(slots, dict, options, crosses, adjacency, index, &fixed_grid, seed);
-  let _ = search.search(&mut state, &mut progress_ctx, abort_flag);
+  if !options.strong_propagation || search.maintain_consistency(&mut state, abort_flag, None) { let _ = search.search(&mut state, &mut progress_ctx, abort_flag); }
   if options.log_every_ms > 0 {
     *next_log_at = progress_ctx.next_log_at;
   }
@@ -2269,6 +2349,26 @@ fn solve_attempt_no_progress_csp(
   Some((grid, total_score))
 }
 
+fn prepare_dlx_domains(
+  slots: &[Slot], dict: &Dict, options: &ResolveOptions, fixed_grid: &[Vec<char>],
+  index: WordIndex, crosses: Vec<Vec<Cross>>, adjacency: Vec<HashSet<usize>>,
+  state: &mut SearchState, abort_flag: Option<&AtomicBool>,
+) -> Option<(WordIndex, Vec<Vec<u64>>)> {
+  let mut domains = CspSearch::new(slots, dict, options, crosses, adjacency, index, fixed_grid, 1);
+  // Domain consistency is preprocessing only; the subsequent search is DLX.
+  // No candidate priorities, word scores or uniqueness constraints are relaxed.
+  if !domains.maintain_consistency(state, abort_flag, None) || state.aborted { return None; }
+  Some((domains.index, domains.domains))
+}
+
+fn dlx_lcv_score(slot_id: usize, word_idx: usize, crosses: &[Vec<Cross>], slots: &[Slot], index: &WordIndex, dict: &Dict, domains: &[Vec<u64>]) -> i32 {
+  let chars = &dict.chars[slots[slot_id].len][word_idx];
+  crosses[slot_id].iter().map(|cross| {
+    index.pos_index[slots[cross.other].len][cross.i_other].get(&chars[cross.i_self])
+      .map(|support| bitset_intersection_count(&support.bits, &domains[cross.other]) as i32).unwrap_or(0)
+  }).sum()
+}
+
 fn run_attempt_dlx<'a>(
   emitter: Option<Box<dyn ProgressEmitter + 'a>>,
   raw_rows: &[String],
@@ -2281,9 +2381,25 @@ fn run_attempt_dlx<'a>(
   abort_flag: Option<&AtomicBool>,
 ) -> Option<Vec<Vec<char>>> {
   let fixed_grid = init_grid(raw_rows);
-  let index = build_word_index(dict);
+  let mut index = build_word_index(dict);
   let (crosses, adjacency, intersection_cells) = build_cross_data(slots);
   let total_slots = slots.len();
+
+  let mut state = SearchState { nodes: 0, backtracks: 0, zero_pick: 0, reject_intersect: 0, reject_forward: 0,
+    start: attempt_start, aborted: false, abort_reason: None, last_fail: None };
+  let mut progress_ctx = ProgressCtx {
+    emitter, label: options.label.clone(), attempt, restarts: options.restarts, engine: "dlx", total_slots,
+    next_log_at: if options.log_every_ms > 0 { *next_log_at } else { u64::MAX },
+    next_log_node: if options.log_every_nodes > 0 { options.log_every_nodes } else { u64::MAX },
+    log_every_ms: options.log_every_ms, log_every_nodes: options.log_every_nodes,
+    stdout: options.progress_stdout, fail_stdout: options.fail_stdout,
+  };
+  let candidate_domains = if options.dlx_preprocess {
+    match prepare_dlx_domains(slots, dict, options, &fixed_grid, index, crosses.clone(), adjacency.clone(), &mut state, abort_flag) {
+      Some((prepared_index, domains)) => { index = prepared_index; Some(domains) },
+      None => { emit_fail(&state, &mut progress_ctx); return None; },
+    }
+  } else { None };
 
   let mut columns: Vec<DlxColumn> = Vec::new();
   let mut nodes: Vec<DlxNode> = Vec::new();
@@ -2320,14 +2436,15 @@ fn run_attempt_dlx<'a>(
   let mut word_cols: HashMap<String, usize> = HashMap::new();
   let mut rows: Vec<DlxRow> = Vec::new();
 
-  let seed = SystemTime::now()
+  let seed = options.seed.unwrap_or_else(|| SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
-    .as_nanos() as u64
+    .as_nanos() as u64)
     ^ (attempt as u64);
   let mut rng = Rng::new(seed);
 
   for slot in slots {
+    if should_abort(&mut state, options, abort_flag) { emit_fail(&state, &mut progress_ctx); return None; }
     let len = slot.len;
     if len > dict.max_len {
       continue;
@@ -2337,7 +2454,7 @@ fn run_attempt_dlx<'a>(
       continue;
     }
 
-    let mut candidates: Vec<usize> = (0..word_list.len()).collect();
+    let mut candidates: Vec<usize> = (0..word_list.len()).filter(|&id| candidate_domains.as_ref().map(|domains| bit_is_set(&domains[slot.id], id)).unwrap_or(true)).collect();
 
     if options.lcv && candidates.len() > 1 {
       let mut scored: Vec<(i32, i64, u32, usize)> = Vec::with_capacity(candidates.len());
@@ -2345,14 +2462,14 @@ fn run_attempt_dlx<'a>(
         if !slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]) {
           continue;
         }
-        let score = score_word(
+        let score = if !options.dlx_legacy_heuristic && candidate_domains.is_some() { dlx_lcv_score(slot.id, idx, &crosses, slots, &index, dict, candidate_domains.as_ref().unwrap()) } else { score_word(
           slot.id,
           idx,
           &crosses,
           slots,
           &index,
           dict,
-        );
+        ) };
         let priority = word_priority(options, &word_list[idx]);
         let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
         scored.push((score, priority, tie, idx));
@@ -2417,34 +2534,9 @@ fn run_attempt_dlx<'a>(
     nodes,
     rows,
     header,
+    undo_nodes: Vec::new(),
   };
 
-  let mut state = SearchState {
-    nodes: 0,
-    backtracks: 0,
-    zero_pick: 0,
-    reject_intersect: 0,
-    reject_forward: 0,
-    start: attempt_start,
-    aborted: false,
-    abort_reason: None,
-    last_fail: None,
-  };
-
-  let mut progress_ctx = ProgressCtx {
-    emitter,
-    label: options.label.clone(),
-    attempt,
-    restarts: options.restarts,
-    engine: "dlx",
-    total_slots,
-    next_log_at: if options.log_every_ms > 0 { *next_log_at } else { u64::MAX },
-    next_log_node: if options.log_every_nodes > 0 { options.log_every_nodes } else { u64::MAX },
-    log_every_ms: options.log_every_ms,
-    log_every_nodes: options.log_every_nodes,
-    stdout: options.progress_stdout,
-    fail_stdout: options.fail_stdout,
-  };
   if options.debug_dlx {
     eprintln!(
       "[native-dlx] attempt {} emitter={} logEveryMs={} logEveryNodes={}",
@@ -2501,8 +2593,14 @@ fn run_attempt_dlx_no_progress(
   abort_flag: Option<&AtomicBool>,
 ) -> Option<Vec<Vec<char>>> {
   let fixed_grid = init_grid(raw_rows);
-  let index = build_word_index(dict);
-  let (crosses, _adjacency, intersection_cells) = build_cross_data(slots);
+  let mut index = build_word_index(dict);
+  let (crosses, adjacency, intersection_cells) = build_cross_data(slots);
+  let mut state = SearchState { nodes: 0, backtracks: 0, zero_pick: 0, reject_intersect: 0, reject_forward: 0,
+    start: attempt_start, aborted: false, abort_reason: None, last_fail: None };
+  let candidate_domains = if options.dlx_preprocess {
+    let (prepared_index, domains) = prepare_dlx_domains(slots, dict, options, &fixed_grid, index, crosses.clone(), adjacency, &mut state, abort_flag)?;
+    index = prepared_index; Some(domains)
+  } else { None };
 
   let mut columns: Vec<DlxColumn> = Vec::new();
   let mut nodes: Vec<DlxNode> = Vec::new();
@@ -2525,14 +2623,15 @@ fn run_attempt_dlx_no_progress(
   let mut word_cols: HashMap<String, usize> = HashMap::new();
   let mut rows: Vec<DlxRow> = Vec::new();
 
-  let seed = SystemTime::now()
+  let seed = options.seed.unwrap_or_else(|| SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap_or_default()
-    .as_nanos() as u64
+    .as_nanos() as u64)
     ^ (attempt as u64);
   let mut rng = Rng::new(seed);
 
   for slot in slots {
+    if should_abort(&mut state, options, abort_flag) { return None; }
     let len = slot.len;
     if len > dict.max_len {
       continue;
@@ -2542,7 +2641,7 @@ fn run_attempt_dlx_no_progress(
       continue;
     }
 
-    let mut candidates: Vec<usize> = (0..word_list.len()).collect();
+    let mut candidates: Vec<usize> = (0..word_list.len()).filter(|&id| candidate_domains.as_ref().map(|domains| bit_is_set(&domains[slot.id], id)).unwrap_or(true)).collect();
 
     if options.lcv && candidates.len() > 1 {
       let mut scored: Vec<(i32, i64, u32, usize)> = Vec::with_capacity(candidates.len());
@@ -2550,14 +2649,14 @@ fn run_attempt_dlx_no_progress(
         if !slot_matches_fixed_grid(&fixed_grid, slot, &dict.chars[len][idx]) {
           continue;
         }
-        let score = score_word(
+        let score = if !options.dlx_legacy_heuristic && candidate_domains.is_some() { dlx_lcv_score(slot.id, idx, &crosses, slots, &index, dict, candidate_domains.as_ref().unwrap()) } else { score_word(
           slot.id,
           idx,
           &crosses,
           slots,
           &index,
           dict,
-        );
+        ) };
         let priority = word_priority(options, &word_list[idx]);
         let tie = if options.shuffle { rng.next_u32() } else { i as u32 };
         scored.push((score, priority, tie, idx));
@@ -2620,19 +2719,9 @@ fn run_attempt_dlx_no_progress(
     nodes,
     rows,
     header,
+    undo_nodes: Vec::new(),
   };
 
-  let mut state = SearchState {
-    nodes: 0,
-    backtracks: 0,
-    zero_pick: 0,
-    reject_intersect: 0,
-    reject_forward: 0,
-    start: attempt_start,
-    aborted: false,
-    abort_reason: None,
-    last_fail: None,
-  };
 
   let mut solution: Vec<usize> = Vec::new();
   let solved = search_no_progress(
@@ -2747,11 +2836,20 @@ fn should_abort(
   false
 }
 
-fn choose_column(columns: &[DlxColumn], header: usize) -> Option<usize> {
+fn choose_column(columns: &[DlxColumn], header: usize, legacy: bool) -> Option<usize> {
   let mut best: Option<usize> = None;
   let mut best_score = f64::INFINITY;
   let mut c = columns[header].right;
   while c != header {
+    if !legacy {
+      // Algorithm C's minimum-remaining-options rule. Learned weights only
+      // break equal-size ties: they must never postpone forced/empty columns.
+      if columns[c].size == 0 { return Some(c); }
+      if best.map(|b| columns[c].size < columns[b].size ||
+        (columns[c].size == columns[b].size && columns[c].weight > columns[b].weight)).unwrap_or(true) { best = Some(c); }
+      c = columns[c].right;
+      continue;
+    }
     let denom = if columns[c].weight <= 0 { 1.0 } else { columns[c].weight as f64 };
     let score = columns[c].size as f64 / denom;
     if score < best_score {
@@ -2781,7 +2879,7 @@ fn search(
     return false;
   }
 
-  let col = match choose_column(&matrix.columns, matrix.header) {
+  let col = match choose_column(&matrix.columns, matrix.header, options.dlx_legacy_heuristic) {
     Some(c) => c,
     None => return false,
   };
@@ -2844,7 +2942,7 @@ fn search(
       break;
     }
 
-    let mut purified: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut purified: Vec<(usize, usize)> = Vec::new();
     let mut conflict = false;
     let mut j = matrix.nodes[r].right;
     while j != r {
@@ -2857,17 +2955,17 @@ fn search(
             break;
           }
         }
-        let mut removed: Vec<usize> = Vec::new();
-        if purify(&mut matrix.columns, &mut matrix.nodes, j, &mut removed) {
-          purified.push((c, removed));
+        let mark = matrix.undo_nodes.len();
+        if purify(&mut matrix.columns, &mut matrix.nodes, j, &mut matrix.undo_nodes) {
+          purified.push((c, mark));
         }
       }
       j = matrix.nodes[j].right;
     }
 
     if conflict {
-      while let Some((col_idx, mut removed)) = purified.pop() {
-        unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut removed);
+      while let Some((col_idx, mark)) = purified.pop() {
+        unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut matrix.undo_nodes, mark);
       }
       solution.pop();
       r = matrix.nodes[r].down;
@@ -2894,8 +2992,8 @@ fn search(
     while let Some(c) = covered.pop() {
       uncover(&mut matrix.columns, &mut matrix.nodes, c);
     }
-    while let Some((col_idx, mut removed)) = purified.pop() {
-      unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut removed);
+    while let Some((col_idx, mark)) = purified.pop() {
+      unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut matrix.undo_nodes, mark);
     }
 
     solution.pop();
@@ -2903,7 +3001,7 @@ fn search(
   }
 
   state.backtracks += 1;
-  matrix.columns[col].weight += 1;
+  matrix.columns[col].weight = matrix.columns[col].weight.saturating_add(1);
   uncover(&mut matrix.columns, &mut matrix.nodes, col);
   false
 }
@@ -2922,7 +3020,7 @@ fn search_no_progress(
     return false;
   }
 
-  let col = match choose_column(&matrix.columns, matrix.header) {
+  let col = match choose_column(&matrix.columns, matrix.header, options.dlx_legacy_heuristic) {
     Some(c) => c,
     None => return false,
   };
@@ -2942,7 +3040,7 @@ fn search_no_progress(
       break;
     }
 
-    let mut purified: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut purified: Vec<(usize, usize)> = Vec::new();
     let mut conflict = false;
     let mut j = matrix.nodes[r].right;
     while j != r {
@@ -2955,17 +3053,17 @@ fn search_no_progress(
             break;
           }
         }
-        let mut removed: Vec<usize> = Vec::new();
-        if purify(&mut matrix.columns, &mut matrix.nodes, j, &mut removed) {
-          purified.push((c, removed));
+        let mark = matrix.undo_nodes.len();
+        if purify(&mut matrix.columns, &mut matrix.nodes, j, &mut matrix.undo_nodes) {
+          purified.push((c, mark));
         }
       }
       j = matrix.nodes[j].right;
     }
 
     if conflict {
-      while let Some((col_idx, mut removed)) = purified.pop() {
-        unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut removed);
+      while let Some((col_idx, mark)) = purified.pop() {
+        unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut matrix.undo_nodes, mark);
       }
       solution.pop();
       r = matrix.nodes[r].down;
@@ -2992,8 +3090,8 @@ fn search_no_progress(
     while let Some(c) = covered.pop() {
       uncover(&mut matrix.columns, &mut matrix.nodes, c);
     }
-    while let Some((col_idx, mut removed)) = purified.pop() {
-      unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut removed);
+    while let Some((col_idx, mark)) = purified.pop() {
+      unpurify(&mut matrix.columns, &mut matrix.nodes, col_idx, &mut matrix.undo_nodes, mark);
     }
 
     solution.pop();
@@ -3001,7 +3099,7 @@ fn search_no_progress(
   }
 
   state.backtracks += 1;
-  matrix.columns[col].weight += 1;
+  matrix.columns[col].weight = matrix.columns[col].weight.saturating_add(1);
   uncover(&mut matrix.columns, &mut matrix.nodes, col);
   false
 }
@@ -3273,6 +3371,9 @@ fn cover(columns: &mut Vec<DlxColumn>, nodes: &mut Vec<DlxNode>, col: usize) {
   while r != head {
     let mut j = nodes[r].right;
     while j != r {
+      // Algorithm C: compatible nodes of an already purified secondary item
+      // stay linked. They cannot affect any later choice while its color is fixed.
+      if nodes[j].color.is_some() && columns[nodes[j].column].color == nodes[j].color { j = nodes[j].right; continue; }
       let down = nodes[j].down;
       let up = nodes[j].up;
       nodes[down].up = up;
@@ -3290,6 +3391,7 @@ fn uncover(columns: &mut Vec<DlxColumn>, nodes: &mut Vec<DlxNode>, col: usize) {
   while r != head {
     let mut j = nodes[r].left;
     while j != r {
+      if nodes[j].color.is_some() && columns[nodes[j].column].color == nodes[j].color { j = nodes[j].left; continue; }
       columns[nodes[j].column].size += 1;
       let down = nodes[j].down;
       let up = nodes[j].up;
@@ -3328,6 +3430,7 @@ fn purify(
     if nodes[r].color != Some(color) {
       let mut j = nodes[r].right;
       while j != r {
+        if nodes[j].color.is_some() && columns[nodes[j].column].color == nodes[j].color { j = nodes[j].right; continue; }
         let down = nodes[j].down;
         let up = nodes[j].up;
         if nodes[down].up != j || nodes[up].down != j {
@@ -3351,8 +3454,10 @@ fn unpurify(
   nodes: &mut Vec<DlxNode>,
   col: usize,
   removed: &mut Vec<usize>,
+  mark: usize,
 ) {
-  for &j in removed.iter().rev() {
+  while removed.len() > mark {
+    let j = removed.pop().unwrap();
     columns[nodes[j].column].size += 1;
     let down = nodes[j].down;
     let up = nodes[j].up;
@@ -3384,11 +3489,18 @@ mod tests {
       progress_stdout: Some(false),
       fail_stdout: Some(false),
       word_priority: None,
+      strong_propagation: Some(false),
+      seed: None,
+      search_portfolio: None,
+      first_solution: None,
+      dlx_preprocess: None,
+      dlx_legacy_heuristic: None,
     }))
   }
 
   #[test]
   fn csp_sat_small_grid() {
+    for (strong, portfolio) in [(false, false), (true, false), (false, true)] {
     let input = SolveInput {
       rows: vec!["..".to_string(), "..".to_string()],
       slots: vec![
@@ -3423,12 +3535,21 @@ mod tests {
       options: None,
     };
 
-    let solved = solve_csp_internal(None, input, csp_options(), None, None);
+    let mut options = csp_options(); options.strong_propagation = strong;
+    if portfolio { options.search_portfolio = true; options.first_solution = true; options.restarts = 2; options.parallel_restarts = 2; options.max_ms = Some(1000); options.seed = Some(12345); options.shuffle = true; }
+    let solved = solve_csp_internal(None, input, options, None, None);
     assert!(solved.is_some(), "expected SAT instance to be solved");
+    let grid = solved.unwrap();
+    let chars: Vec<Vec<char>> = grid.iter().map(|row| row.chars().collect()).collect();
+    let words = vec![grid[0].clone(), grid[1].clone(), vec![chars[0][0], chars[1][0]].iter().collect::<String>(), vec![chars[0][1], chars[1][1]].iter().collect::<String>()];
+    assert_eq!(words.iter().collect::<HashSet<_>>().len(), 4);
+    assert!(words.iter().all(|word| ["AB", "CD", "AC", "BD", "AD", "CB"].contains(&word.as_str())));
+    }
   }
 
   #[test]
   fn csp_unsat_returns_none() {
+    for (strong, portfolio) in [(false, false), (true, false), (false, true)] {
     let input = SolveInput {
       rows: vec!["..".to_string(), "..".to_string()],
       slots: vec![
@@ -3445,8 +3566,11 @@ mod tests {
       options: None,
     };
 
-    let solved = solve_csp_internal(None, input, csp_options(), None, None);
+    let mut options = csp_options(); options.strong_propagation = strong;
+    if portfolio { options.search_portfolio = true; options.first_solution = true; options.restarts = 2; options.parallel_restarts = 2; options.max_ms = Some(1000); options.seed = Some(12345); options.shuffle = true; }
+    let solved = solve_csp_internal(None, input, options, None, None);
     assert!(solved.is_none(), "expected UNSAT instance to return None");
+    }
   }
 
   #[test]
@@ -3459,5 +3583,76 @@ mod tests {
     let normalized = normalize_csp_options(raw);
     assert_eq!(normalized.restarts, 1);
     assert_eq!(normalized.parallel_restarts, 1);
+  }
+
+  #[test]
+  fn dlx_mrv_never_postpones_forced_columns() {
+    let mut columns = Vec::new(); let mut nodes = Vec::new();
+    let header = create_column(&mut columns, &mut nodes, true);
+    let forced = create_column(&mut columns, &mut nodes, true);
+    let large = create_column(&mut columns, &mut nodes, true);
+    link_column(&mut columns, header, forced); link_column(&mut columns, header, large);
+    columns[forced].size = 1; columns[large].size = 100; columns[large].weight = 1000;
+    assert_eq!(choose_column(&columns, header, false), Some(forced));
+    assert_eq!(choose_column(&columns, header, true), Some(large));
+    columns[large].size = 0;
+    assert_eq!(choose_column(&columns, header, false), Some(large));
+  }
+
+  #[test]
+  fn dlx_preprocessing_preserves_exhaustive_solutions() {
+    let words = ["AB", "CD", "AC", "BD", "AD", "CB"];
+    for bits in 1..64 {
+      let domain: Vec<&str> = words.iter().enumerate().filter(|(id, _)| bits & (1 << id) != 0).map(|(_, word)| *word).collect();
+      for unique in [true, false] {
+        let mut expected = false;
+        for a in &domain { for b in &domain {
+          let across: Vec<Vec<char>> = vec![a.chars().collect(), b.chars().collect()];
+          let down1 = vec![across[0][0], across[1][0]].iter().collect::<String>();
+          let down2 = vec![across[0][1], across[1][1]].iter().collect::<String>();
+          if domain.contains(&down1.as_str()) && domain.contains(&down2.as_str()) &&
+            (!unique || [*a, *b, down1.as_str(), down2.as_str()].iter().collect::<HashSet<_>>().len() == 4) { expected = true; }
+        } }
+        for preprocess in [true, false] {
+          let input: SolveInput = serde_json::from_value(serde_json::json!({
+            "rows": ["..", ".."], "slots": [
+              {"len":2,"cells":[[0,0],[0,1]]}, {"len":2,"cells":[[1,0],[1,1]]},
+              {"len":2,"cells":[[0,0],[1,0]]}, {"len":2,"cells":[[0,1],[1,1]]}
+            ], "dict": {"2":domain}
+          })).unwrap();
+          let mut options = csp_options(); options.unique_words = unique; options.dlx_preprocess = preprocess;
+          let solved = solve_dlx_internal(None, input, options, None, None);
+          assert_eq!(solved.is_some(), expected, "domain={:?}, unique={}, preprocess={}", domain, unique, preprocess);
+          if let Some(grid) = solved {
+            let chars: Vec<Vec<char>> = grid.iter().map(|row| row.chars().collect()).collect();
+            let answers = vec![grid[0].clone(), grid[1].clone(), vec![chars[0][0], chars[1][0]].iter().collect::<String>(), vec![chars[0][1], chars[1][1]].iter().collect::<String>()];
+            assert!(answers.iter().all(|word| domain.contains(&word.as_str())));
+            if unique { assert_eq!(answers.iter().collect::<HashSet<_>>().len(), 4); }
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn dlx_seed_fixed_letters_and_progress_paths_agree() {
+    let slots = vec![
+      Slot { id: 0, len: 3, cells: vec![(0,0),(0,1),(0,2)] },
+      Slot { id: 1, len: 3, cells: vec![(1,0),(1,1),(1,2)] },
+      Slot { id: 2, len: 3, cells: vec![(2,0),(2,1),(2,2)] },
+      Slot { id: 3, len: 3, cells: vec![(0,0),(1,0),(2,0)] },
+      Slot { id: 4, len: 3, cells: vec![(0,1),(1,1),(2,1)] },
+      Slot { id: 5, len: 3, cells: vec![(0,2),(1,2),(2,2)] },
+    ];
+    let dict = Dict::from_map(HashMap::from([("3".to_string(), vec!["АБВ", "ГДЕ", "ЖЗИ", "АГЖ", "БДЗ", "ВЕИ"].iter().map(|w| w.to_string()).collect())]));
+    let rows = vec!["А..".to_string(), "...".to_string(), "...".to_string()];
+    let mut options = csp_options(); options.seed = Some(12345); options.shuffle = true;
+    let a = run_attempt_dlx_no_progress(&rows, &slots, &dict, &options, 1, Instant::now(), None).unwrap();
+    let b = run_attempt_dlx_no_progress(&rows, &slots, &dict, &options, 1, Instant::now(), None).unwrap();
+    let c = run_attempt_dlx(None, &rows, &slots, &dict, &options, 1, Instant::now(), &mut 0, None).unwrap();
+    assert_eq!(a, b); assert_eq!(b, c); assert_eq!(a[0][0], 'А');
+    let words: Vec<String> = slots.iter().map(|slot| slot.cells.iter().map(|&(r,c)| a[r][c]).collect()).collect();
+    assert_eq!(words.iter().collect::<HashSet<_>>().len(), 6);
+    assert!(words.iter().all(|word| dict.words[3].contains(word)));
   }
 }

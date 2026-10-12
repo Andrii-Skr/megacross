@@ -1,5 +1,6 @@
 import type { Slot } from "../types";
 import { solveCspNative, solveDlxNative } from "./nativeDlx";
+import { DEFAULT_FILL_SOLVER, fillSolverSearchProfile } from "./fillSolverProfile";
 
 export type Dict = Map<number, string[]>;
 
@@ -63,6 +64,12 @@ export type SolveOptions = {
   shuffle?: boolean;
   lcv?: boolean;
   lcvPrioritySlack?: number;
+  strongPropagation?: boolean;
+  seed?: number;
+  searchPortfolio?: boolean;
+  firstSolution?: boolean;
+  dlxPreprocess?: boolean;
+  dlxLegacyHeuristic?: boolean;
   beamWidth?: number;
   restarts?: number;
   parallelRestarts?: number;
@@ -101,14 +108,18 @@ export function solve(
 ): string[] | null {
   const optionsRaw =
     typeof shuffleOrOptions === "boolean" ? { shuffle: shuffleOrOptions } : shuffleOrOptions ?? {};
-  const engine = optionsRaw.engine ?? "dlx";
+  const engine = optionsRaw.engine ?? DEFAULT_FILL_SOLVER;
   if (engine === "dlx" && optionsRaw.nativeDlx === false) {
     throw new Error("nativeDlx=false is no longer supported. Native DLX is required.");
   }
 
+  const profile = fillSolverSearchProfile(engine);
   const resolved = {
+    ...profile,
     ...optionsRaw,
     engine,
+    strongPropagation: optionsRaw.strongPropagation ?? profile.strongPropagation,
+    firstSolution: optionsRaw.firstSolution ?? profile.firstSolution,
     nativeDlx: true,
     shuffle: optionsRaw.shuffle ?? false,
     lcv: optionsRaw.lcv ?? false,

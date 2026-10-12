@@ -4,13 +4,15 @@ import {
   CLUE_MAP,
   CLUE_POSITION_OFFSETS,
   DIRS,
-  findArrowCode,
   lengthStats,
   markerFor,
   scanSlotsDetailed,
 } from "@megacross/cross-format";
 import type { Cell, Grid, Slot } from "../types";
 import { assignUniqueClues, clueAssignmentDiagnostics, verifyClueOwnership } from "./clueMatcher";
+import { firstArrowCode } from "./arrowOptions";
+import { MaskRunIndex, selectConnectedRuns, type ChangedCell, type MaskRun } from "./topology";
+import { searchRegionalRepair, type MaskChange } from "./regionalRepair";
 import {
   CUTOUT_PRESETS,
   type GeneratedTemplate,
@@ -160,6 +162,9 @@ function placePictures(
   sizes: readonly PictureSize[],
   forbidden: ReadonlySet<string>,
   rng: SeededRandom,
+  gap = 1,
+  inset = 0,
+  preferCorners = false,
 ): PictureBounds[] | null {
   const indexed = sizes
     .map((size, index) => ({ ...size, index }))
@@ -170,19 +175,20 @@ function placePictures(
     let failed = false;
     for (const size of indexed) {
       const options: Array<{ row: number; col: number }> = [];
-      for (let row = 0; row <= rows - size.height; row += 1) for (let col = 0; col <= cols - size.width; col += 1) {
+      for (let row = inset; row <= rows - size.height - inset; row += 1) for (let col = inset; col <= cols - size.width - inset; col += 1) {
         let ok = true;
         for (let r = row; ok && r < row + size.height; r += 1) for (let c = col; c < col + size.width; c += 1) {
           if (forbidden.has(`${r},${c}`)) { ok = false; break; }
         }
         if (ok && placed.some((item) =>
-          row - 1 <= item.row + item.height - 1 && row + size.height >= item.row &&
-          col - 1 <= item.col + item.width - 1 && col + size.width >= item.col
+          row - gap <= item.row + item.height - 1 && row + size.height + gap - 1 >= item.row &&
+          col - gap <= item.col + item.width - 1 && col + size.width + gap - 1 >= item.col
         )) ok = false;
         if (ok) options.push({ row, col });
       }
       if (!options.length) { failed = true; break; }
-      placed.push({ ...rng.pick(options), width: size.width, height: size.height, index: size.index });
+      const corners = preferCorners ? options.filter(({ row, col }) => (row === 0 || row === rows - size.height) && (col === 0 || col === cols - size.width)) : [];
+      placed.push({ ...rng.pick(corners.length ? corners : options), width: size.width, height: size.height, index: size.index });
     }
     if (!failed) return placed.sort((a, b) => a.index - b.index).map(({ index: _index, ...bounds }) => bounds);
   }
@@ -193,15 +199,26 @@ export function assertGeometryCompatible(requestInput: TemplateGenerationRequest
   const request = normalizeGenerationRequest(requestInput);
   const rng = new SeededRandom(request.seed ?? "geometry");
   const cutout = buildCutout(request, rng);
-  const sizes = request.pictures.mode === "auto"
-    ? Array.from({ length: request.pictures.count }, () => ({ width: 4, height: 4 }))
-    : request.pictures.items;
-  if (!placePictures(request.rows, request.cols, sizes, cutout.cells, rng)) {
+  if (!placeRequestedPictures(request, cutout.cells, rng)) {
     throw new Error("pictures and cutout cannot be placed in the requested grid");
   }
 }
 
-function maximalRuns(mask: Cell[][], direction: "right" | "down"): Array<{ r: number; c: number; cells: [number, number][] }> {
+function placeRequestedPictures(request: TemplateGenerationRequest, forbidden: ReadonlySet<string>, rng: SeededRandom): PictureBounds[] | null {
+  const sizes = resolvedPictureSizes(request, rng);
+  if (sizes.length >= 3 && rng.next() < 0.5) {
+    const corners = placePictures(request.rows, request.cols, sizes, forbidden, rng, 3, 0, true);
+    if (corners) return corners;
+  }
+  // Leave room for independent clue/answer collars between photos when possible.
+  const placed = placePictures(request.rows, request.cols, sizes, forbidden, rng, 3, 4)
+    ?? placePictures(request.rows, request.cols, sizes, forbidden, rng, 3)
+    ?? placePictures(request.rows, request.cols, sizes, forbidden, rng);
+  if (placed || request.pictures.mode === "manual") return placed;
+  return placePictures(request.rows, request.cols, Array.from({ length: request.pictures.count }, () => ({ width: 4, height: 4 })), forbidden, rng);
+}
+
+export function maximalRuns(mask: Cell[][], direction: "right" | "down", minLength = 3): Array<{ r: number; c: number; cells: [number, number][] }> {
   const rows = mask.length;
   const cols = mask[0]?.length ?? 0;
   const runs: Array<{ r: number; c: number; cells: [number, number][] }> = [];
@@ -209,59 +226,29 @@ function maximalRuns(mask: Cell[][], direction: "right" | "down"): Array<{ r: nu
   const dc = direction === "right" ? 1 : 0;
   const barrier = (r: number, c: number) => mask[r]?.[c] === "#" || mask[r]?.[c] === "%";
   for (let r = 0; r < rows; r += 1) for (let c = 0; c < cols; c += 1) {
-    if (barrier(r, c)) continue;
-    if (r - dr >= 0 && c - dc >= 0 && !barrier(r - dr, c - dc)) continue;
+    if (barrier(r, c) || (r - dr >= 0 && c - dc >= 0 && !barrier(r - dr, c - dc))) continue;
     const cells: [number, number][] = [];
     for (let rr = r, cc = c; rr < rows && cc < cols && !barrier(rr, cc); rr += dr, cc += dc) cells.push([rr, cc]);
-    if (cells.length >= 3 && cells.length <= 11) runs.push({ r, c, cells });
+    if (cells.length >= minLength && cells.length <= 11) runs.push({ r, c, cells });
   }
   return runs;
 }
 
-export function assignArrows(mask: Cell[][]): Grid | null {
+export function assignArrows(mask: Cell[][], minLength = 3): Grid | null {
+  return evaluateArrowMask(mask, new MaskRunIndex(mask, minLength).runs())?.grid ?? null;
+}
+
+function evaluateArrowMask(mask: Cell[][], inputRuns: readonly MaskRun[]): { grid: Grid; report: TemplateInvariantReport } | null {
   const rows = mask.length;
   const cols = mask[0]?.length ?? 0;
-  const allRuns = [
-    ...maximalRuns(mask, "right").map((run) => ({ ...run, direction: "right" as const })),
-    ...maximalRuns(mask, "down").map((run) => ({ ...run, direction: "down" as const })),
-  ];
-  const membership = new Map<string, number[]>();
-  allRuns.forEach((run, id) => {
-    for (const [r, c] of run.cells) {
-      const key = `${r},${c}`;
-      const ids = membership.get(key) ?? [];
-      ids.push(id);
-      membership.set(key, ids);
-    }
-  });
-  const intersectionCount = allRuns.map(() => 0);
-  for (const ids of membership.values()) if (ids.length > 1) for (const id of ids) intersectionCount[id] += 1;
-  const eligible = new Set(allRuns.map((_, id) => id).filter((id) => intersectionCount[id] >= 2));
-  const graph = new Map<number, Set<number>>([...eligible].map((id) => [id, new Set<number>()]));
-  for (const ids of membership.values()) for (const a of ids) for (const b of ids) if (a !== b && eligible.has(a) && eligible.has(b)) graph.get(a)?.add(b);
-  const components: number[][] = [];
-  const seen = new Set<number>();
-  for (const root of eligible) {
-    if (seen.has(root)) continue;
-    const component = [root];
-    seen.add(root);
-    for (let index = 0; index < component.length; index += 1) for (const next of graph.get(component[index]) ?? []) if (!seen.has(next)) { seen.add(next); component.push(next); }
-    components.push(component);
-  }
-  const selected = new Set((components.sort((a, b) => b.length - a.length)[0] ?? []));
-  const runs = allRuns.filter((_, id) => selected.has(id));
-  const covered = new Set(runs.flatMap((run) => run.cells.map(([r, c]) => `${r},${c}`)));
-  for (let r = 0; r < rows; r += 1) for (let c = 0; c < cols; c += 1) {
-    // A disconnected candidate is rejected.  The previous conversion to '#'
-    // erased whole regions of the grid and produced the diagonal-only previews.
-    if (mask[r][c] !== "#" && mask[r][c] !== "%" && !covered.has(`${r},${c}`)) return null;
-  }
-  if (!runs.length) return null;
-  const directionsByStart = new Map<string, Array<"right" | "down">>();
+  const topology = selectConnectedRuns(mask, inputRuns);
+  if (!topology) return null;
+  const { runs } = topology;
+  const directionsByStart = new Map<number, number[]>();
   for (const run of runs) {
-    const key = `${run.r},${run.c}`;
+    const key = run.r * cols + run.c;
     const list = directionsByStart.get(key) ?? [];
-    list.push(run.direction);
+    list.push(run.direction === "right" ? 6 : 8);
     directionsByStart.set(key, list);
   }
   const grid: Grid = {
@@ -276,21 +263,28 @@ export function assignArrows(mask: Cell[][]): Grid | null {
   };
   const output = grid.data.map((row) => row.split("") as Cell[]);
   for (const [key, directions] of directionsByStart) {
-    const [row, col] = key.split(",").map(Number);
-    const code = findArrowCode(grid, row, col, directions);
+    const row = Math.floor(key / cols); const col = key % cols;
+    const code = firstArrowCode(grid, row, col, directions);
     if (code == null) return null;
     output[row][col] = arrowCellForCode(code);
     grid.codes[row][col] = code;
   }
   grid.data = output.map((row) => row.join(""));
-  return grid;
+  const distribution: Record<string, number> = {};
+  for (const run of runs) distribution[run.cells.length] = (distribution[run.cells.length] ?? 0) + 1;
+  return { grid, report: {
+    valid: topology.valid, errors: topology.valid ? [] : ["each word must have at least two intersections"],
+    slotCount: runs.length, intersections: topology.intersections,
+    averageIntersections: topology.intersectionSum / runs.length, lengthDistribution: distribution,
+  } };
 }
 
 export function verifyTemplateInvariants(grid: Grid): TemplateInvariantReport {
   const errors: string[] = [];
-  const slots = scanSlotsDetailed(grid, { mode: "arrow", minLen: 3 }).slots;
+  const slots = scanSlotsDetailed(grid, { mode: "arrow", minLen: 2 }).slots;
   if (!slots.length) errors.push("template has no word slots");
-  if (slots.some((slot) => slot.len < 3 || slot.len > 11)) errors.push("all word lengths must be from 3 to 11");
+  if (slots.some((slot) => slot.len < 2 || slot.len > 11)) errors.push("all word lengths must be from 2 to 11");
+  if (slots.filter((slot) => slot.len === 2).length > 1) errors.push("at most one two-letter word is allowed");
   const membership = new Map<string, number[]>();
   for (const slot of slots) for (const [row, col] of slot.cells) {
     const key = `${row},${col}`;
@@ -394,7 +388,7 @@ function samePictureBounds(actual: readonly PictureBounds[], expected: readonly 
 }
 
 function pictureIsReferencedByArrow(grid: Grid, picture: PictureBounds): boolean {
-  const slots = scanSlotsDetailed(grid, { mode: "arrow", minLen: 3 }).slots;
+  const slots = scanSlotsDetailed(grid, { mode: "arrow", minLen: 2 }).slots;
   return slots.some((slot) => {
     const directionKey = slot.dir === DIRS.right ? 6 : 8;
     const entry = (CLUE_MAP[grid.codes[slot.r]?.[slot.c] ?? 0] ?? []).find((item) => item.dirKey === directionKey);
@@ -439,15 +433,19 @@ function connectedBackbone(rng: SeededRandom, weights?: Readonly<Record<number, 
 
 export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom, lengthWeights?: Readonly<Record<number, number>>): { mask: Cell[][]; pictures: PictureBounds[]; orientation: string } | null {
   const cutout = buildCutout(request, rng);
-  const pictures = placePictures(request.rows, request.cols, resolvedPictureSizes(request, rng), cutout.cells, rng);
+  const pictures = placeRequestedPictures(request, cutout.cells, rng);
   if (!pictures) return null;
   const pictureCells = new Set<string>();
   const pictureMargin = new Set<string>();
   for (const picture of pictures) for (let row = picture.row; row < picture.row + picture.height; row += 1) for (let col = picture.col; col < picture.col + picture.width; col += 1) pictureCells.add(`${row},${col}`);
   for (const picture of pictures) for (let row = picture.row - 1; row <= picture.row + picture.height; row += 1) for (let col = picture.col - 1; col <= picture.col + picture.width; col += 1) {
+    if ((row === picture.row - 1 || row === picture.row + picture.height) && (col === picture.col - 1 || col === picture.col + picture.width)) continue;
     if (row >= 0 && col >= 0 && row < request.rows && col < request.cols && !pictureCells.has(`${row},${col}`)) pictureMargin.add(`${row},${col}`);
   }
-  const { period, slope } = connectedBackbone(rng, lengthWeights);
+  const densePhotos = pictures.length >= 3;
+  const backbone = connectedBackbone(rng, lengthWeights);
+  const period = densePhotos ? Math.max(7, Math.min(10, weightedLength(rng, lengthWeights) + 2)) : backbone.period;
+  const slope = densePhotos ? rng.pick(period === 7 ? [2, 5] : period === 8 ? [3, 5] : period === 9 ? [2, 7] : [3, 7]) : backbone.slope;
   const phase = rng.int(period);
   const topPeriod = 2;
   const topPhase = rng.int(topPeriod);
@@ -499,8 +497,8 @@ export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom,
   for (const [row, col] of groupSeeds) {
     // Photo margins remove many eligible pair locations, so compensate when a
     // picture is present instead of publishing an isolated-clue texture.
-    if (rng.next() >= (pictures.length ? 0.18 : 0.12)) continue;
-    const [dr, dc] = rng.pick([[0, 1], [1, 0]] as const);
+    if (rng.next() >= (densePhotos ? 0.65 : pictures.length ? 0.18 : 0.12)) continue;
+    const [dr, dc] = densePhotos ? [0, 1] : rng.pick([[0, 1], [1, 0]] as const);
     const rr = row + dr;
     const cc = col + dc;
     const key = `${rr},${cc}`;
@@ -537,8 +535,10 @@ export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom,
     const key = `${row},${col}`;
     if (mask[row][col] === "*" && !covered.has(key) && !pictureMargin.has(key)) repair.push([row, col]);
   }
-  if (repair.length > Math.max(2, Math.floor(request.rows * request.cols * 0.02))) return null;
-  for (const [row, col] of repair) mask[row][col] = "#";
+  if (!densePhotos) {
+    if (repair.length > Math.max(2, Math.floor(request.rows * request.cols * 0.02))) return null;
+    for (const [row, col] of repair) mask[row][col] = "#";
+  }
   return { mask, pictures, orientation: cutout.orientation };
 }
 
@@ -547,23 +547,27 @@ export function targetDoubleArrowCount(slotCount: number): number {
   return Math.min(20, Math.max(0, Math.round(slotCount * 0.035)));
 }
 
-function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], rng: SeededRandom, profileStrength: number): Grid | null {
+function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], rng: SeededRandom, profileStrength: number, lengthWeights?: Readonly<Record<number, number>>, diagnostics?: Record<string, number>, adaptiveSearch = false, regionalRepair = true): { grid: Grid; regionalRepairCount: number } | null {
   const mask = maskInput.map((row) => [...row]);
-  const initialGrid = assignArrows(mask);
+  if (!assignArrows(mask) && !repairStructuralMask(mask, pictures, rng)) { if (diagnostics) diagnostics.repairRejected = (diagnostics.repairRejected ?? 0) + 1; return null; }
+  // A two-letter start is optional and rare, rather than forced into every grid.
+  const minLength = lengthWeights?.[2] && rng.next() < Math.min(0.05, lengthWeights[2] * mask.length * mask[0].length) ? 2 : 3;
+  const initialGrid = assignArrows(mask, minLength);
   if (!initialGrid) return null;
   let grid: Grid = initialGrid;
+  const runIndex = new MaskRunIndex(mask, minLength);
   const area = grid.rows * grid.cols;
   const maxIterations = Math.min(180, Math.max(24, Math.ceil(area / 12)));
   const sampleLimit = Math.min(200, Math.max(50, Math.ceil(area * 0.22)));
   const photoMargin = new Set<string>();
   for (const picture of pictures) for (let row = picture.row - 1; row <= picture.row + picture.height; row += 1) {
     for (let col = picture.col - 1; col <= picture.col + picture.width; col += 1) {
+      if ((row === picture.row - 1 || row === picture.row + picture.height) && (col === picture.col - 1 || col === picture.col + picture.width)) continue;
       if (row >= 0 && col >= 0 && row < grid.rows && col < grid.cols) photoMargin.add(`${row},${col}`);
     }
   }
   type BalanceState = { gap: number; bad: number; score: number; targetDoubleStarts: number };
-  const inspect = (candidate: Grid): BalanceState | null => {
-    const report = verifyTemplateInvariants(candidate);
+  const inspect = (candidate: Grid, report = verifyTemplateInvariants(candidate)): BalanceState | null => {
     if (!report.valid) return null;
     const diagnostics = clueAssignmentDiagnostics(candidate, pictures);
     const gap = diagnostics.answerCount - diagnostics.resourceCount;
@@ -577,15 +581,36 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
       // Corpus templates commonly contain a few such starts; do not optimize them away.
       // Dictionary-style arrow density only becomes a strong preference as the
       // assignment approaches feasibility, so difficult cutouts can still converge.
-      score: feasibilityScore + profileStrength * Math.abs(diagnostics.doubleStarts - targetDoubleStarts)
+      score: feasibilityScore + (lengthWeights ? (8 * evaluateTemplateQuality(candidate, pictures, report, lengthWeights).lengthDeviation + 20 * Math.max(0, (report.lengthDistribution[3] ?? 0) / report.slotCount - (lengthWeights[3] ?? 0))) * (5 / (5 + feasibilityScore)) : 0) + profileStrength * Math.abs(diagnostics.doubleStarts - targetDoubleStarts)
         * (25 / (25 + feasibilityScore)),
     };
   };
   const initialState = inspect(grid);
   if (!initialState) return null;
   let state: BalanceState = initialState;
-  let fallback: Grid | null = null;
-  let fallbackDoubleStarts = -1;
+  let fallback: { grid: Grid; regionalRepairCount: number } | null = null;
+  let fallbackScore = Infinity;
+  const visited = new Set<string>();
+  const maskKey = () => mask.map((row) => row.join("")).join("/");
+  visited.add(maskKey());
+  const cache = new Map<string, { grid: Grid | null; state: BalanceState | null }>();
+  const evaluateMove = (changed: readonly ChangedCell[]) => {
+    const key = maskKey();
+    if (visited.has(key)) return { grid: null, state: null };
+    const saved = cache.get(key);
+    if (saved) { if (diagnostics) diagnostics.cacheHits = (diagnostics.cacheHits ?? 0) + 1; return saved; }
+    const evaluated = evaluateArrowMask(mask, runIndex.runs(changed));
+    const result = { grid: evaluated?.grid ?? null, state: evaluated ? inspect(evaluated.grid, evaluated.report) : null };
+    if (cache.size >= 512) cache.delete(cache.keys().next().value!);
+    cache.set(key, result);
+    if (diagnostics) diagnostics.evaluations = (diagnostics.evaluations ?? 0) + 1;
+    return result;
+  };
+  let bestObserved = state.score;
+  let stagnant = 0;
+  let noise = 0;
+  let regionalRepairs = 0;
+  let regionalRepairCount = 0;
 
   for (let iteration = 0; iteration <= maxIterations; iteration += 1) {
     if (state.gap === 0 && state.bad === 0) {
@@ -593,10 +618,12 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
       if (matched && !verifyClueOwnership(matched, pictures).length && samePictureBounds(recognizePictureBounds(matched), pictures)) {
         const doubleStarts = clueAssignmentDiagnostics(matched, pictures).doubleStarts;
         const minimumDoubleStarts = state.targetDoubleStarts === 0 ? 0 : Math.max(1, state.targetDoubleStarts - 1);
-        if (doubleStarts >= minimumDoubleStarts) return matched;
-        if (doubleStarts > fallbackDoubleStarts) {
-          fallback = matched;
-          fallbackDoubleStarts = doubleStarts;
+        const report = verifyTemplateInvariants(matched);
+        const shortCount = report.lengthDistribution[3] ?? 0;
+        if (doubleStarts >= minimumDoubleStarts && (!lengthWeights || shortCount <= Math.ceil(report.slotCount * Math.max(0.06, (lengthWeights[3] ?? 0) * 2 + 0.03)) + 1)) return { grid: matched, regionalRepairCount };
+        if (state.score < fallbackScore) {
+          fallback = { grid: matched, regionalRepairCount };
+          fallbackScore = state.score;
         }
       }
     }
@@ -610,18 +637,25 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
       const selected = index + rng.int(cells.length - index);
       [cells[index], cells[selected]] = [cells[selected], cells[index]];
     }
-    type Move = { row: number; col: number; cell: Cell; grid: Grid; state: BalanceState };
-    const tryCells = (start: number, end: number): Move | null => {
+    const conflict = clueAssignmentDiagnostics(grid, pictures);
+    const focus = [...conflict.noOptionStarts, ...conflict.unmatchedStarts, ...conflict.noOptionResources, ...conflict.unmatchedResources]
+      .filter((key) => !key.startsWith("photo:"))
+      .map((key): [number, number] => { const [row, col] = key.replace(/^clue:/u, "").split(",").map(Number); return [row, col]; });
+    const isNearConflict = ([row, col]: [number, number]) => focus.some(([r, c]) => Math.abs(row - r) <= 2 && Math.abs(col - c) <= 2);
+    cells.sort((a, b) => Number(isNearConflict(b)) - Number(isNearConflict(a)));
+    type Move = { changes: MaskChange[]; grid: Grid; state: BalanceState };
+    const tryCells = (start: number, end: number, allowUphill = false): Move | null => {
       let best: Move | null = null;
       for (let index = start; index < end; index += 1) {
         const [row, col] = cells[index];
         const previous = mask[row][col];
         mask[row][col] = previous === "#" ? "*" : "#";
-        const candidate = assignArrows(mask);
-        const candidateState = candidate ? inspect(candidate) : null;
-        if (candidate && candidateState && candidateState.score < state.score &&
+        const evaluated = evaluateMove([[row, col]]);
+        const candidate = evaluated.grid;
+        const candidateState = evaluated.state;
+        if (candidate && candidateState && !visited.has(maskKey()) && candidateState.score < state.score + (allowUphill ? 8 : 0) &&
           (!best || candidateState.score < best.state.score)) {
-          best = { row, col, cell: mask[row][col], grid: candidate, state: candidateState };
+          best = { changes: [{ row, col, cell: mask[row][col] }], grid: candidate, state: candidateState };
         }
         mask[row][col] = previous;
       }
@@ -629,12 +663,141 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
     };
     let best = tryCells(0, sampled);
     if (!best) best = tryCells(sampled, cells.length);
+    if (!best) {
+      const mutable = new Set(cells.map(([r, c]) => `${r},${c}`));
+      for (const [row, col] of cells.slice(0, 60)) for (const [dr, dc] of [[1, 0], [0, 1], [1, 1]] as const) {
+        const rr = row + dr; const cc = col + dc;
+        if (!mutable.has(`${rr},${cc}`)) continue;
+        const previous = mask[row][col]; const other = mask[rr][cc];
+        mask[row][col] = previous === "#" ? "*" : "#";
+        mask[rr][cc] = other === "#" ? "*" : "#";
+        const evaluated = evaluateMove([[row, col], [rr, cc]]);
+        const candidate = evaluated.grid;
+        const candidateState = evaluated.state;
+        if (candidate && candidateState && !visited.has(maskKey()) && candidateState.score < state.score && (!best || candidateState.score < best.state.score)) best = {
+          changes: [{ row, col, cell: mask[row][col] }, { row: rr, col: cc, cell: mask[rr][cc] }], grid: candidate, state: candidateState,
+        };
+        mask[row][col] = previous; mask[rr][cc] = other;
+      }
+    }
+    if (!best && regionalRepair && regionalRepairs < 2) {
+      regionalRepairs += 1;
+      const repair = searchRegionalRepair(mask, {
+        mutable: cells, focus, rng, currentScore: state.score,
+        evaluate: (changed) => {
+          const trial = evaluateMove(changed);
+          return trial.grid && trial.state ? { score: trial.state.score, value: { grid: trial.grid, state: trial.state } } : null;
+        },
+      });
+      if (diagnostics) {
+        diagnostics.regionalRepairCalls = (diagnostics.regionalRepairCalls ?? 0) + 1;
+        diagnostics.regionalRepairTrials = (diagnostics.regionalRepairTrials ?? 0) + repair.evaluations;
+      }
+      if (repair.best) {
+        best = { changes: repair.best.changes, ...repair.best.value };
+        regionalRepairCount += 1;
+        if (diagnostics) diagnostics.regionalRepairMoves = (diagnostics.regionalRepairMoves ?? 0) + 1;
+      }
+    }
+    if (!best && adaptiveSearch) {
+      if (noise > 0 && rng.next() < noise) {
+        // Hoos-style adaptive noise: diversify only on plateaus, retaining every
+        // geometric invariant and the best valid fallback throughout the walk.
+        for (const [row, col] of cells.slice(0, sampled)) {
+          const previous = mask[row][col];
+          mask[row][col] = previous === "#" ? "*" : "#";
+          const evaluated = evaluateMove([[row, col]]);
+          if (evaluated.grid && evaluated.state && evaluated.state.score < state.score + 8) best = { changes: [{ row, col, cell: mask[row][col] }], grid: evaluated.grid, state: evaluated.state };
+          mask[row][col] = previous;
+          if (best) break;
+        }
+      }
+    }
+    if (!best) best = tryCells(0, sampled, true);
     if (!best) break;
-    mask[best.row][best.col] = best.cell;
+    for (const change of best.changes) mask[change.row][change.col] = change.cell;
+    runIndex.commit(best.changes.map(({ row, col }) => [row, col]));
+    visited.add(maskKey());
     grid = best.grid;
     state = best.state;
+    if (state.score < bestObserved) { bestObserved = state.score; stagnant = 0; noise *= 0.9; }
+    else stagnant += 1;
+    if (adaptiveSearch && stagnant >= 12) { noise = Math.min(0.5, noise + (1 - noise) * 0.2); stagnant = 0; }
   }
+  if (!fallback && diagnostics) { diagnostics.balanceRejected = (diagnostics.balanceRejected ?? 0) + 1; diagnostics.lastGap = state.gap; diagnostics.lastBad = state.bad; diagnostics.lastScore = state.score; const d = clueAssignmentDiagnostics(grid, pictures); diagnostics.lastUnmatched = d.unmatchedSingleStarts + d.unmatchedDoubleStarts; }
   return fallback;
+}
+
+/** Repair conflicts before demanding a fully valid arrow grid. Photos/cutouts stay fixed. */
+export function repairStructuralMask(mask: Cell[][], pictures: readonly PictureBounds[], rng: SeededRandom, onProgress?: (state: { score: number; uncovered: number; weak: number; missing: number; components: number }) => void): boolean {
+  const rows = mask.length;
+  const cols = mask[0].length;
+  const fixed = new Set<string>();
+  for (const p of pictures) for (let r = p.row - 1; r <= p.row + p.height; r += 1) for (let c = p.col - 1; c <= p.col + p.width; c += 1) {
+    if ((r === p.row - 1 || r === p.row + p.height) && (c === p.col - 1 || c === p.col + p.width)) continue;
+    fixed.add(`${r},${c}`);
+  }
+  const inspect = () => {
+    const runs = [...maximalRuns(mask, "right").map((run) => ({ ...run, direction: "right" as const })), ...maximalRuns(mask, "down").map((run) => ({ ...run, direction: "down" as const }))];
+    const membership = new Map<string, number[]>();
+    runs.forEach((run, id) => run.cells.forEach(([r, c]) => { const key = `${r},${c}`; membership.set(key, [...(membership.get(key) ?? []), id]); }));
+    const crossings = runs.map(() => 0);
+    const graph = runs.map(() => new Set<number>());
+    for (const ids of membership.values()) if (ids.length > 1) for (const a of ids) { crossings[a] += 1; for (const b of ids) if (a !== b) graph[a].add(b); }
+    let components = 0;
+    const visited = new Set<number>();
+    for (let id = 0; id < runs.length; id += 1) if (!visited.has(id)) { components += 1; const queue = [id]; visited.add(id); for (let i = 0; i < queue.length; i += 1) for (const next of graph[queue[i]]) if (!visited.has(next)) { visited.add(next); queue.push(next); } }
+    const focus = new Set<string>();
+    const add = (r: number, c: number) => {
+      for (let dr = -1; dr <= 1; dr += 1) for (let dc = -1; dc <= 1; dc += 1) {
+        const rr = r + dr; const cc = c + dc; const key = `${rr},${cc}`;
+        if (rr >= 0 && cc >= 0 && rr < rows && cc < cols && mask[rr][cc] !== "%" && !fixed.has(key)) focus.add(key);
+      }
+    };
+    let uncovered = 0;
+    for (let r = 0; r < rows; r += 1) for (let c = 0; c < cols; c += 1) if (mask[r][c] === "*" && !membership.has(`${r},${c}`)) {
+      uncovered += 1; add(r, c);
+      // A photo collar can force a long run. Its repair point may be far away
+      // from the uncovered cell, outside the protected collar.
+      for (const [dr, dc] of [[1, 0], [0, 1]] as const) {
+        let rr = r; let cc = c;
+        while (mask[rr - dr]?.[cc - dc] === "*") { rr -= dr; cc -= dc; }
+        while (mask[rr]?.[cc] === "*") { add(rr, cc); rr += dr; cc += dc; }
+      }
+    }
+    let weak = 0;
+    runs.forEach((run, id) => { if (crossings[id] < 2) { weak += 1; run.cells.forEach(([r, c]) => add(r, c)); } });
+    const grid = { rows, cols, data: mask.map((row) => row.join("")) };
+    const starts = new Map<string, Array<"right" | "down">>();
+    for (const run of runs) { const key = `${run.r},${run.c}`; starts.set(key, [...(starts.get(key) ?? []), run.direction]); }
+    let missing = 0;
+    for (const [key, directions] of starts) { const [r, c] = key.split(",").map(Number); if (firstArrowCode(grid, r, c, directions.map((direction) => direction === "right" ? 6 : 8)) == null) { missing += 1; add(r, c); } }
+    return { score: 20 * uncovered + 4 * weak + 8 * missing + 6 * Math.max(0, components - 1), focus: [...focus], uncovered, weak, missing, components };
+  };
+  let state = inspect();
+  onProgress?.(state);
+  const tabu = new Set<string>();
+  for (let iteration = 0; iteration < 80; iteration += 1) {
+    if (assignArrows(mask)) return true;
+    if (!state.focus.length) return false;
+    const choices = state.focus.map((key) => ({ key, order: rng.next() })).sort((a, b) => a.order - b.order).slice(0, 40);
+    let best: { key: string; score: number } | null = null;
+    for (const { key } of choices) {
+      const [r, c] = key.split(",").map(Number); const previous = mask[r][c];
+      mask[r][c] = previous === "#" ? "*" : "#";
+      const fingerprint = mask.map((row) => row.join("")).join("/");
+      const score = tabu.has(fingerprint) ? Infinity : inspect().score;
+      mask[r][c] = previous;
+      if (!best || score < best.score) best = { key, score };
+    }
+    if (!best || !Number.isFinite(best.score) || best.score > state.score + 12) return false;
+    const [r, c] = best.key.split(",").map(Number);
+    mask[r][c] = mask[r][c] === "#" ? "*" : "#";
+    tabu.add(mask.map((row) => row.join("")).join("/"));
+    state = inspect();
+    onProgress?.(state);
+  }
+  return Boolean(assignArrows(mask));
 }
 
 export function generateStructuralCandidate(
@@ -643,16 +806,21 @@ export function generateStructuralCandidate(
   knownFingerprints: ReadonlySet<string> = new Set(),
   attemptBudget = 5_000,
   lengthWeights?: Readonly<Record<number, number>>,
+  selection: { poolSize?: number; dictionaryCounts?: Readonly<Record<number, number>>; diagnostics?: Record<string, number>; adaptiveSearch?: boolean; regionalRepair?: boolean } = {},
 ): GeneratedTemplate | null {
   const request = normalizeGenerationRequest(requestInput);
+  let best: GeneratedTemplate | null = null;
+  let bestScore = Infinity;
+  let collected = 0;
   for (let attempt = 0; attempt < attemptBudget; attempt += 1) {
     const built = buildMask(request, rng, lengthWeights);
-    if (!built) continue;
+    if (!built) { if (selection.diagnostics) selection.diagnostics.maskRejected = (selection.diagnostics.maskRejected ?? 0) + 1; continue; }
     // Two opposing edge bites leave far fewer legal clue positions, especially
     // alongside a photo; the corpus-density preference must remain softer there.
     const profileStrength = request.cutoutPresetId === "opposite-edge-bites" ? 1 : 3;
-    const grid = balanceClues(built.mask, built.pictures, rng, profileStrength);
-    if (!grid) continue;
+    const balanced = balanceClues(built.mask, built.pictures, rng, profileStrength, selection.dictionaryCounts ? lengthWeights : undefined, selection.diagnostics, selection.adaptiveSearch, selection.regionalRepair);
+    if (!balanced) continue;
+    const { grid, regionalRepairCount } = balanced;
     if (verifyClueOwnership(grid, built.pictures).length) continue;
     if (!samePictureBounds(recognizePictureBounds(grid), built.pictures)) continue;
     if (built.pictures.some((picture) => !pictureIsReferencedByArrow(grid, picture))) continue;
@@ -660,7 +828,11 @@ export function generateStructuralCandidate(
     if (!report.valid) continue;
     const fingerprint = geometryFingerprint(grid);
     if (knownFingerprints.has(fingerprint)) continue;
-    return {
+    if (selection.dictionaryCounts && Object.entries(report.lengthDistribution).some(([length, count]) => count > (selection.dictionaryCounts?.[Number(length)] ?? 0))) continue;
+    if (selection.dictionaryCounts && lengthWeights && selection.dictionaryCounts[3] < Math.max(...Object.values(selection.dictionaryCounts)) / 2 &&
+      (report.lengthDistribution[3] ?? 0) > Math.ceil(report.slotCount * Math.max(0.06, (lengthWeights[3] ?? 0) * 2 + 0.03)) + 1) { if (selection.diagnostics) selection.diagnostics.shortWordsRejected = (selection.diagnostics.shortWordsRejected ?? 0) + 1; continue; }
+    const quality = evaluateTemplateQuality(grid, built.pictures, report, lengthWeights);
+    const candidate: GeneratedTemplate = {
       grid,
       fsh: buildFsh(grid),
       fingerprint,
@@ -672,10 +844,35 @@ export function generateStructuralCandidate(
         pictureBounds: built.pictures,
         cutoutOrientation: built.orientation,
         dictionaryVerified: false,
+        regionalRepairCount,
+        ...quality,
       },
     };
+    if (quality.qualityScore < bestScore) { best = candidate; bestScore = quality.qualityScore; }
+    collected += 1;
+    if (collected >= Math.max(1, selection.poolSize ?? 1)) break;
   }
-  return null;
+  return best;
+}
+
+export function evaluateTemplateQuality(grid: Grid, pictures: readonly PictureBounds[], report: TemplateInvariantReport, weights?: Readonly<Record<number, number>>) {
+  const lengthDeviation = weights ? Array.from({ length: 10 }, (_, index) => {
+    const length = index + 2;
+    return Math.abs((report.lengthDistribution[length] ?? 0) / Math.max(1, report.slotCount) - (weights[length] ?? 0));
+  }).reduce((sum, value) => sum + value, 0) / 2 : 0;
+  const isClue = (row: number, col: number) => grid.data[row]?.[col] === "#" && !pictures.some((p) => row >= p.row && row < p.row + p.height && col >= p.col && col < p.col + p.width);
+  let clueCount = 0;
+  let isolatedCount = 0;
+  for (let row = 0; row < grid.rows; row += 1) for (let col = 0; col < grid.cols; col += 1) {
+    if (!isClue(row, col)) continue;
+    clueCount += 1;
+    if (![[row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]].some(([r, c]) => isClue(r, c))) isolatedCount += 1;
+  }
+  const isolatedClueShare = clueCount ? isolatedCount / clueCount : 0;
+  const doubleArrowCount = grid.codes.flat().filter((code) => CLUE_MAP[code]?.length === 2).length;
+  const doubleDeviation = Math.abs(doubleArrowCount - targetDoubleArrowCount(report.slotCount)) / Math.max(1, targetDoubleArrowCount(report.slotCount));
+  const shortWordExcess = weights ? Math.max(0, (report.lengthDistribution[3] ?? 0) / Math.max(1, report.slotCount) - (weights[3] ?? 0)) : 0;
+  return { lengthDeviation, isolatedClueShare, doubleArrowCount, qualityScore: lengthDeviation + 3 * shortWordExcess + 0.15 * isolatedClueShare + 0.1 * doubleDeviation };
 }
 
 export function buildSolverRows(grid: Grid): string[] {
@@ -683,5 +880,5 @@ export function buildSolverRows(grid: Grid): string[] {
 }
 
 export function slotsForSolver(grid: Grid): Slot[] {
-  return scanSlotsDetailed(grid, { mode: "arrow", minLen: 3 }).slots;
+  return scanSlotsDetailed(grid, { mode: "arrow", minLen: 2 }).slots;
 }

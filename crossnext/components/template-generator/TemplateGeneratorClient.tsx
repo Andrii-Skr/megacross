@@ -107,6 +107,8 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
   const [items, setItems] = useState<GenerationResult[]>([]);
   const resultRequestVersion = useRef(0);
   const currentJobId = useRef<string | null>(null);
+  const preflightVersion = useRef(0);
+  const lastAcceptedCount = useRef(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const [issueId, setIssueId] = useState(issues[0]?.id ?? "");
@@ -127,6 +129,7 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
     },
   });
   const pictureMode = form.watch("pictureMode");
+  const resetForm = form.reset;
   const cutoutPreset = form.watch("cutoutPresetId");
   const preflightKey = JSON.stringify(form.watch());
   const activeJobId = job?.id;
@@ -149,16 +152,19 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
   );
 
   const runPreflight = useCallback(
-    async (values: FormValues) => {
+    async (values: FormValues, signal: AbortSignal, version: number) => {
       try {
         setPreflightError(null);
         const response = await fetch("/api/template-generator/preflight", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(toRequest(values)),
+          signal,
         });
-        setPreflight(await readJson(response));
+        const checked = await readJson(response);
+        if (!signal.aborted && preflightVersion.current === version) setPreflight(checked);
       } catch (error) {
+        if (signal.aborted || preflightVersion.current !== version) return;
         setPreflight(null);
         setPreflightError(error instanceof Error ? error.message : String(error));
       }
@@ -167,13 +173,20 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
   );
 
   useEffect(() => {
+    const controller = new AbortController();
+    const version = ++preflightVersion.current;
+    setPreflight(null);
+    setPreflightError(null);
     const parsed = schema.safeParse(JSON.parse(preflightKey));
     if (!parsed.success) {
       setPreflight(null);
       return;
     }
-    const timer = window.setTimeout(() => void runPreflight(parsed.data), 450);
-    return () => window.clearTimeout(timer);
+    const timer = window.setTimeout(() => void runPreflight(parsed.data, controller.signal, version), 450);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
   }, [runPreflight, preflightKey]);
 
   const loadResults = useCallback(async (jobId: string) => {
@@ -221,7 +234,24 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
         }
       }
       if (restored && !disposed && resultRequestVersion.current === restoreVersion) {
+        const params = restored.parameters;
+        const values = schema.safeParse({
+          rows: params.rows,
+          cols: params.cols,
+          resultCount: params.resultCount,
+          dictionaryFilterId: params.dictionaryFilterId == null ? "" : String(params.dictionaryFilterId),
+          pictureMode: params.pictures.mode,
+          pictureCount: params.pictures.mode === "auto" ? params.pictures.count : 0,
+          manualPictures:
+            params.pictures.mode === "manual"
+              ? params.pictures.items.map(({ width, height }) => `${width}x${height}`).join(", ")
+              : "4x4",
+          cutoutPresetId: params.cutoutPresetId,
+          seed: "",
+        });
+        if (values.success) resetForm(values.data);
         currentJobId.current = restored.id;
+        lastAcceptedCount.current = restored.acceptedCount;
         setJob(restored);
         window.localStorage.setItem(LAST_JOB_STORAGE_KEY, restored.id);
         if (restored.acceptedCount > 0) await loadResults(restored.id);
@@ -232,7 +262,7 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
       currentJobId.current = null;
       resultRequestVersion.current += 1;
     };
-  }, [loadResults]);
+  }, [loadResults, resetForm]);
 
   useEffect(() => {
     if (!activeJobId || !activeJobStatus || !["queued", "running"].includes(activeJobStatus)) return;
@@ -242,7 +272,12 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
       if (disposed || currentJobId.current !== activeJobId) return;
       const next = JSON.parse(event.data) as GenerationJob;
       setJob(next);
-      if (next.acceptedCount > 0) void loadResults(next.id);
+      if (
+        next.acceptedCount > lastAcceptedCount.current ||
+        (next.acceptedCount > 0 && !["queued", "running"].includes(next.status))
+      )
+        void loadResults(next.id);
+      lastAcceptedCount.current = next.acceptedCount;
       if (!["queued", "running"].includes(next.status)) events.close();
     };
     events.onerror = () => undefined;
@@ -252,7 +287,7 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
     };
   }, [activeJobId, activeJobStatus, loadResults]);
 
-  const start = form.handleSubmit(async (values) => {
+  const createJob = async (values: FormValues) => {
     setBusyAction("start");
     setMessage(null);
     try {
@@ -263,6 +298,7 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
       });
       const created = (await readJson(response)) as GenerationJob;
       currentJobId.current = created.id;
+      lastAcceptedCount.current = 0;
       resultRequestVersion.current += 1;
       setItems([]);
       setSelected(new Set());
@@ -274,7 +310,9 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
     } finally {
       setBusyAction(null);
     }
-  });
+  };
+  const start = form.handleSubmit(createJob);
+  const repeat = form.handleSubmit((values) => createJob({ ...values, seed: "" }));
 
   const toggleSelected = useCallback(
     (id: string, checked: boolean) =>
@@ -494,7 +532,11 @@ export function TemplateGeneratorClient({ filters, issues }: Props) {
                       {t("cancel")}
                     </Button>
                   )}
-                  <Button variant="outline" onClick={() => void start()} disabled={Boolean(active)}>
+                  <Button
+                    variant="outline"
+                    onClick={() => void repeat()}
+                    disabled={Boolean(active) || busyAction === "start"}
+                  >
                     <RotateCcw />
                     {t("repeat")}
                   </Button>

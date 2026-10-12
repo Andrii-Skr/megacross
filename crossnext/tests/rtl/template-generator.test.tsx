@@ -58,6 +58,57 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+it("restores manual picture parameters and repeats with a new server seed", async () => {
+  const restored = job("1", "completed", 0);
+  restored.parameters = {
+    rows: 19,
+    cols: 14,
+    resultCount: 4,
+    pictures: { mode: "manual", items: [{ width: 5, height: 4 }] },
+    cutoutPresetId: "corner",
+    seed: "previous-seed",
+  };
+  const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+    if (url === "/api/template-generator/jobs")
+      return Promise.resolve(json(options?.method === "POST" ? job("2", "running", 0) : restored));
+    return Promise.resolve(json({ dictionaryCounts: {}, targetDistribution: {} }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<TemplateGeneratorClient filters={[]} issues={[]} />);
+  fireEvent.click(await screen.findByRole("button", { name: "repeat" }));
+  await screen.findByText("job 2");
+  const posted = fetchMock.mock.calls.find(
+    ([url, init]) => url === "/api/template-generator/jobs" && init?.method === "POST",
+  );
+  expect(JSON.parse(String(posted?.[1].body))).toMatchObject({ ...restored.parameters, seed: null });
+});
+
+it("does not enable generation when an outdated geometry check arrives last", async () => {
+  const oldCheck = deferred<Response>();
+  const newCheck = deferred<Response>();
+  let checks = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/template-generator/preflight") return ++checks === 1 ? oldCheck.promise : newCheck.promise;
+      return Promise.resolve(json(null));
+    }),
+  );
+  render(<TemplateGeneratorClient filters={[]} issues={[]} />);
+  await waitFor(() => expect(checks).toBe(1));
+  fireEvent.change(screen.getByLabelText("rows"), { target: { value: "5" } });
+  await waitFor(() => expect(checks).toBe(2));
+  await act(async () => {
+    newCheck.resolve(new Response(JSON.stringify({ error: "incompatible" }), { status: 400 }));
+  });
+  expect(await screen.findByText("incompatible")).toBeInTheDocument();
+  await act(async () => {
+    oldCheck.resolve(json({ dictionaryCounts: {}, targetDistribution: {} }));
+  });
+  expect(screen.getByRole("button", { name: "start" })).toBeDisabled();
+  expect(screen.getByText("incompatible")).toBeInTheDocument();
+});
+
 it("ignores an older gallery response that arrives after the latest event", async () => {
   const older = deferred<Response>();
   const newer = deferred<Response>();

@@ -1,5 +1,6 @@
 import type { Slot } from "../types";
 import { solve, type SolveFailInfo } from "./solver";
+import { DEFAULT_FILL_SOLVER, fillSolverSearchProfile, type FillSolverEngine } from "./fillSolverProfile";
 
 const PROBE_NODES_RATIO = 0.08;
 const PROBE_NODES_MIN = 40_000;
@@ -29,6 +30,9 @@ export type DlxProbeResult = {
 };
 
 type DlxProbeOptions = {
+  engine?: FillSolverEngine;
+  shuffle?: boolean;
+  seed?: number;
   label?: string;
   maxNodes?: number;
   maxMs?: number;
@@ -88,18 +92,21 @@ export function resolveProbeOutcome(
   return failInfo.reason === "aborted" ? "unknown" : "unsat";
 }
 
-export function runDlxProbe(
+export function runSolverProbe(
   rawRows: string[],
   slots: Slot[],
   dict: Map<number, string[]>,
   options: DlxProbeOptions = {}
 ): DlxProbeResult {
   const budget = resolveProbeBudget(options.maxNodes, options.maxMs);
+  const engine = options.engine ?? DEFAULT_FILL_SOLVER;
   let failInfo: SolveFailInfo | null = null;
   const solved = solve(rawRows, slots, dict, {
-    engine: "dlx",
+    engine,
+    ...fillSolverSearchProfile(engine, true),
     nativeDlx: true,
-    shuffle: false,
+    shuffle: engine === "csp" && (options.shuffle ?? true),
+    seed: options.seed,
     lcv: true,
     lcvPrioritySlack: options.lcvPrioritySlack,
     beamWidth:
@@ -123,6 +130,11 @@ export function runDlxProbe(
     outcome: resolveProbeOutcome(solved, failInfo),
     failInfo,
   };
+}
+
+/** Compatibility entry point for callers explicitly requesting DLX. */
+export function runDlxProbe(rawRows: string[], slots: Slot[], dict: Map<number, string[]>, options: DlxProbeOptions = {}): DlxProbeResult {
+  return runSolverProbe(rawRows, slots, dict, { ...options, engine: "dlx" });
 }
 
 export function sortDictionaryByPriority(

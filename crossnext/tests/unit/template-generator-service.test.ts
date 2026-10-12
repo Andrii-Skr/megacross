@@ -24,6 +24,12 @@ vi.mock("../../../cross/server/src/services/dictionary", () => ({
   loadDictionary: async () => new Map([[3, ["КОТ"]]]),
 }));
 vi.mock("../../../cross/server/src/utils/nativeDlx", () => ({ solveCspNativeAsync: state.solve }));
+vi.mock("../../../cross/server/src/templateGenerator/structureSearch", () => ({
+  searchStructure: async (input: { rngPosition: number }) => ({
+    candidate: state.candidate(),
+    rngPosition: input.rngPosition,
+  }),
+}));
 vi.mock("../../../cross/server/src/templateGenerator/generator", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../cross/server/src/templateGenerator/generator")>()),
   normalizeGenerationRequest: (request: TemplateGenerationRequest) => request,
@@ -133,6 +139,25 @@ describe("template generation cancellation", () => {
     await vi.waitFor(() => expect(state.job?.status).toBe("completed"));
     expect(state.insert).toHaveBeenCalledOnce();
     expect(state.job?.acceptedCount).toBe(1);
+  });
+  it("passes propagated letters to the native solver", async () => {
+    state.candidate.mockReturnValue({
+      grid,
+      fsh: buildFsh(grid),
+      fingerprint: "forced",
+      metrics: { ...metrics },
+      solverRows: ["К.."],
+    });
+    state.solve.mockResolvedValue(["КОТ"]);
+    await startTemplateGeneration(request, 1);
+    await vi.waitFor(() => expect(state.job?.status).toBe("completed"));
+    expect(state.solve.mock.calls[0][0]).toEqual(["К.."]);
+    expect(state.solve.mock.calls[0][3]).toMatchObject({
+      searchPortfolio: true,
+      firstSolution: true,
+      uniqueWords: true,
+      shuffle: true,
+    });
   });
 });
 describe("append templates snapshot", () => {

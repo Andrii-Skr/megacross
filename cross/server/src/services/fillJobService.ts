@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { isPhotoImageRatioAllowed } from "@megacross/cross-clues";
 import { Prisma, prisma } from "../db/prisma";
-import type { SolveFailInfo, SolveProgress } from "../utils/solver";
+import type { SolveFailInfo, SolveProgress, SolveOptions } from "../utils/solver";
 import {
   resolveStrictLimitedBudget,
-  runDlxProbe,
+  runSolverProbe,
   sortDictionaryByPriority,
 } from "../utils/fillFallback";
 import {
@@ -38,6 +38,7 @@ import {
 } from "../utils/editionHotBan";
 import { loadEditionUsageSnapshot, type EditionUsageSnapshot } from "../utils/editionUsageSnapshot";
 import { polishSolvedRowsByCost } from "../utils/solutionPolish";
+import { DEFAULT_FILL_SOLVER, fillSolverSearchProfile } from "../utils/fillSolverProfile";
 import {
   consumeLastNativeFail,
   isNativeCspAvailable,
@@ -342,7 +343,7 @@ const jobRunners = new Set<string>();
 const finalizingJobs = new Set<string>();
 
 const DEFAULT_OPTIONS: FillJobOptions = {
-  engine: "dlx",
+  engine: DEFAULT_FILL_SOLVER,
   shuffle: true,
   unique: true,
   lcv: true,
@@ -366,7 +367,7 @@ const DEFAULT_OPTIONS: FillJobOptions = {
 // CLI-only flags from fill-batch (e.g. --report-duplicates, --template-parallel)
 // are intentionally not part of FillJobOptions.
 const START_FILL_JOB_DEFAULT_OPTIONS: FillJobOptions = {
-  engine: "dlx",
+  engine: DEFAULT_FILL_SOLVER,
   shuffle: true,
   unique: true,
   lcv: true,
@@ -1416,6 +1417,9 @@ async function solveSingleTemplateForReview(
   metrics: SolveSingleTemplateMetrics,
   callbacks: {
     onProgress?: (info: SolveProgress) => void;
+    solverTuning?: Pick<SolveOptions, "seed" | "strongPropagation" | "firstSolution">;
+    probeSolver?: typeof runSolverProbe;
+    onSolverTiming?: (elapsedMs: number) => void;
   } = {},
 ): Promise<{ reviewTemplate: ReviewTemplate; wordCounts: Map<string, number> } | { error: string }> {
   let lastFail: SolveFailInfo | null = null;
@@ -1477,6 +1481,8 @@ async function solveSingleTemplateForReview(
     const effectiveWordPriority =
       overrides.wordPriority ?? (options.usageStats ? context.usagePriorityByWord : undefined);
     const nativeOptions = {
+      ...fillSolverSearchProfile(options.engine),
+      ...callbacks.solverTuning,
       shuffle: overrides.shuffle ?? options.shuffle,
       lcv: overrides.lcv ?? options.lcv,
       lcvPrioritySlack: overrides.lcvPrioritySlack ?? rebalanceLcvPrioritySlack,
@@ -1490,10 +1496,12 @@ async function solveSingleTemplateForReview(
       onProgress: callbacks.onProgress,
       onFail,
     };
+    const solveStartedAt = performance.now();
     const solvedNative =
       options.engine === "csp"
         ? await solveCspNativeAsync(currentSolveRows, entry.slots, dictForSolve, nativeOptions)
         : await solveDlxNativeAsync(currentSolveRows, entry.slots, dictForSolve, nativeOptions);
+    callbacks.onSolverTiming?.(performance.now() - solveStartedAt);
     if (solvedNative === undefined) {
       throw new Error(
         options.engine === "csp"
@@ -1661,7 +1669,10 @@ async function solveSingleTemplateForReview(
     if (strictDeficitLengths.size === 0) {
       const strictDict = filterDictionaryByBlockedWords(context.dict, strictProbeBlockedWords);
       metrics.uniqueFallbackStats && (metrics.uniqueFallbackStats.probeAttempted += 1);
-      const probeResult = runDlxProbe(currentSolveRows, entry.slots, strictDict, {
+      const probeResult = (callbacks.probeSolver ?? runSolverProbe)(currentSolveRows, entry.slots, strictDict, {
+        engine: options.engine,
+        shuffle: options.engine === "csp" && options.shuffle,
+        seed: callbacks.solverTuning?.seed,
         label: `${entry.name}:probe`,
         maxNodes: options.maxNodes,
         maxMs: options.maxMs,
@@ -3132,3 +3143,11 @@ export function subscribeFillJob(jobId: string, listener: (update: FillJobUpdate
     }
   };
 }
+
+// Read-only comparison access: no runner, job updates, output writer or usage
+// persistence is exposed. Benchmarks reuse production balancing/neighbor/polish.
+export const fillSolverComparisonAccess = {
+  loadContext: loadFillExecutionContext,
+  parseOptions: parseFillJobOptions,
+  solveTemplate: solveSingleTemplateForReview,
+};

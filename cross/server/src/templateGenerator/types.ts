@@ -36,6 +36,11 @@ export type TemplateMetrics = {
   pictureBounds: PictureBounds[];
   cutoutOrientation: string;
   dictionaryVerified: boolean;
+  lengthDeviation?: number;
+  isolatedClueShare?: number;
+  doubleArrowCount?: number;
+  qualityScore?: number;
+  regionalRepairCount?: number;
 };
 
 export type GeneratedTemplate = {
@@ -44,6 +49,7 @@ export type GeneratedTemplate = {
   fingerprint: string;
   metrics: TemplateMetrics;
   solved?: string[];
+  solverRows?: string[];
 };
 
 export type TemplateInvariantReport = {

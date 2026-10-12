@@ -24,6 +24,12 @@ type NativeSolveOptions = {
   progressStdout?: boolean;
   failStdout?: boolean;
   wordPriority?: Record<string, number>;
+  strongPropagation?: boolean;
+  seed?: number;
+  searchPortfolio?: boolean;
+  firstSolution?: boolean;
+  dlxPreprocess?: boolean;
+  dlxLegacyHeuristic?: boolean;
 };
 
 type NativeModule = {
@@ -176,6 +182,12 @@ export function solveDlxNative(
       shuffle: options?.shuffle,
       lcv: options?.lcv,
       lcvPrioritySlack: options?.lcvPrioritySlack,
+      strongPropagation: options?.strongPropagation,
+      seed: options?.seed,
+      searchPortfolio: options?.searchPortfolio,
+      firstSolution: options?.firstSolution,
+      dlxPreprocess: options?.dlxPreprocess,
+      dlxLegacyHeuristic: options?.dlxLegacyHeuristic,
       restarts: options?.restarts,
       parallelRestarts: options?.parallelRestarts,
       uniqueWords: options?.uniqueWords,
@@ -276,6 +288,12 @@ export function solveCspNative(
       shuffle: options?.shuffle,
       lcv: options?.lcv,
       lcvPrioritySlack: options?.lcvPrioritySlack,
+      strongPropagation: options?.strongPropagation,
+      seed: options?.seed,
+      searchPortfolio: options?.searchPortfolio,
+      firstSolution: options?.firstSolution,
+      dlxPreprocess: options?.dlxPreprocess,
+      dlxLegacyHeuristic: options?.dlxLegacyHeuristic,
       restarts: options?.restarts,
       parallelRestarts: options?.parallelRestarts,
       uniqueWords: options?.uniqueWords,
@@ -378,6 +396,12 @@ export async function solveDlxNativeAsync(
       shuffle: options?.shuffle,
       lcv: options?.lcv,
       lcvPrioritySlack: options?.lcvPrioritySlack,
+      strongPropagation: options?.strongPropagation,
+      seed: options?.seed,
+      searchPortfolio: options?.searchPortfolio,
+      firstSolution: options?.firstSolution,
+      dlxPreprocess: options?.dlxPreprocess,
+      dlxLegacyHeuristic: options?.dlxLegacyHeuristic,
       restarts: options?.restarts,
       parallelRestarts: options?.parallelRestarts,
       uniqueWords: options?.uniqueWords,
@@ -479,6 +503,12 @@ export async function solveCspNativeAsync(
       shuffle: options?.shuffle,
       lcv: options?.lcv,
       lcvPrioritySlack: options?.lcvPrioritySlack,
+      strongPropagation: options?.strongPropagation,
+      seed: options?.seed,
+      searchPortfolio: options?.searchPortfolio,
+      firstSolution: options?.firstSolution,
+      dlxPreprocess: options?.dlxPreprocess,
+      dlxLegacyHeuristic: options?.dlxLegacyHeuristic,
       restarts: options?.restarts,
       parallelRestarts: options?.parallelRestarts,
       uniqueWords: options?.uniqueWords,
