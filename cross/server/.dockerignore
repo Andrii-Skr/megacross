@@ -8,3 +8,6 @@ npm-debug.log
 pnpm-debug.log
 Dockerfile*
 docker-compose*.yml
+
+native/template-generator/target
+native/template-generator/*.node

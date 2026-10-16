@@ -257,10 +257,6 @@ export function buildFillOverrides(fillSettings: FillSettings, selectedTemplateI
   };
 }
 
-function buildReviewDismissStorageKey(jobId: string): string {
-  return `scanwords:fillReviewDismissed:${jobId}`;
-}
-
 function normalizeDifficultyValue(value: unknown): number | null {
   if (!Number.isFinite(value as number)) return null;
   return Math.trunc(value as number);
@@ -437,7 +433,7 @@ export function useScanwordFill({
   const [archives, setArchives] = useState<FillArchiveItem[]>([]);
   const [latestAvailableArchiveUrl, setLatestAvailableArchiveUrl] = useState<string | null>(null);
   const [templateList, setTemplateList] = useState<FillTemplateStatus[]>([]);
-  const [reviewOpen, setReviewOpenState] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewFinalizing, setReviewFinalizing] = useState(false);
   const [regeneratingTemplateKey, setRegeneratingTemplateKey] = useState<string | null>(null);
@@ -549,7 +545,7 @@ export function useScanwordFill({
     setFillStarting(false);
     setFillError(null);
     setTemplateList([]);
-    setReviewOpenState(false);
+    setReviewOpen(false);
     setReviewLoading(false);
     setReviewFinalizing(false);
     setRegeneratingTemplateKey(null);
@@ -577,7 +573,7 @@ export function useScanwordFill({
     setArchives([]);
     setLatestAvailableArchiveUrl(null);
     setTemplateList([]);
-    setReviewOpenState(false);
+    setReviewOpen(false);
     setReviewLoading(false);
     setReviewFinalizing(false);
     setRegeneratingTemplateKey(null);
@@ -586,33 +582,6 @@ export function useScanwordFill({
     loadedReviewJobIdRef.current = null;
     definitionDifficultyCacheRef.current.clear();
   }, [selectedIssueId]);
-
-  const isReviewDismissed = useCallback((jobId: string): boolean => {
-    if (typeof window === "undefined") return false;
-    return window.sessionStorage.getItem(buildReviewDismissStorageKey(jobId)) === "1";
-  }, []);
-
-  const markReviewDismissed = useCallback((jobId: string) => {
-    if (typeof window === "undefined") return;
-    window.sessionStorage.setItem(buildReviewDismissStorageKey(jobId), "1");
-  }, []);
-
-  const clearReviewDismissed = useCallback((jobId: string) => {
-    if (typeof window === "undefined") return;
-    window.sessionStorage.removeItem(buildReviewDismissStorageKey(jobId));
-  }, []);
-
-  const setReviewOpen = useCallback(
-    (nextOpen: boolean) => {
-      const jobId = fillJob?.id ?? null;
-      if (jobId) {
-        if (nextOpen) clearReviewDismissed(jobId);
-        else if (fillJob?.status === "review") markReviewDismissed(jobId);
-      }
-      setReviewOpenState(nextOpen);
-    },
-    [clearReviewDismissed, fillJob?.id, fillJob?.status, markReviewDismissed],
-  );
 
   useEffect(() => {
     const next = selectedTemplateId ?? null;
@@ -804,9 +773,6 @@ export function useScanwordFill({
         const normalizedWithDifficulties = normalizeReviewPayloadWithDifficulties(normalized, difficultyById);
         loadedReviewJobIdRef.current = fillJob.id;
         setReviewData(normalizedWithDifficulties);
-        if (!isReviewDismissed(fillJob.id)) {
-          setReviewOpenState(true);
-        }
       } catch (err) {
         if (!active) return;
         const { status } = getActionErrorMeta(err);
@@ -821,16 +787,7 @@ export function useScanwordFill({
     return () => {
       active = false;
     };
-  }, [
-    crossApiBase,
-    ensureDefinitionDifficulties,
-    fillJob?.id,
-    fillJob?.status,
-    isReviewDismissed,
-    normalizeReviewPayload,
-    reviewData,
-    t,
-  ]);
+  }, [crossApiBase, ensureDefinitionDifficulties, fillJob?.id, fillJob?.status, normalizeReviewPayload, reviewData, t]);
 
   useEffect(() => {
     if (!fillJob?.templates) return;
@@ -1219,7 +1176,7 @@ export function useScanwordFill({
         if (nextJob) {
           setFillJob(nextJob);
           if (nextJob.status !== "review") {
-            setReviewOpenState(false);
+            setReviewOpen(false);
           }
         }
       } catch (err) {

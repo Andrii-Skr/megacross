@@ -40,7 +40,24 @@ export type TemplateMetrics = {
   isolatedClueShare?: number;
   doubleArrowCount?: number;
   qualityScore?: number;
+  qualityVersion?: number;
+  spatialImbalance?: number;
+  pictureImbalance?: number;
+  repetition?: number;
+  bottleneckShare?: number;
+  edgeDirectionPenalty?: number;
+  edgeDirectionDeficit?: number;
+  topEdgeAlongWords?: number;
+  leftEdgeAlongWords?: number;
+  maskFamily?: string;
+  generationEngine?: "rust" | "typescript";
   regionalRepairCount?: number;
+  fillabilityConverged?: boolean;
+  constrainedShare?: number;
+  geometrySearchMs?: number;
+  dictionaryPrecheckMs?: number;
+  fillVerificationMs?: number;
+  fillVerificationAttempts?: number;
 };
 
 export type GeneratedTemplate = {

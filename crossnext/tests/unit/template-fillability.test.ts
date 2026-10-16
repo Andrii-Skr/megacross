@@ -82,6 +82,44 @@ describe("template crossing feasibility", () => {
       ).fixedRows,
     ).toEqual(["#АД#", "#ДАР"]);
   });
+  it("keeps bitset word ids correct across 32-bit blocks and duplicate dictionary entries", () => {
+    const words = Array.from({ length: 96 }, (_, i) => `А${String.fromCharCode(0x410 + i)}`);
+    const grid = { rows: 1, cols: 3, data: ["#→*"], codes: [[2, 0x18, 1]] };
+    const result = analyzeFillability(grid, new Map([[2, [...words, ...words]]]));
+    expect(result.feasible).toBe(true);
+    expect(result.converged).toBe(true);
+    expect(result.fixedRows).toEqual(["#А."]);
+  });
+  it("propagates a crossing to the high bit of the last dictionary block", () => {
+    const words = Array.from({ length: 96 }, (_, i) => `${String.fromCharCode(0x410 + i)}Я`);
+    const first = String.fromCharCode(0x410 + 95);
+    const grid = {
+      rows: 3,
+      cols: 3,
+      data: ["#↘*", "#*#", "#*#"],
+      codes: [
+        [2, 0x19, 1],
+        [2, 1, 2],
+        [2, 1, 2],
+      ],
+    };
+    const result = analyzeFillability(
+      grid,
+      new Map([
+        [2, words],
+        [3, [`${first}АА`]],
+      ]),
+    );
+    expect(result.feasible).toBe(true);
+    expect(result.converged).toBe(true);
+    expect(result.fixedRows).toEqual([`#${first}Я`, "#А#", "#А#"]);
+  });
+  it("reports incomplete propagation honestly without rejecting an unproven candidate", () => {
+    const result = analyzeFillability(crossing, new Map([[2, ["АА", "АБ", "БА", "ББ"]]]), 0);
+    expect(result.feasible).toBe(true);
+    expect(result.converged).toBe(false);
+    expect(result.fixedRows).toEqual(["###", "#..", "#.."]);
+  });
   it("never eliminates a brute-force solution or forces a wrong letter", () => {
     const words = ["АА", "АБ", "БА", "ББ"];
     const slots = slotsForSolver(crossing);

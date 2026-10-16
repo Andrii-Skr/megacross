@@ -157,7 +157,7 @@ describe("useScanwordFill", () => {
     ]);
   });
 
-  it("autoloads review payload for jobs in review state", async () => {
+  it("autoloads review payload without opening the dialog for jobs in review state", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
@@ -200,7 +200,13 @@ describe("useScanwordFill", () => {
     );
 
     await waitFor(() => expect(result.current.reviewData?.templates).toHaveLength(1));
+    expect(result.current.reviewOpen).toBe(false);
+
+    act(() => result.current.setReviewOpen(true));
     expect(result.current.reviewOpen).toBe(true);
+
+    act(() => result.current.setReviewOpen(false));
+    expect(result.current.reviewOpen).toBe(false);
   });
 
   it("finalizeReview proxies through next route and updates fillJob", async () => {

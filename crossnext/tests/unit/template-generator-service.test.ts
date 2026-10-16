@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   query: vi.fn(),
   results: vi.fn(),
   candidate: vi.fn(),
+  search: vi.fn(),
   disconnect: vi.fn(),
 }));
 vi.mock("../../../cross/server/src/db/prisma", () => ({
@@ -25,10 +26,10 @@ vi.mock("../../../cross/server/src/services/dictionary", () => ({
 }));
 vi.mock("../../../cross/server/src/utils/nativeDlx", () => ({ solveCspNativeAsync: state.solve }));
 vi.mock("../../../cross/server/src/templateGenerator/structureSearch", () => ({
-  searchStructure: async (input: { rngPosition: number }) => ({
-    candidate: state.candidate(),
-    rngPosition: input.rngPosition,
-  }),
+  searchStructure: async (input: { rngPosition: number }) => {
+    state.search(input);
+    return { candidate: state.candidate(), rngPosition: input.rngPosition };
+  },
 }));
 vi.mock("../../../cross/server/src/templateGenerator/generator", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../cross/server/src/templateGenerator/generator")>()),
@@ -139,6 +140,73 @@ describe("template generation cancellation", () => {
     await vi.waitFor(() => expect(state.job?.status).toBe("completed"));
     expect(state.insert).toHaveBeenCalledOnce();
     expect(state.job?.acceptedCount).toBe(1);
+  });
+  it("excludes rejected fills from accepted-geometry diversity history", async () => {
+    state.candidate.mockReturnValueOnce({
+      grid,
+      fsh: buildFsh(grid),
+      fingerprint: "rejected",
+      metrics: { ...metrics },
+    });
+    state.solve.mockResolvedValueOnce(null).mockResolvedValue(["КОТ"]);
+    await startTemplateGeneration(request, 1);
+    await vi.waitFor(() => expect(state.job?.status).toBe("completed"));
+    expect(state.search.mock.calls[1][0].fingerprints).toContain("rejected");
+    expect(state.search.mock.calls[1][0].diversityFingerprints).toEqual([]);
+  });
+  it("defers a hard fill and retries with the remaining budget when fresh candidates stall", async () => {
+    let ordinal = 0;
+    state.candidate.mockImplementation(() => ({
+      grid,
+      fsh: buildFsh(grid),
+      fingerprint: `hard-${ordinal++}`,
+      metrics: { ...metrics },
+    }));
+    state.solve
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(["КОТ"]);
+    await startTemplateGeneration(request, 1);
+    await vi.waitFor(() => expect(state.job?.status).toBe("completed"));
+    expect(state.search).toHaveBeenCalledTimes(3);
+    expect(state.solve).toHaveBeenCalledTimes(4);
+    const probe = state.solve.mock.calls[0][3];
+    const retry = state.solve.mock.calls[3][3];
+    expect(probe.maxMs).toBe(2500);
+    expect(retry.maxMs).toBe(27500);
+    expect(retry.seed).not.toBe(probe.seed);
+    expect(state.insert.mock.calls[0][5]).toMatchObject({ dictionaryVerified: true, fillVerificationAttempts: 2 });
+  });
+  it("tries fresh candidates after a short failed probe", async () => {
+    state.solve.mockResolvedValueOnce(null).mockResolvedValue(["КОТ"]);
+    await startTemplateGeneration(request, 1);
+    await vi.waitFor(() => expect(state.job?.status).toBe("completed"));
+    expect(state.solve).toHaveBeenCalledTimes(2);
+    expect(state.solve.mock.calls.every((call) => call[3].maxMs === 2500)).toBe(true);
+  });
+  it("rechecks deferred geometry against results accepted while it was waiting", async () => {
+    if (!state.job) throw new Error("missing job fixture");
+    state.job.parameters = { ...request, resultCount: 2 };
+    const fingerprints = ["##########/**********", "#########*/**********", "hard-2", "hard-3", "hard-4"];
+    let ordinal = 0;
+    state.candidate.mockImplementation(() => ({
+      grid,
+      fsh: buildFsh(grid),
+      fingerprint: fingerprints[ordinal++],
+      metrics: { ...metrics },
+    }));
+    state.solve
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(["КОТ"])
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(["КОТ"]);
+    await startTemplateGeneration({ ...request, resultCount: 2 }, 1);
+    await vi.waitFor(() => expect(state.job?.status).toBe("completed"));
+    expect(state.solve).toHaveBeenCalledTimes(6);
+    expect(state.insert.mock.calls[1][6]).toBe("hard-2");
   });
   it("passes propagated letters to the native solver", async () => {
     state.candidate.mockReturnValue({

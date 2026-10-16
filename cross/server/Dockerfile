@@ -29,7 +29,9 @@ COPY packages/cross-format /packages/cross-format
 RUN --mount=type=cache,id=cross-cargo-registry,target=/root/.cargo/registry \
   --mount=type=cache,id=cross-cargo-git,target=/root/.cargo/git \
   pnpm exec napi build --release --cwd native/dlx-solver \
-  && test -f /app/native/dlx-solver/dlx_solver.node
+  && test -f /app/native/dlx-solver/dlx_solver.node \
+  && node scripts/build-template-native.mjs \
+  && test -f /app/native/template-generator/template_generator.node
 
 FROM base AS runner
 ENV NODE_ENV=production PORT=3001
@@ -40,6 +42,8 @@ COPY cross/server/. .
 COPY packages/cross-clues /packages/cross-clues
 COPY packages/cross-format /packages/cross-format
 COPY --from=native-builder /app/native/dlx-solver/dlx_solver.node /app/native/dlx-solver/dlx_solver.node
+COPY --from=native-builder /app/native/template-generator/template_generator.node /app/native/template-generator/template_generator.node
+RUN node -e "const native=require('./native/template-generator/template_generator.node');if(typeof native.generateTemplate!=='function')throw new Error('Rust template generator is unavailable')"
 RUN DATABASE_URL=postgresql://prisma:prisma@localhost:5432/prisma?schema=public pnpm prisma generate \
   && chmod +x /app/entrypoint.sh \
   && mkdir -p /app/var/crosswords/sample /app/var/crosswords/out \

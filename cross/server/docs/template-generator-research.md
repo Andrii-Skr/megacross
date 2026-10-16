@@ -179,3 +179,230 @@ confirmed complete unique dictionary witnesses, connected covered grids, four
 photos with one clue each, five/six double starts and 6.0–8.2% three-letter answers.
 No results were appended to an edition. This is a successful control regression,
 not a statistically established general speedup or diversity-quality measure.
+
+## Geometry quality and diversity: October 15
+
+The structure worker now compares up to three dictionary-prechecked candidates
+instead of returning the first one. Each of its three search rounds has at most
+six mask attempts. Periodic, banded and woven masks alternate within a round;
+the latter two vary the backbone phase by seeded row bands or by both row and
+column bands. They retain protected photos, margins and cutouts, and pass the
+same final invariant and ownership checks as periodic masks. A worker checkpoint
+preserves the current best candidate and its RNG state if the package deadline
+expires while looking for a better candidate. Cancellation still discards it.
+
+`quality.ts` is the shared objective for local balancing and candidate ranking.
+It includes lengths/short-answer excess, isolated clues, the double-start target,
+clue density across available quadrants, the photo centroid, short diagonal
+repetition and bridges in the word-intersection graph. These are explicit soft
+preferences, not new geometric validity rules or a claim to measure every aspect
+of editorial quality. Feasibility penalties remain separate. Results record
+the individual penalties, `maskFamily` and `qualityVersion: 2`; old quality scores
+are not directly comparable with version 2.
+
+Length-supply constraints now participate in balancing feasibility as well as
+the final gate. This prevents spending the whole search optimizing a matched
+mask containing unavailable lengths (for example, length 10 in the control
+dictionary) only to discard it at the end. Scarce three-letter caps use the same
+shared deficit calculation in both places.
+
+Exact canonical fingerprints retain their previous encoding. Near duplicates
+are additionally rejected using minimum blocker-mask Jaccard distance over all
+supported reflections/transpositions, with a fixed threshold of 0.12. Shared
+letter cells and shared cutouts do not dilute the distance. Only persisted,
+accepted geometries form this diversity history, including after job recovery;
+failed word fills remain exact exclusions without excluding nearby alternatives.
+The threshold never silently relaxes when the requested package is difficult.
+
+Clue diagnostics and final assignment now share `clueMatching.ts`. It partitions
+independent resource conflicts, uses augmenting paths for singles and branches
+over coupled double choices, including leaving a double unmatched in partial
+diagnostics. A relaxed bipartite maximum supplies an admissible upper bound.
+Diagnostics allow 16 branching nodes; if that budget cannot establish the
+optimum they report `matchingExhaustive: false`, and search diagnostics count
+`matchingBudgetExhaustions`. Balancing allows 2,048 branching nodes for a full
+assignment at a trial state; the standalone assignment API retains its 100,000
+default. A truncated search never certifies impossibility or publishes a partial
+assignment. Final ownership verification still requires every resource exactly
+once. This bounds repeated expensive assignment attempts during local search.
+
+`node --import tsx scripts/template-quality-benchmark.ts` is a database-free,
+geometry-only benchmark of two-result packages: 15×11 without photos, 19×14 with
+a photo/corner cutout, and 23×31 with four photos. `--quick` selects the first
+fixture and `--large` the last. Each fixture has a 240-second budget. The script
+checks invariants, ownership, the quality ranking and pairwise distance, and
+prints timing, family, quality components and search diagnostics. It deliberately
+does not certify dictionary fillability or benchmark the native word solver.
+
+Unit tests compare maximum clue coverage with exhaustive enumeration on 400
+seeded small conflict graphs, including full-assignment feasibility. They also
+cover a misleading greedy double choice, explicit budget exhaustion, symmetry-
+aware near duplicates, reproducible mask families with protected regions, spatial
+concentration, diagonal repetition, crossing bridges and photo balance. Service
+tests distinguish rejected word fills from accepted diversity history.
+
+The final geometry-only control run completed all three two-result packages:
+
+| Grid / photos | Results | Elapsed | Distance between results |
+| --- | ---: | ---: | ---: |
+| 15×11 / none | 2/2 | 1.703 s | ≥ 0.12 |
+| 19×14 / one, corner cutout | 2/2 | 3.097 s | 0.803 |
+| 23×31 / four | 2/2 | 49.652 s | 0.776 |
+
+The large package's second shortlist improved from its first candidate's 0.5242
+to the selected candidate's 0.4515 under quality version 2. These are individual
+seeded checks, not a statistical speedup, a human quality evaluation or a proof
+of dictionary fillability. The selected unit/API/UI suite passed 55 tests;
+the generator/worker smoke checks and TypeScript/lint in both projects passed.
+
+## Mixed directions on the top and left boundaries
+
+The former top-row period of two and left-column period of three seeded almost
+exclusively downward starts on row 0 and rightward starts on column 0. Boundary
+seeding now mixes variable clue groups, short inward starts and 3–7-cell letter
+runs. The initial inward collars are protected only at run ends adjacent to a
+clue, leaving interior cells available for legal arrows and clue matching.
+
+`boundary.ts` measures actual scanned word directions. If an edge has an
+uninterrupted eight-cell segment with a three-cell-deep collar unobstructed by
+photos/cutouts, candidate acceptance requires a word running along that edge.
+The existing two-crossing invariant then also requires inward words crossing it.
+Smaller/obstructed fragments are exempt. This rule applies to generated results,
+not to validation of imported legacy templates. Missing parallel words contribute
+to balancing feasibility and add boundary locations to regional repair focus.
+An additional soft penalty discourages heavily skewed direction proportions.
+Quality version 3 records `edgeDirectionPenalty`, `edgeDirectionDeficit`,
+`topEdgeAlongWords` and `leftEdgeAlongWords`; version-2 scores above are historical.
+
+Boundary tests cover seeded variation, all-inward versus mixed directions,
+cutout/photo collar exemptions, and a fully generated template with valid
+topology and unique clue ownership. The geometry benchmark and all preset smoke
+fixtures also check the boundary rule; the 23×31 morphology fixture explicitly
+requires both directions on row 0 and column 0.
+
+The updated selected suite passed 59 tests; generator/worker smoke checks and
+TypeScript/lint passed in both projects. A separate 23×31, one-photo geometry
+preview (`double-test`, no dictionary validation) has three horizontal starts on
+row 0 alongside thirteen downward starts, and two downward starts on column 0
+alongside eight rightward starts. It passes topology and unique clue ownership.
+These are geometry checks, not a word-fill or performance claim. An exploratory
+150-second run of the screenshot seed with default dictionary counts did not
+produce a candidate; its actual dictionary filter was unavailable, so this is
+not a reproduction of the original job. The stricter boundary gate can require
+more structural search; the earlier version-2 package timings do not measure it.
+
+## Rust geometry engine
+
+The production worker now uses the separate N-API addon in
+`native/template-generator` by default. The Rust port includes mask construction,
+all cutout/photo placement rules, incremental runs, topology, clue diagnostics and
+full assignment, quality version 3, mixed boundaries, regional repair, adaptive
+search, canonical fingerprints and similarity filtering. It receives the shared
+format arrow table from TypeScript rather than maintaining another copy.
+
+The job API, request/dictionary handling, dictionary precheck, final word-witness
+gate and FSH format stay in their existing layers. `nativeGenerator.ts` performs
+an independent TypeScript validation of every returned result, including exact
+requested cutout cells, photo sizes, ownership, topology, supply, diversity,
+boundaries and every quality component. Generated metrics identify the engine.
+`CROSS_TEMPLATE_ENGINE=typescript` explicitly selects the reference engine;
+missing/incompatible Rust binaries fail with an actionable build instruction.
+
+Native calls execute inside the structure worker. A process-wide registry of
+reference-counted atomic stop flags lets the parent interrupt a call after native
+work has started, and native deadlines bound work independently of worker timers.
+Tokens are released on completion, timeout, cancellation and startup/post errors.
+No forced worker termination is relied upon to interrupt native code.
+
+The paired release-build benchmark uses 24 deterministic scenarios, alternating
+engine order, with identical attempt budgets. All RNG states and outcomes match;
+the 21 successful geometries have byte-identical FSH. Three scenarios exhaust
+their budgets in both engines. Accepted results include five regional repairs,
+every cutout, automatic photos and a 40×40 grid; manual-photo behavior is also
+independently exercised by the native smoke test.
+
+| Measurement | TypeScript | Rust |
+| --- | ---: | ---: |
+| Sum of 24 geometry-search calls | 53.300 s | 9.145 s |
+| Successful geometries | 21 | 21 |
+| Exhausted identical attempt budgets | 3 | 3 |
+
+The observed aggregate speedup is **5.83×** for these calls, including the native
+bridge and independent result validation. This does not measure complete job
+latency with dictionary prechecking and word filling. It is a local comparison;
+future platform/toolchain changes must rerun parity checks. The native worker also
+completed the three existing two-result geometry packages; the 23×31/four-photo
+package completed in 19.480 seconds, without a paired full-package TS timing.
+
+Validation: 59 selected TypeScript unit/API/UI tests, six Rust unit tests,
+Rust Clippy, TypeScript/lint in both projects, native smoke, both worker engines,
+all-cutout checks, native deadlines, and cancellation of an actively running native
+call. Docker packaging builds and checks the addon in the existing builder/runner
+stages. Build and test instructions are in `native/template-generator/README.md`.
+
+## Remaining latency after the Rust port: job 26 replay
+
+A read-only replay of the actual 23×31/four-result request (one automatic photo,
+seed `021b3338064faa5811b58ab8`, dictionary filter 1) reproduced the original
+83.875-second job in 81.701 seconds. Of that, geometry plus independent checks
+consumed 48.936 s, dictionary propagation 1.193 s, and word filling 31.388 s.
+A single failed fill used the full 30 s; four successful fills used 1.385 s.
+All nine old prechecks hit their five-million-operation cap without converging.
+There were 427675 geometry evaluations and just 307 memo-cache hits. Blindly
+increasing the cache was therefore not the priority.
+
+Changes:
+
+- Bitset dictionary domains with reusable letter indexes complete propagation
+  rather than repeatedly allocating/filtering word-string arrays. Incomplete
+  propagation remains an uncertain result, never a rejection proof.
+- Comparison can stop at a sufficiently balanced candidate after complete
+  propagation; otherwise the worker still compares three candidates. The default
+  score threshold is 0.45. A trial threshold of 0.50 reduced latency further but
+  slightly worsened average geometry quality on this request, so it was tightened.
+- Candidate ranking includes propagation uncertainty and narrow domains.
+- A 2.5-second fill probe defers hard candidates. A bounded queue retries them with
+  the remaining 30-second budget and a different seed if fresh candidates stall.
+  Deferred candidates must still satisfy diversity against subsequently accepted
+  results. The solver implementation is unchanged.
+- Rust caches rendered slot scans/current-state matching diagnostics, shares
+  immutable run coordinates, compacts small matching components and replaces
+  repeated visited-buffer allocations with visitation stamps. Optional stage
+  profiling found matching dominated the measured kernel search.
+- Worker diagnostics and accepted metrics expose stage timings. The dictionary
+  is sent/indexed once per job instead of cloned into the worker for every batch.
+
+The final replay completed four verified templates in **41.790 s**:
+
+| Stage | Before | After |
+| --- | ---: | ---: |
+| Geometry and independent validation | 48.936 s | 37.987 s |
+| Dictionary precheck | 1.193 s | 0.065 s |
+| Fill verification | 31.388 s | 3.485 s |
+| Total package | 81.701 s | 41.790 s |
+
+All four individual quality scores match the original job (mean 0.520772888).
+The benchmark independently verifies every solved word against the selected
+vocabulary, word uniqueness, geometry/ownership and accepted-result diversity.
+`pnpm test:template-pipeline --job-id 26` reproduces the read-only pipeline replay;
+`--compare-all --full-fill-budget` disables the scheduling optimizations. This is
+one complete request, not an across-the-board speed guarantee. Hard geometry
+search remains the largest cost and still benefits from further algorithm work.
+
+A second seed, loaded read-only from job 25, also completed four independently
+verified fills (38.634 s). Its mean geometry penalty was 0.530701418 versus
+0.489691428 in the saved original package. Early stopping changes the stochastic
+trajectory and accepted geometries, so equal or better quality on every seed is
+not guaranteed. All hard geometry/dictionary/uniqueness constraints still apply;
+use `compareAllCandidates: true` to retain exhaustive shortlist comparison when
+that tradeoff is undesirable. This second run is a correctness/quality observation,
+not a paired latency comparison with the original job.
+
+Validation after scheduling and native matching changes: 76 unit/API/UI tests,
+seven Rust unit tests, all 24 TS/Rust RNG/FSH parity cases (21 successes and three
+matched budget exhaustions), native active-cancellation/deadline smoke, both
+worker engines, TypeScript and lint in both projects, and Rust Clippy.
+
+Set `CROSS_TEMPLATE_COMPARE_ALL_CANDIDATES=1` for the job service to disable early
+shortlist stopping globally. An explicit worker `compareAllCandidates` argument
+overrides this setting.

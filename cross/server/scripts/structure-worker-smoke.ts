@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateStructuralCandidate, SeededRandom, verifyTemplateInvariants } from "../src/templateGenerator/generator";
+import { SeededRandom, verifyTemplateInvariants } from "../src/templateGenerator/generator";
 import { searchStructure } from "../src/templateGenerator/structureSearch";
 import { calculateLengthWeights, DEFAULT_DICTIONARY_COUNTS } from "../src/templateGenerator/weights";
 
@@ -13,9 +13,8 @@ finally { clearInterval(interval); }
 assert.ok(ticks > 0, "structure search must leave the API event loop responsive");
 assert.ok(result.candidate);
 assert.ok(verifyTemplateInvariants(result.candidate.grid).valid);
-const first = generateStructuralCandidate(request, new SeededRandom(request.seed), new Set(), 20, input.weights, { dictionaryCounts: input.dictionaryCounts });
-assert.ok(first);
-assert.ok(result.candidate.metrics.qualityScore! <= first.metrics.qualityScore!, "shortlist must not score worse than its first candidate");
+assert.ok(result.diagnostics?.shortlisted && result.diagnostics.shortlisted > 0);
+assert.ok(result.candidate.metrics.qualityScore! <= result.diagnostics.firstQualityScore, "ranking must not score worse than the first shortlisted candidate");
 const timedOut = await searchStructure({ ...input, maxMs: 1 }, new AbortController().signal);
 assert.equal(timedOut.candidate, null);
 const cancelled = new AbortController();

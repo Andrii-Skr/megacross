@@ -26,13 +26,15 @@ import {
   patchTemplateJob,
   type TemplateGenerationJobRow,
 } from "./repository";
-import type { TemplateGenerationRequest } from "./types";
+import type { GeneratedTemplate, TemplateGenerationRequest } from "./types";
 import { calculateLengthWeights, countDictionaryByLength } from "./weights";
+import { isDiverseGeometry } from "./diversity";
 import { searchStructure } from "./structureSearch";
 
 const TTL_MS = Number(process.env.CROSS_TEMPLATE_JOB_TTL_MS) || 30 * 24 * 60 * 60 * 1000;
 const PACKAGE_MAX_MS = Number(process.env.CROSS_TEMPLATE_PACKAGE_MAX_MS) || 2 * 60 * 60 * 1000;
 const SOLVER_MAX_MS = Number(process.env.CROSS_TEMPLATE_SOLVER_MAX_MS) || 30_000;
+const SOLVER_PROBE_MAX_MS = Math.max(1, Number(process.env.CROSS_TEMPLATE_SOLVER_PROBE_MAX_MS) || 2500);
 const SOLVER_MAX_NODES = Number(process.env.CROSS_TEMPLATE_SOLVER_MAX_NODES) || 2_000_000;
 const SOLVER_PARALLEL = Math.min(2, Math.max(1, Number(process.env.CROSS_TEMPLATE_SOLVER_PARALLEL) || 2));
 const listeners = new Map<string, Set<(job: TemplateGenerationJobRow) => void>>();
@@ -100,6 +102,7 @@ async function runJob(jobId: bigint): Promise<void> {
     await emit(jobId);
     const request = normalizeGenerationRequest(job.parameters);
     const dictionary = await loadGenerationDictionary(request);
+    const dictionaryEntries = [...dictionary];
     const counts = countDictionaryByLength(dictionary);
     const weights = calculateLengthWeights(counts);
     if (Object.values(counts).every((count) => count === 0)) throw new Error("selected dictionary has no words of length 2–11");
@@ -108,6 +111,7 @@ async function runJob(jobId: bigint): Promise<void> {
     let rng = new SeededRandom(job.seed, restoredState > 0 ? restoredState : undefined);
     const persistedResults = await getTemplateResultsByIds(prisma, jobId);
     const fingerprints = new Set(persistedResults.map((result) => result.fingerprint));
+    const diversityFingerprints = persistedResults.map((result) => result.fingerprint);
     let accepted = persistedResults.length;
     let nextOrdinal = persistedResults.reduce((maximum, result) => Math.max(maximum, result.ordinal), 0) + 1;
     await patchTemplateJob(prisma, jobId, { acceptedCount: accepted });
@@ -118,32 +122,49 @@ async function runJob(jobId: bigint): Promise<void> {
     let dictionaryRejected = 0;
     let solverChecks = 0;
     let stagnantBatches = 0;
-    while (accepted < request.resultCount && attempts < maxAttempts && Date.now() < deadline) {
+    const deferred: Array<{ candidate: GeneratedTemplate; seed: number; remainingMs: number }> = [];
+    while (accepted < request.resultCount && (attempts < maxAttempts || deferred.length > 0) && Date.now() < deadline) {
       const refreshed = await getTemplateJob(prisma, jobId);
       if (!refreshed || refreshed.status === "cancelled") return;
-      attempts += 1;
-      await patchTemplateJob(prisma, jobId, { phase: "structure", attempts });
-      await emit(jobId);
-      const structure = await searchStructure({ request, rngPosition: rng.position, fingerprints: [...fingerprints], weights, dictionaryCounts: counts, dictionary: [...dictionary], stagnantBatches, maxMs: deadline - Date.now() }, controller.signal);
-      rng = new SeededRandom(job.seed, structure.rngPosition);
-      dictionaryRejected += structure.diagnostics?.dictionaryRejected ?? 0;
-      const candidate = structure.candidate;
-      if (!candidate) {
-        structureRejected += 1;
-        stagnantBatches += 1;
-        if (attempts % 10 === 0) {
-          await patchTemplateJob(prisma, jobId, { attempts, rngPosition: BigInt(rng.position), progress: Math.min(95, Math.max(2, Math.floor((accepted / request.resultCount) * 100))), phase: "structure" });
-          await emit(jobId);
+      // Give fresh candidates a short fill probe. Revisit hard ones when easy searches stall.
+      const retry = deferred.length > 0 && (deferred.length >= 4 || stagnantBatches >= 3 || attempts >= maxAttempts)
+        ? deferred.shift() : undefined;
+      let candidate: GeneratedTemplate;
+      let solverSeed: number;
+      if (retry) {
+        if (!isDiverseGeometry(retry.candidate.fingerprint, diversityFingerprints)) continue;
+        candidate = retry.candidate;
+        solverSeed = retry.seed ^ 0x9e3779b9;
+      } else {
+        attempts += 1;
+        await patchTemplateJob(prisma, jobId, { phase: "structure", attempts });
+        await emit(jobId);
+        const structure = await searchStructure({ request, rngPosition: rng.position, fingerprints: [...fingerprints], diversityFingerprints: [...diversityFingerprints], weights, dictionaryCounts: counts, dictionary: dictionaryEntries, stagnantBatches, maxMs: deadline - Date.now() }, controller.signal);
+        rng = new SeededRandom(job.seed, structure.rngPosition);
+        dictionaryRejected += structure.diagnostics?.dictionaryRejected ?? 0;
+        if (!structure.candidate) {
+          structureRejected += 1;
+          stagnantBatches += 1;
+          if (attempts % 10 === 0) {
+            await patchTemplateJob(prisma, jobId, { attempts, rngPosition: BigInt(rng.position), progress: Math.min(95, Math.max(2, Math.floor((accepted / request.resultCount) * 100))), phase: "structure" });
+            await emit(jobId);
+          }
+          continue;
         }
-        continue;
+        candidate = structure.candidate;
+        candidate.metrics.geometrySearchMs = structure.diagnostics?.geometryMs;
+        candidate.metrics.dictionaryPrecheckMs = structure.diagnostics?.precheckMs;
+        solverSeed = rng.position;
       }
       await patchTemplateJob(prisma, jobId, { phase: "solver", attempts, rngPosition: BigInt(rng.position) });
       await emit(jobId);
       fingerprints.add(candidate.fingerprint);
       solverChecks += 1;
+      const fillBudget = Math.max(1, Math.min(retry?.remainingMs ?? Math.min(SOLVER_PROBE_MAX_MS, SOLVER_MAX_MS), deadline - Date.now()));
+      const fillStarted = performance.now();
       const solved = await solveCspNativeAsync(candidate.solverRows ?? buildSolverRows(candidate.grid), slotsForSolver(candidate.grid), dictionary, {
         shuffle: true,
-        seed: rng.position,
+        seed: solverSeed >>> 0,
         lcv: true,
         restarts: 2,
         parallelRestarts: SOLVER_PARALLEL,
@@ -151,12 +172,18 @@ async function runJob(jobId: bigint): Promise<void> {
         splitComponents: false,
         searchPortfolio: true,
         firstSolution: true,
-        maxMs: Math.max(1, Math.min(SOLVER_MAX_MS, deadline - Date.now())),
+        maxMs: fillBudget,
         maxNodes: SOLVER_MAX_NODES,
       });
+      candidate.metrics.fillVerificationMs = (candidate.metrics.fillVerificationMs ?? 0) + performance.now() - fillStarted;
+      candidate.metrics.fillVerificationAttempts = (candidate.metrics.fillVerificationAttempts ?? 0) + 1;
       const afterSolver = await getTemplateJob(prisma, jobId);
       if (!afterSolver || afterSolver.status === "cancelled") return;
-      if (!solved) { stagnantBatches += 1; continue; }
+      if (!solved) {
+        if (!retry && fillBudget < SOLVER_MAX_MS) deferred.push({ candidate, seed: solverSeed, remainingMs: Math.max(1, SOLVER_MAX_MS - fillBudget) });
+        stagnantBatches += 1;
+        continue;
+      }
       stagnantBatches = 0;
       candidate.metrics.dictionaryVerified = true;
       candidate.solved = solved;
@@ -167,6 +194,7 @@ async function runJob(jobId: bigint): Promise<void> {
         if (!current || current.status !== "running") return;
         throw new Error("template result conflicts with a previously persisted result");
       }
+      diversityFingerprints.push(candidate.fingerprint);
       accepted += 1;
       nextOrdinal += 1;
       fingerprints.add(candidate.fingerprint);
@@ -187,7 +215,7 @@ async function runJob(jobId: bigint): Promise<void> {
       acceptedCount: accepted,
       attempts,
       rngPosition: BigInt(rng.position),
-      error: status === "failed" ? `generation budget exhausted: ${structureRejected} structural batches rejected, ${dictionaryRejected} inconsistent dictionary candidates, ${solverChecks} full solver checks` : status === "partial" ? `generation budget exhausted; ${accepted} results preserved after ${solverChecks} full solver checks` : null,
+      error: status === "failed" ? `generation budget exhausted: ${structureRejected} structural batches rejected, ${dictionaryRejected} inconsistent dictionary candidates, ${solverChecks} fill checks` : status === "partial" ? `generation budget exhausted; ${accepted} results preserved after ${solverChecks} fill checks` : null,
     });
     await emit(jobId);
   } catch (error) {

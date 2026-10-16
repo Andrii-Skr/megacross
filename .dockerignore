@@ -12,3 +12,6 @@ crossnext/var
 cross/server/out
 *.log
 **/.DS_Store
+
+cross/server/native/template-generator/target
+cross/server/native/template-generator/*.node

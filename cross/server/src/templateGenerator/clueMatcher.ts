@@ -2,8 +2,8 @@ import { arrowCellForCode, DIRS, scanSlotsDetailed } from "@megacross/cross-form
 import type { Cell, Grid } from "../types";
 import type { PictureBounds } from "./types";
 import { arrowOptions } from "./arrowOptions";
+import { matchClueGroups, type ClueOption } from "./clueMatching";
 
-type ClueOption = { code: number; resources: string[] };
 type StartGroup = { row: number; col: number; directions: number[]; options: ClueOption[] };
 
 function clueResources(grid: Grid, pictures: readonly PictureBounds[]): { resources: Set<string>; photoByCell: Map<string, string> } {
@@ -56,50 +56,8 @@ export function assignUniqueClues(grid: Grid, pictures: readonly PictureBounds[]
   const { groups, resources } = startGroups(grid, pictures);
   const answerCount = groups.reduce((sum, group) => sum + group.directions.length, 0);
   if (answerCount !== resources.size || groups.some((group) => !group.options.length)) return null;
-  const singles = groups.filter((group) => group.directions.length === 1);
-  const doubles = groups.filter((group) => group.directions.length === 2).sort((a, b) => a.options.length - b.options.length);
-  const reserved = new Set<string>();
-  const selected = new Map<StartGroup, ClueOption>();
-  let choices = 0;
-
-  const matchSingles = (): boolean => {
-    const claimed = new Map<string, StartGroup>();
-    const selectedSingle = new Map<StartGroup, ClueOption>();
-    const ordered = [...singles].sort((a, b) => a.options.length - b.options.length);
-    const augment = (group: StartGroup, seen: Set<string>): boolean => {
-      for (const option of group.options) {
-        const resource = option.resources[0];
-        if (reserved.has(resource) || seen.has(resource)) continue;
-        seen.add(resource);
-        const previous = claimed.get(resource);
-        if (!previous || augment(previous, seen)) {
-          claimed.set(resource, group);
-          selectedSingle.set(group, option);
-          return true;
-        }
-      }
-      return false;
-    };
-    for (const group of ordered) if (!augment(group, new Set())) return false;
-    for (const [group, option] of selectedSingle) selected.set(group, option);
-    return true;
-  };
-
-  const chooseDoubles = (index: number): boolean => {
-    if (++choices > maxDoubleChoices) return false;
-    if (index === doubles.length) return matchSingles();
-    const group = doubles[index];
-    for (const option of group.options) {
-      if (option.resources.some((resource) => reserved.has(resource))) continue;
-      for (const resource of option.resources) reserved.add(resource);
-      selected.set(group, option);
-      if (chooseDoubles(index + 1)) return true;
-      selected.delete(group);
-      for (const resource of option.resources) reserved.delete(resource);
-    }
-    return false;
-  };
-  if (!chooseDoubles(0)) return null;
+  const { selected } = matchClueGroups(groups, maxDoubleChoices, true);
+  if (selected.size !== groups.length) return null;
 
   const codes = grid.codes.map((row) => [...row]);
   const data = grid.data.map((row) => [...row] as Cell[]);
@@ -129,39 +87,21 @@ export function verifyClueOwnership(grid: Grid, pictures: readonly PictureBounds
 export function clueAssignmentDiagnostics(grid: Grid, pictures: readonly PictureBounds[]) {
   const { groups, resources } = startGroups(grid, pictures);
   const possible = new Set(groups.flatMap((group) => group.options.flatMap((option) => option.resources)));
-  const reserved = new Set<string>();
-  let matchedDoubles = 0;
-  const matchedDoubleGroups = new Set<StartGroup>();
-  const doubles = groups.filter((group) => group.directions.length === 2).sort((a, b) => a.options.length - b.options.length);
-  for (const group of doubles) {
-    const option = group.options.find((item) => item.resources.every((resource) => !reserved.has(resource)));
-    if (!option) continue;
-    for (const resource of option.resources) reserved.add(resource);
-    matchedDoubles += 1;
-    matchedDoubleGroups.add(group);
-  }
-  const claimed = new Map<string, StartGroup>();
-  const augment = (group: StartGroup, seen: Set<string>): boolean => {
-    for (const option of group.options) for (const resource of option.resources) {
-      if (reserved.has(resource) || seen.has(resource)) continue;
-      seen.add(resource);
-      const previous = claimed.get(resource);
-      if (!previous || augment(previous, seen)) { claimed.set(resource, group); return true; }
-    }
-    return false;
-  };
-  for (const group of groups.filter((item) => item.directions.length === 1)) augment(group, new Set());
-  const singleStarts = groups.filter((item) => item.directions.length === 1).length;
-  const matchedSingles = new Set(claimed.values());
+  const { selected, exhaustive, choices } = matchClueGroups(groups, 16);
+  const claimed = new Set([...selected.values()].flatMap((option) => option.resources));
+  const singles = groups.filter((group) => group.directions.length === 1);
+  const doubles = groups.filter((group) => group.directions.length === 2);
   return {
+    matchingExhaustive: exhaustive,
+    matchingChoices: choices,
     answerCount: groups.reduce((sum, group) => sum + group.directions.length, 0),
     resourceCount: resources.size,
     doubleStarts: groups.filter((group) => group.directions.length === 2).length,
     noOptionStarts: groups.filter((group) => !group.options.length).map((group) => `${group.row},${group.col}`),
     noOptionResources: [...resources].filter((resource) => !possible.has(resource)),
-    unmatchedSingleStarts: singleStarts - claimed.size,
-    unmatchedDoubleStarts: doubles.length - matchedDoubles,
-    unmatchedStarts: groups.filter((group) => group.directions.length === 1 ? !matchedSingles.has(group) : !matchedDoubleGroups.has(group)).map((group) => `${group.row},${group.col}`),
-    unmatchedResources: [...resources].filter((resource) => !reserved.has(resource) && !claimed.has(resource)),
+    unmatchedSingleStarts: singles.filter((group) => !selected.has(group)).length,
+    unmatchedDoubleStarts: doubles.filter((group) => !selected.has(group)).length,
+    unmatchedStarts: groups.filter((group) => !selected.has(group)).map((group) => `${group.row},${group.col}`),
+    unmatchedResources: [...resources].filter((resource) => !claimed.has(resource)),
   };
 }

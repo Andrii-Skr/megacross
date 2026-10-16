@@ -4,6 +4,7 @@ import type { Grid } from "../src/types";
 import { assignArrows, buildCutout, buildMask, generateStructuralCandidate, recognizePictureBounds, SeededRandom, targetDoubleArrowCount, verifyTemplateInvariants } from "../src/templateGenerator/generator";
 import { calculateLengthWeights, DEFAULT_DICTIONARY_COUNTS } from "../src/templateGenerator/weights";
 import { buildCrw } from "../src/utils/writeCrw";
+import { boundaryDirectionMetrics } from "../src/templateGenerator/boundary";
 import { clueAssignmentDiagnostics, verifyClueOwnership } from "../src/templateGenerator/clueMatcher";
 
 const legacy: Grid = {
@@ -119,6 +120,7 @@ for (let index = 0; index < presets.length; index += 1) {
   assert.ok(candidate, `candidate generated for ${presets[index]}`);
   const report = verifyTemplateInvariants(candidate.grid);
   assert.equal(report.valid, true, report.errors.join(", "));
+  assert.equal(boundaryDirectionMetrics(candidate.grid, candidate.metrics.pictureBounds).edgeDirectionDeficit, 0);
   assert.equal(candidate.grid.marker[0], "S");
   assert.equal(candidate.metrics.pictureBounds.length, request.pictures.count);
   assert.deepEqual(recognizePictureBounds(candidate.grid), [...candidate.metrics.pictureBounds].sort((a, b) => a.row - b.row || a.col - b.col));
@@ -179,6 +181,9 @@ const edgeCells = [
 assert.ok(edgeCells.filter((cell) => cell === "#").length / edgeCells.length < 0.5, "the grid edge cannot remain a grey frame");
 assert.ok(morphologyGrid.data[0].includes("↓"), "top edge must contain inward words");
 assert.ok(morphologyGrid.data.some((row) => row[0] === "→"), "left edge must contain inward words");
+const edgeDirections = boundaryDirectionMetrics(morphologyGrid, []);
+assert.ok(edgeDirections.top.along > 0 && edgeDirections.top.inward > 0, "top edge must mix horizontal and vertical starts");
+assert.ok(edgeDirections.left.along > 0 && edgeDirections.left.inward > 0, "left edge must mix vertical and horizontal starts");
 console.log("morphology fixture: ok");
 
 const diversityRequest = {

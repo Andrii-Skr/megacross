@@ -48,3 +48,12 @@ export function countDictionaryByLength(dictionary: ReadonlyMap<number, readonly
     return [length, dictionary.get(length)?.length ?? 0];
   }));
 }
+
+/** The same supply constraints guide mask repair and gate candidate acceptance. */
+export function templateSupplyDeficit(distribution: Readonly<Record<string, number>>, slotCount: number, counts?: Readonly<Record<number, number>>, weights?: Readonly<Record<number, number>>): number {
+  if (!counts) return 0;
+  const scarceShort = weights && (counts[3] ?? 0) < Math.max(...Object.values(counts)) / 2;
+  const shortLimit = scarceShort ? Math.ceil(slotCount * Math.max(0.06, (weights[3] ?? 0) * 2 + 0.03)) + 1 : Infinity;
+  return Object.entries(distribution).reduce((sum, [length, count]) =>
+    sum + Math.max(0, count - Math.min(counts[Number(length)] ?? 0, Number(length) === 3 ? shortLimit : Infinity)), 0);
+}

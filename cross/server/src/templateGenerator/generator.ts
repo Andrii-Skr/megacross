@@ -9,6 +9,12 @@ import {
   scanSlotsDetailed,
 } from "@megacross/cross-format";
 import type { Cell, Grid, Slot } from "../types";
+import { geometryFingerprint, isDiverseGeometry } from "./diversity";
+import { evaluateTemplateQuality, targetDoubleArrowCount } from "./quality";
+import { templateSupplyDeficit } from "./weights";
+import { boundaryDirectionMetrics, boundaryPattern } from "./boundary";
+export { geometryFingerprint } from "./diversity";
+export { evaluateTemplateQuality, targetDoubleArrowCount } from "./quality";
 import { assignUniqueClues, clueAssignmentDiagnostics, verifyClueOwnership } from "./clueMatcher";
 import { firstArrowCode } from "./arrowOptions";
 import { MaskRunIndex, selectConnectedRuns, type ChangedCell, type MaskRun } from "./topology";
@@ -102,7 +108,7 @@ function rotatePoint(row: number, col: number, rows: number, cols: number, orien
   return [rows - 1 - row, col];
 }
 
-export function buildCutout(request: TemplateGenerationRequest, rng: SeededRandom): { cells: Set<string>; orientation: string } {
+export function buildCutout(request: TemplateGenerationRequest, rng: Pick<SeededRandom, "int">): { cells: Set<string>; orientation: string } {
   const { rows, cols, cutoutPresetId } = request;
   const base = cutoutBase(rows, cols);
   const orientationIndex = rng.int(4);
@@ -326,25 +332,6 @@ export function verifyTemplateInvariants(grid: Grid): TemplateInvariantReport {
   };
 }
 
-function transformRows(rows: readonly string[], flipRows: boolean, flipCols: boolean, transpose: boolean): string[] {
-  const matrix = rows.map((row) => [...row]);
-  let transformed = transpose
-    ? Array.from({ length: matrix[0]?.length ?? 0 }, (_, col) => Array.from({ length: matrix.length }, (_, row) => matrix[row][col]))
-    : matrix;
-  if (flipRows) transformed = [...transformed].reverse();
-  if (flipCols) transformed = transformed.map((row) => [...row].reverse());
-  return transformed.map((row) => row.map((cell) => cell === "%" ? "%" : cell === "#" ? "#" : "*").join(""));
-}
-
-export function geometryFingerprint(grid: Grid): string {
-  const options: string[] = [];
-  for (const transpose of [false, true]) {
-    if (transpose && grid.rows !== grid.cols) continue;
-    for (const flipRows of [false, true]) for (const flipCols of [false, true]) options.push(transformRows(grid.data, flipRows, flipCols, transpose).join("/"));
-  }
-  return options.sort()[0] ?? "";
-}
-
 export function recognizePictureBounds(grid: Pick<Grid, "rows" | "cols" | "data">): PictureBounds[] {
   const seen = new Set<string>();
   const result: PictureBounds[] = [];
@@ -431,7 +418,10 @@ function connectedBackbone(rng: SeededRandom, weights?: Readonly<Record<number, 
   return { period, slope: rng.pick(CONNECTED_BACKBONES[period]) };
 }
 
-export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom, lengthWeights?: Readonly<Record<number, number>>): { mask: Cell[][]; pictures: PictureBounds[]; orientation: string } | null {
+export const MASK_FAMILIES = ["periodic", "banded", "woven"] as const;
+export type MaskFamily = (typeof MASK_FAMILIES)[number];
+
+export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom, lengthWeights?: Readonly<Record<number, number>>, family: MaskFamily = "periodic"): { mask: Cell[][]; pictures: PictureBounds[]; orientation: string } | null {
   const cutout = buildCutout(request, rng);
   const pictures = placeRequestedPictures(request, cutout.cells, rng);
   if (!pictures) return null;
@@ -447,22 +437,24 @@ export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom,
   const period = densePhotos ? Math.max(7, Math.min(10, weightedLength(rng, lengthWeights) + 2)) : backbone.period;
   const slope = densePhotos ? rng.pick(period === 7 ? [2, 5] : period === 8 ? [3, 5] : period === 9 ? [2, 7] : [3, 7]) : backbone.slope;
   const phase = rng.int(period);
-  const topPeriod = 2;
-  const topPhase = rng.int(topPeriod);
-  const leftPhase = rng.int(3);
+  const topPattern = boundaryPattern(request.cols, rng, () => weightedLength(rng, lengthWeights));
+  const leftPattern = boundaryPattern(request.rows, rng, () => weightedLength(rng, lengthWeights));
+  // Coarse phase changes break global diagonal repetition. The woven family
+  // varies both axes; independent seeded bands do not share a global period.
+  const rowBands = Array.from({ length: Math.ceil(request.rows / 5) }, () => family === "periodic" ? 0 : rng.int(3) - 1);
+  const colBands = Array.from({ length: Math.ceil(request.cols / 5) }, () => family === "woven" ? rng.int(3) - 1 : 0);
   const mask = Array.from({ length: request.rows }, (_, row) => Array.from({ length: request.cols }, (_, col): Cell => {
     const key = `${row},${col}`;
     if (cutout.cells.has(key)) return "%";
     if (pictureCells.has(key)) return "#";
     if (pictureMargin.has(key)) return "*";
-    // Real FSH borders alternate inward word starts with clue cells.  A full
-    // grey top/left frame is neither necessary for arrows nor corpus-like.
-    if (row === 0) return col < 2 || (col + topPhase) % topPeriod === 0 ? "#" : "*";
-    if (col === 0) return row < 2 || (row + leftPhase) % 3 === 0 ? "#" : "*";
+    // Short inward starts alternate with words running along the boundary.
+    if (row === 0) return topPattern[col];
+    if (col === 0) return leftPattern[row];
     // Parallel 45-degree blockers split the word graph into disconnected
     // diagonal bands.  A coprime slope other than ±1 links neighbouring bands
     // while keeping horizontal and vertical runs in the dictionary's 4–9 range.
-    const structural = (row + slope * col + phase) % period === 0;
+    const structural = ((row + slope * col + phase + rowBands[Math.floor(row / 5)] + colBands[Math.floor(col / 5)]) % period + period) % period === 0;
     return structural ? "#" : "*";
   }));
 
@@ -475,12 +467,12 @@ export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom,
   };
   // Do not force words through a side that is intentionally cut away.
   if (!["top", "bottom", "top-bottom"].includes(cutout.orientation)) {
-    for (let col = 0; col < request.cols; col += 1) if (mask[0][col] === "*") {
+    for (let col = 0; col < request.cols; col += 1) if (mask[0][col] === "*" && (mask[0][col - 1] === "#" || mask[0][col + 1] === "#")) {
       for (let row = 1; row < Math.min(3, request.rows); row += 1) protect(row, col);
     }
   }
   if (!["left", "right", "left-right"].includes(cutout.orientation)) {
-    for (let row = 0; row < request.rows; row += 1) if (mask[row][0] === "*") {
+    for (let row = 0; row < request.rows; row += 1) if (mask[row][0] === "*" && (mask[row - 1]?.[0] === "#" || mask[row + 1]?.[0] === "#")) {
       for (let col = 1; col < Math.min(3, request.cols); col += 1) protect(row, col);
     }
   }
@@ -542,12 +534,7 @@ export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom,
   return { mask, pictures, orientation: cutout.orientation };
 }
 
-/** The common corpus sizes carry roughly 3–4 real double starts per 100 answers. */
-export function targetDoubleArrowCount(slotCount: number): number {
-  return Math.min(20, Math.max(0, Math.round(slotCount * 0.035)));
-}
-
-function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], rng: SeededRandom, profileStrength: number, lengthWeights?: Readonly<Record<number, number>>, diagnostics?: Record<string, number>, adaptiveSearch = false, regionalRepair = true): { grid: Grid; regionalRepairCount: number } | null {
+function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], rng: SeededRandom, profileStrength: number, lengthWeights?: Readonly<Record<number, number>>, diagnostics?: Record<string, number>, adaptiveSearch = false, regionalRepair = true, dictionaryCounts?: Readonly<Record<number, number>>): { grid: Grid; regionalRepairCount: number } | null {
   const mask = maskInput.map((row) => [...row]);
   if (!assignArrows(mask) && !repairStructuralMask(mask, pictures, rng)) { if (diagnostics) diagnostics.repairRejected = (diagnostics.repairRejected ?? 0) + 1; return null; }
   // A two-letter start is optional and rare, rather than forced into every grid.
@@ -566,23 +553,27 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
       if (row >= 0 && col >= 0 && row < grid.rows && col < grid.cols) photoMargin.add(`${row},${col}`);
     }
   }
-  type BalanceState = { gap: number; bad: number; score: number; targetDoubleStarts: number };
+  type BalanceState = { gap: number; bad: number; score: number; targetDoubleStarts: number; matchingPossible: boolean; supplyDeficit: number; edgeDirectionDeficit: number };
   const inspect = (candidate: Grid, report = verifyTemplateInvariants(candidate)): BalanceState | null => {
     if (!report.valid) return null;
-    const diagnostics = clueAssignmentDiagnostics(candidate, pictures);
-    const gap = diagnostics.answerCount - diagnostics.resourceCount;
-    const bad = diagnostics.noOptionResources.length + diagnostics.noOptionStarts.length;
-    const targetDoubleStarts = targetDoubleArrowCount(diagnostics.answerCount);
-    const matchingDeficit = diagnostics.unmatchedSingleStarts + diagnostics.unmatchedDoubleStarts;
-    const feasibilityScore = Math.abs(gap) + 5 * bad + 3 * matchingDeficit;
+    const ownership = clueAssignmentDiagnostics(candidate, pictures);
+    if (!ownership.matchingExhaustive && diagnostics) diagnostics.matchingBudgetExhaustions = (diagnostics.matchingBudgetExhaustions ?? 0) + 1;
+    const gap = ownership.answerCount - ownership.resourceCount;
+    const bad = ownership.noOptionResources.length + ownership.noOptionStarts.length;
+    const targetDoubleStarts = targetDoubleArrowCount(ownership.answerCount);
+    const matchingDeficit = ownership.unmatchedSingleStarts + ownership.unmatchedDoubleStarts;
+    const supplyDeficit = templateSupplyDeficit(report.lengthDistribution, report.slotCount, dictionaryCounts, lengthWeights);
+    const quality = evaluateTemplateQuality(candidate, pictures, report, lengthWeights);
+    const edgeDirectionDeficit = quality.edgeDirectionDeficit;
+    const feasibilityScore = 4 * edgeDirectionDeficit + Math.abs(gap) + 5 * bad + 3 * matchingDeficit + 5 * supplyDeficit;
     return {
-      gap, bad, targetDoubleStarts,
+      gap, bad, targetDoubleStarts, supplyDeficit, edgeDirectionDeficit, matchingPossible: !ownership.matchingExhaustive || matchingDeficit === 0,
       // A shared start may point right and down, but it must consume two separate clues.
       // Corpus templates commonly contain a few such starts; do not optimize them away.
       // Dictionary-style arrow density only becomes a strong preference as the
       // assignment approaches feasibility, so difficult cutouts can still converge.
-      score: feasibilityScore + (lengthWeights ? (8 * evaluateTemplateQuality(candidate, pictures, report, lengthWeights).lengthDeviation + 20 * Math.max(0, (report.lengthDistribution[3] ?? 0) / report.slotCount - (lengthWeights[3] ?? 0))) * (5 / (5 + feasibilityScore)) : 0) + profileStrength * Math.abs(diagnostics.doubleStarts - targetDoubleStarts)
-        * (25 / (25 + feasibilityScore)),
+      score: feasibilityScore + 8 * quality.qualityScore
+        * (5 / (5 + feasibilityScore)) * profileStrength / 3,
     };
   };
   const initialState = inspect(grid);
@@ -613,8 +604,8 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
   let regionalRepairCount = 0;
 
   for (let iteration = 0; iteration <= maxIterations; iteration += 1) {
-    if (state.gap === 0 && state.bad === 0) {
-      const matched = assignUniqueClues(grid, pictures);
+    if (state.gap === 0 && state.bad === 0 && state.supplyDeficit === 0 && state.edgeDirectionDeficit === 0 && state.matchingPossible) {
+      const matched = assignUniqueClues(grid, pictures, 2048);
       if (matched && !verifyClueOwnership(matched, pictures).length && samePictureBounds(recognizePictureBounds(matched), pictures)) {
         const doubleStarts = clueAssignmentDiagnostics(matched, pictures).doubleStarts;
         const minimumDoubleStarts = state.targetDoubleStarts === 0 ? 0 : Math.max(1, state.targetDoubleStarts - 1);
@@ -641,6 +632,11 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
     const focus = [...conflict.noOptionStarts, ...conflict.unmatchedStarts, ...conflict.noOptionResources, ...conflict.unmatchedResources]
       .filter((key) => !key.startsWith("photo:"))
       .map((key): [number, number] => { const [row, col] = key.replace(/^clue:/u, "").split(",").map(Number); return [row, col]; });
+    if (state.edgeDirectionDeficit) {
+      const edges = boundaryDirectionMetrics(grid, pictures);
+      if (edges.top.eligible && !edges.top.along) for (let col = 1; col < grid.cols - 1; col += 1) focus.push([0, col]);
+      if (edges.left.eligible && !edges.left.along) for (let row = 1; row < grid.rows - 1; row += 1) focus.push([row, 0]);
+    }
     const isNearConflict = ([row, col]: [number, number]) => focus.some(([r, c]) => Math.abs(row - r) <= 2 && Math.abs(col - c) <= 2);
     cells.sort((a, b) => Number(isNearConflict(b)) - Number(isNearConflict(a)));
     type Move = { changes: MaskChange[]; grid: Grid; state: BalanceState };
@@ -806,19 +802,21 @@ export function generateStructuralCandidate(
   knownFingerprints: ReadonlySet<string> = new Set(),
   attemptBudget = 5_000,
   lengthWeights?: Readonly<Record<number, number>>,
-  selection: { poolSize?: number; dictionaryCounts?: Readonly<Record<number, number>>; diagnostics?: Record<string, number>; adaptiveSearch?: boolean; regionalRepair?: boolean } = {},
+  selection: { poolSize?: number; dictionaryCounts?: Readonly<Record<number, number>>; diagnostics?: Record<string, number>; adaptiveSearch?: boolean; regionalRepair?: boolean; diversityFingerprints?: readonly string[]; maskFamily?: MaskFamily } = {},
 ): GeneratedTemplate | null {
   const request = normalizeGenerationRequest(requestInput);
   let best: GeneratedTemplate | null = null;
   let bestScore = Infinity;
   let collected = 0;
   for (let attempt = 0; attempt < attemptBudget; attempt += 1) {
-    const built = buildMask(request, rng, lengthWeights);
+    const maskFamily = selection.maskFamily ?? MASK_FAMILIES[attempt % MASK_FAMILIES.length];
+    if (selection.diagnostics) selection.diagnostics[`familyAttempts_${maskFamily}`] = (selection.diagnostics[`familyAttempts_${maskFamily}`] ?? 0) + 1;
+    const built = buildMask(request, rng, lengthWeights, maskFamily);
     if (!built) { if (selection.diagnostics) selection.diagnostics.maskRejected = (selection.diagnostics.maskRejected ?? 0) + 1; continue; }
     // Two opposing edge bites leave far fewer legal clue positions, especially
     // alongside a photo; the corpus-density preference must remain softer there.
     const profileStrength = request.cutoutPresetId === "opposite-edge-bites" ? 1 : 3;
-    const balanced = balanceClues(built.mask, built.pictures, rng, profileStrength, selection.dictionaryCounts ? lengthWeights : undefined, selection.diagnostics, selection.adaptiveSearch, selection.regionalRepair);
+    const balanced = balanceClues(built.mask, built.pictures, rng, profileStrength, selection.dictionaryCounts ? lengthWeights : undefined, selection.diagnostics, selection.adaptiveSearch, selection.regionalRepair, selection.dictionaryCounts);
     if (!balanced) continue;
     const { grid, regionalRepairCount } = balanced;
     if (verifyClueOwnership(grid, built.pictures).length) continue;
@@ -828,10 +826,16 @@ export function generateStructuralCandidate(
     if (!report.valid) continue;
     const fingerprint = geometryFingerprint(grid);
     if (knownFingerprints.has(fingerprint)) continue;
-    if (selection.dictionaryCounts && Object.entries(report.lengthDistribution).some(([length, count]) => count > (selection.dictionaryCounts?.[Number(length)] ?? 0))) continue;
-    if (selection.dictionaryCounts && lengthWeights && selection.dictionaryCounts[3] < Math.max(...Object.values(selection.dictionaryCounts)) / 2 &&
-      (report.lengthDistribution[3] ?? 0) > Math.ceil(report.slotCount * Math.max(0.06, (lengthWeights[3] ?? 0) * 2 + 0.03)) + 1) { if (selection.diagnostics) selection.diagnostics.shortWordsRejected = (selection.diagnostics.shortWordsRejected ?? 0) + 1; continue; }
+    if (!isDiverseGeometry(fingerprint, selection.diversityFingerprints ?? [...knownFingerprints])) {
+      if (selection.diagnostics) selection.diagnostics.similarityRejected = (selection.diagnostics.similarityRejected ?? 0) + 1;
+      continue;
+    }
+    if (templateSupplyDeficit(report.lengthDistribution, report.slotCount, selection.dictionaryCounts, lengthWeights)) {
+      if (selection.diagnostics) selection.diagnostics.supplyRejected = (selection.diagnostics.supplyRejected ?? 0) + 1;
+      continue;
+    }
     const quality = evaluateTemplateQuality(grid, built.pictures, report, lengthWeights);
+    if (quality.edgeDirectionDeficit) continue;
     const candidate: GeneratedTemplate = {
       grid,
       fsh: buildFsh(grid),
@@ -845,6 +849,7 @@ export function generateStructuralCandidate(
         cutoutOrientation: built.orientation,
         dictionaryVerified: false,
         regionalRepairCount,
+        maskFamily,
         ...quality,
       },
     };
@@ -853,26 +858,6 @@ export function generateStructuralCandidate(
     if (collected >= Math.max(1, selection.poolSize ?? 1)) break;
   }
   return best;
-}
-
-export function evaluateTemplateQuality(grid: Grid, pictures: readonly PictureBounds[], report: TemplateInvariantReport, weights?: Readonly<Record<number, number>>) {
-  const lengthDeviation = weights ? Array.from({ length: 10 }, (_, index) => {
-    const length = index + 2;
-    return Math.abs((report.lengthDistribution[length] ?? 0) / Math.max(1, report.slotCount) - (weights[length] ?? 0));
-  }).reduce((sum, value) => sum + value, 0) / 2 : 0;
-  const isClue = (row: number, col: number) => grid.data[row]?.[col] === "#" && !pictures.some((p) => row >= p.row && row < p.row + p.height && col >= p.col && col < p.col + p.width);
-  let clueCount = 0;
-  let isolatedCount = 0;
-  for (let row = 0; row < grid.rows; row += 1) for (let col = 0; col < grid.cols; col += 1) {
-    if (!isClue(row, col)) continue;
-    clueCount += 1;
-    if (![[row - 1, col], [row + 1, col], [row, col - 1], [row, col + 1]].some(([r, c]) => isClue(r, c))) isolatedCount += 1;
-  }
-  const isolatedClueShare = clueCount ? isolatedCount / clueCount : 0;
-  const doubleArrowCount = grid.codes.flat().filter((code) => CLUE_MAP[code]?.length === 2).length;
-  const doubleDeviation = Math.abs(doubleArrowCount - targetDoubleArrowCount(report.slotCount)) / Math.max(1, targetDoubleArrowCount(report.slotCount));
-  const shortWordExcess = weights ? Math.max(0, (report.lengthDistribution[3] ?? 0) / Math.max(1, report.slotCount) - (weights[3] ?? 0)) : 0;
-  return { lengthDeviation, isolatedClueShare, doubleArrowCount, qualityScore: lengthDeviation + 3 * shortWordExcess + 0.15 * isolatedClueShare + 0.1 * doubleDeviation };
 }
 
 export function buildSolverRows(grid: Grid): string[] {
