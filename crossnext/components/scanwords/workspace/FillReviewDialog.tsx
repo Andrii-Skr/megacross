@@ -62,6 +62,7 @@ import {
   buildSlotFixedLetters,
   buildSlotIntersectionMask,
   type EditableReviewSlotState as EditableSlot,
+  filterSlotImages,
   mapPersistedRowsByTemplate,
   mergeTemplateStateWithDraft,
   mergeTemplateStateWithTemplateSetup,
@@ -330,8 +331,12 @@ function isEffectivePhotoDefinition(template: FillReviewTemplate, slot: FillRevi
   return Math.max(1, clueGroup.areaCellCount ?? 1) > 1;
 }
 
-function pickDefaultImageId(images: WordImageOption[], preferredImageId?: string | null): string | null {
-  return resolveSelectedImageId(images, preferredImageId);
+function pickDefaultImageId(
+  images: WordImageOption[],
+  preferredImageId?: string | null,
+  bounds?: FillPhotoAreaBounds | null,
+): string | null {
+  return resolveSelectedImageId(images, preferredImageId, bounds);
 }
 
 function buildDefinitionClueGroups(template: FillReviewTemplate) {
@@ -465,6 +470,17 @@ export function FillReviewDialog({
   const [draftHydrated, setDraftHydrated] = useState(false);
   const [staleDraftCount, setStaleDraftCount] = useState(0);
   const [imageBusyRowKey, setImageBusyRowKey] = useState<string | null>(null);
+  const [imageGeneratingRowKey, setImageGeneratingRowKey] = useState<string | null>(null);
+  const imageGenerationPendingRef = useRef(false);
+  const imageGenerationEpochRef = useRef(0);
+  useEffect(() => {
+    // A completed request must not attach its result to a reopened review or another job.
+    void open;
+    void reviewJobId;
+    return () => {
+      imageGenerationEpochRef.current += 1;
+    };
+  }, [open, reviewJobId]);
   const [imageErrorByRowKey, setImageErrorByRowKey] = useState<Record<string, string | null>>({});
   const draftStorageKey = useMemo(() => (reviewJobId ? buildReviewDraftStorageKey(reviewJobId) : null), [reviewJobId]);
   const draftStorageDisabledRef = useRef(false);
@@ -572,7 +588,11 @@ export function FillReviewDialog({
                 const payload = (await response.json().catch(() => ({}))) as { images?: WordImageOption[] };
                 if (!response.ok || !Array.isArray(payload.images)) return;
                 row.availableImages = payload.images;
-                row.selectedImageId = pickDefaultImageId(payload.images, row.selectedImageId);
+                row.selectedImageId = pickDefaultImageId(
+                  payload.images,
+                  row.selectedImageId,
+                  serverSlot?.photoAreaBounds,
+                );
               } catch {
                 // Keep draft word/definition even if image metadata fails to hydrate.
               }
@@ -811,7 +831,11 @@ export function FillReviewDialog({
           push(`${template.name}: слот ${slot.slotId} — определение пустое`, rowRef, template.key);
         }
         if (isEffectivePhotoDefinition(template, slot)) {
-          const resolvedImageId = resolveSelectedImageId(current.availableImages, current.selectedImageId);
+          const resolvedImageId = resolveSelectedImageId(
+            current.availableImages,
+            current.selectedImageId,
+            slot.photoAreaBounds,
+          );
           if (!current.wordId) {
             push(
               `${template.name}: слот ${slot.slotId} — для фото-кластера нужно существующее слово словаря`,
@@ -1230,13 +1254,16 @@ export function FillReviewDialog({
 
   const replaceRowImages = useCallback(
     (templateKey: string, slotId: number, images: WordImageOption[], preferredImageId?: string | null) => {
+      const bounds = templates
+        .find((template) => template.key === templateKey)
+        ?.slots.find((slot) => slot.slotId === slotId)?.photoAreaBounds;
       updateSlot(templateKey, slotId, (slot) => ({
         ...slot,
         availableImages: images,
-        selectedImageId: pickDefaultImageId(images, preferredImageId ?? slot.selectedImageId),
+        selectedImageId: pickDefaultImageId(images, preferredImageId ?? slot.selectedImageId, bounds),
       }));
     },
-    [updateSlot],
+    [templates, updateSlot],
   );
 
   const handleUploadRowImage = useCallback(
@@ -1275,6 +1302,64 @@ export function FillReviewDialog({
       }
     },
     [refreshWordImages, replaceRowImages, setRowImageError, t],
+  );
+
+  const handleGenerateRowImage = useCallback(
+    async (template: FillReviewTemplate, slot: FillReviewSlot, row: EditableSlot) => {
+      const target = buildPhotoAreaSize(slot.photoAreaBounds);
+      if (!row.wordId || !row.definition.trim() || !target || imageGenerationPendingRef.current || imageBusyRowKey)
+        return;
+      imageGenerationPendingRef.current = true;
+      const epoch = imageGenerationEpochRef.current;
+      const rowKey = keyForRow(template.key, slot.slotId);
+      setImageBusyRowKey(rowKey);
+      setImageGeneratingRowKey(rowKey);
+      setRowImageError(rowKey, null);
+      try {
+        const response = await fetch(`/api/dictionary/word/${encodeURIComponent(row.wordId)}/images/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ definition: row.definition, targetWidth: target.width, targetHeight: target.height }),
+        });
+        const payload = (await response.json().catch(() => ({}))) as { image?: WordImageOption; errorCode?: string };
+        if (epoch !== imageGenerationEpochRef.current) return;
+        if (!response.ok || !payload.image) {
+          const message =
+            response.status === 403
+              ? t("forbidden")
+              : payload.errorCode === "AI_NOT_CONFIGURED"
+                ? t("scanwordsReviewImageAiNotConfigured")
+                : payload.errorCode === "AI_RATE_LIMITED"
+                  ? t("scanwordsReviewImageRateLimited")
+                  : payload.errorCode === "AI_IMAGE_TIMEOUT"
+                    ? t("scanwordsReviewImageTimeout")
+                    : payload.errorCode === "AI_IMAGE_REJECTED"
+                      ? t("scanwordsReviewImageRejected")
+                      : t("scanwordsReviewImageGenerateError");
+          throw new Error(message);
+        }
+        const image = payload.image;
+        updateSlot(template.key, slot.slotId, (current) => {
+          // Word/meaning can change while the image is being generated.
+          if (current.wordId !== row.wordId || current.definition !== row.definition) return current;
+          return {
+            ...current,
+            availableImages: [image, ...current.availableImages.filter((item) => item.id !== image.id)],
+            selectedImageId: image.id,
+          };
+        });
+      } catch (error) {
+        if (epoch !== imageGenerationEpochRef.current) return;
+        const message = error instanceof Error ? error.message : t("scanwordsReviewImageGenerateError");
+        setRowImageError(rowKey, message);
+        toast.error(message);
+      } finally {
+        imageGenerationPendingRef.current = false;
+        setImageBusyRowKey(null);
+        setImageGeneratingRowKey(null);
+      }
+    },
+    [imageBusyRowKey, setRowImageError, t, updateSlot],
   );
 
   const handleDeleteRowImage = useCallback(
@@ -1544,7 +1629,7 @@ export function FillReviewDialog({
     handleFinalizeConfirmationOpenChange(false);
     await runFinalize();
   }, [finalizeConfirmationMatched, handleFinalizeConfirmationOpenChange, runFinalize]);
-  const finalizeDisabled = reviewLoading || !reviewData || finalizing || submitting;
+  const finalizeDisabled = reviewLoading || !reviewData || finalizing || submitting || imageBusyRowKey != null;
   const finalizeLabel = finalizing || submitting ? t("loading") : t("scanwordsReviewFinalize");
 
   const renderFinalizeButton = useCallback(
@@ -1634,11 +1719,12 @@ export function FillReviewDialog({
     const intersectionIndexes = new Set(slot.intersections.map((item) => item.index));
     const fixedLetters = buildFixedLetters(template, slot);
     const templateLang = toSupportedLanguage(template.language);
-    const resolvedSelectedImageId = resolveSelectedImageId(row.availableImages, row.selectedImageId);
-    const selectedImage = row.availableImages.find((image) => image.id === resolvedSelectedImageId) ?? null;
+    const compatibleImages = filterSlotImages(row.availableImages, slot.photoAreaBounds);
+    const resolvedSelectedImageId = resolveSelectedImageId(compatibleImages, row.selectedImageId);
+    const selectedImage = compatibleImages.find((image) => image.id === resolvedSelectedImageId) ?? null;
     const photoAreaSize = buildPhotoAreaSize(slot.photoAreaBounds);
     const imageError = imageErrorByRowKey[rowKey] ?? null;
-    const imageBusy = imageBusyRowKey === rowKey;
+    const imageBusy = imageBusyRowKey != null;
     const fileInputId = `${rowKey}-image-upload`;
     const compactBookmarkControl = compact ? (
       <Tooltip>
@@ -1747,7 +1833,7 @@ export function FillReviewDialog({
                       opredId: selectedDefinition?.opredId ?? null,
                       definitionOptions: nextDefinitions,
                       availableImages: selectedOption.availableImages,
-                      selectedImageId: pickDefaultImageId(selectedOption.availableImages),
+                      selectedImageId: pickDefaultImageId(selectedOption.availableImages, null, slot.photoAreaBounds),
                     };
                   });
                 }}
@@ -2084,7 +2170,20 @@ export function FillReviewDialog({
                         })
                       : t("scanwordsReviewImageAreaUnknown")}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        !row.wordId || !row.definition.trim() || !photoAreaSize || imageBusy || finalizing || submitting
+                      }
+                      onClick={() => void handleGenerateRowImage(template, slot, row)}
+                    >
+                      {imageGeneratingRowKey === rowKey
+                        ? t("scanwordsReviewImageGenerating")
+                        : t("scanwordsReviewImageGenerate")}
+                    </Button>
                     <input
                       id={fileInputId}
                       type="file"
@@ -2135,11 +2234,11 @@ export function FillReviewDialog({
                     </div>
                   </div>
                 )}
-                {row.availableImages.length > 0 && (
+                {compatibleImages.length > 0 && (
                   <div className="mt-3 grid gap-2">
                     <div className="text-xs font-medium">{t("scanwordsReviewImageChoose")}</div>
                     <div className="grid gap-2 sm:grid-cols-2">
-                      {row.availableImages.map((image) => {
+                      {compatibleImages.map((image) => {
                         const active = resolvedSelectedImageId === image.id;
                         return (
                           <div

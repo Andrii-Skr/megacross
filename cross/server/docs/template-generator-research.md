@@ -406,3 +406,151 @@ worker engines, TypeScript and lint in both projects, and Rust Clippy.
 Set `CROSS_TEMPLATE_COMPARE_ALL_CANDIDATES=1` for the job service to disable early
 shortlist stopping globally. An explicit worker `compareAllCandidates` argument
 overrides this setting.
+
+## Mandatory geometric words (2026-10-29)
+
+Every maximal horizontal/vertical letter run of length at least two is now a
+mandatory word. This includes runs bounded by the field edge, photos and cutouts;
+single-cell runs still need coverage in the other direction. The structural
+scanners retain overlong and two-letter runs instead of hiding them. Assignment
+rejects excess two-letter words, overlong words, weak words and disconnected
+components without selecting a subset. Structural repair scores excess short and
+overlong runs and includes their surrounding mutable cells in the repair focus.
+Photo/cutout protection and all existing word/clue/dictionary constraints remain.
+
+Final Rust verification compares the materialized arrow slots against all
+geometric runs. Independent TypeScript validation compares direction, start and
+all cells, with a diagnostic containing the run coordinates and length. Existing
+clue ownership checks still require one definition per word. This is confined to
+template generation: imports, stored templates and file formats are unchanged.
+
+`pnpm test:template-runs` exercises shared TS/Rust fixtures (including the missing
+two-cell word), incremental rollback/commit and structural repairs. Run
+`cargo test --locked --manifest-path native/template-generator/Cargo.toml` for the
+Rust side, and `node --import tsx scripts/template-run-smoke.ts --fill` to read the
+configured Russian dictionary and check two complete unique fills, one with a
+5×4 photo and corner cutout. This integration check does not persist results.
+
+The additional constraint changes the search trajectory and can reduce yield
+under a fixed budget, particularly with photos and a dictionary missing entire
+word lengths. The photo geometry smoke therefore tests geometry independently
+of the synthetic sparse dictionary; the integration check retains real dictionary
+constraints. On two 15×11 seeds (`profile-15-11`, `parity-3`, 40 attempts, no
+photos/cutouts or dictionary constraints), both versions returned 2/2 candidates;
+the original native calls took 18/8 ms and the updated independently validated
+calls took 23/37 ms. These small, single-run measurements are illustrative, not a
+latency guarantee. The real-dictionary integration accepted two filled templates
+in about 10.6 seconds across ten seeded search calls, including the photo case.
+
+The broad TypeScript smoke is computationally expensive after this change. The
+first run passed the corpus-sized fixtures and the first six cutout cases; its
+large enclosed-window search was stopped. The enclosed-window smoke now uses a
+15×11 representative mask (large masks remain in the following fixtures). A
+separate 23×31 photo stress case did not finish within a 90-second cap, and the
+remaining broad TS run was stopped rather than counted as passing. The bounded
+native smoke passed all seven cutouts, RNG parity, manual photo geometry and
+cancellation; 13 shared geometry fixtures, eight Rust tests, real-dictionary fills,
+TypeScript, lint and Clippy passed. No complete large-TS stress result is claimed.
+
+## Search allocation and matching reuse (2026-10-29)
+
+Profiling the strict-run generator found clue matching taking roughly 60–75% of
+the large-case native search time. The following changes preserve the search
+trajectory, rather than relaxing constraints or changing candidate preferences:
+
+- TypeScript matching uses component-local resource ranks and reusable typed
+  arrays for augmenting paths, reservations and selected options. Recursive
+  matching no longer allocates Maps/Sets for each single-word completion.
+- Both engines cache small conflict components (at most eight starts). Keys
+  include resource incidence, option order, remaining shared branch budget and
+  full/partial mode; values are option indices, never objects from an old grid.
+  Caches live within one structural search, are FIFO-bounded to 2048 entries and
+  also cap key storage. A truncated match cannot masquerade as an exact result.
+- Rust reuses matching work arrays, maintains reservation counts incrementally,
+  and compiles arrow lookup tables by code/direction once per request. The input
+  JSON arrow array, code ordering and duplicate-code first-match behavior remain
+  unchanged. Final clue ownership and geometric verification remain independent.
+
+`pnpm test:template-search-profile` reports six fixed-seed geometry scenarios.
+Use `--typescript --attempts=1` for the TS reference, or the default six attempts
+for native profiling. `CROSS_TEMPLATE_TS_MODULE` and `CROSS_TEMPLATE_NATIVE_PATH`
+can point to saved baseline versions. Output includes RNG position, geometry,
+FSH SHA-256, quality and stage diagnostics. These are bounded geometry trials,
+not a promise that every difficult grid can be completed in the attempt budget.
+
+Three paired runs, alternating before/after order and using separate processes,
+produced these median totals across the same six cases:
+
+| Engine | Before | After | Speedup |
+| --- | ---: | ---: | ---: |
+| TypeScript (one attempt per case) | 19.457 s | 10.269 s | 1.895× |
+| Rust (six attempts per case) | 10.802 s | 10.128 s | 1.067× |
+
+The three large TS cases improved by 1.732×, 1.973× and 2.063×; small cases were
+approximately unchanged (one was about 4% slower). Every pair retained identical
+RNG positions, candidate presence, FSH hashes, geometry and quality. Yield stayed
+2/6 for these deliberately tight budgets; this is a throughput improvement, not
+an improved success rate per attempt. The exact search can do more work before a
+wall-clock deadline, while intrinsically difficult layouts still require retries.
+
+Validation: 10 Rust tests, 10 TS quality/search tests, 16,000 direct comparisons
+against the previous TS matcher, 13 shared mandatory-run fixtures, deterministic
+native/TS smoke including all cutouts and active cancellation, TypeScript/lint
+in both projects and Clippy. Two generated grids, including a 5×4 photo with a
+corner cutout, also passed complete unique filling against the configured Russian
+dictionary without writing jobs/results to the database.
+
+## 23×31 convergence budget (2026-10-29)
+
+The previous balancing limit was `ceil(area / 12)`, or 60 committed moves on a
+23×31 board. Under the mandatory-run rule, large masks repeatedly exhausted that
+budget before clue ownership and dictionary length supply could converge. The
+final change uses `ceil(area / 4)` for boards of at least 600 cells: 179 moves at
+23×31. Smaller boards retain the previous limit; the global 180-move ceiling,
+cooperative deadlines/cancellation and all geometry/dictionary rules are retained.
+Both TypeScript and Rust use the same budget. Large-board RNG trajectories can
+therefore differ from the earlier version; this intentionally changes search
+scheduling, unlike the matching-only optimization above.
+
+Diagnostics now include `balanceIterations` (state checks, including the final
+check) and `balanceIterationLimitStops` (masks discarded at the iteration cap).
+`pnpm test:template-large --max-ms=15000` replays three captured requests, with
+zero/one photos and the actual dictionary's length counts, without accessing the
+DB. Every result is independently checked for mandatory runs, clue ownership,
+photo count and dictionary supply. This geometry smoke does not claim full fills.
+
+On the same seeds, counts, 40-attempt cap and 15-second deadline, the prior native
+module returned 0/3 grids. The final version returned 3/3 in 8.981, 6.215 and
+8.132 seconds. The selected dictionary contains 1323 ten-letter words; the replay
+uses that captured count rather than the older synthetic zero-count benchmark.
+
+A read-only full worker replay of the latest no-photo request also completed:
+176 unique dictionary words in 35.094 seconds (two fill probes, 0.424227 geometry
+penalty). The previous module produced no grid or filled result within a
+60-second replay of the same job. These are fixed-seed observations, not a
+universal latency guarantee or a four-template package measurement.
+
+The replay script accepts `--result-count` to cap the original package size and
+`--max-ms` to bound a run. For example, from `cross/server`:
+
+```
+node --import tsx scripts/template-pipeline-benchmark.ts --job-id 36 --result-count 1 --max-ms 90000
+```
+
+This reads the job/filter/dictionary but never resumes the job or persists a
+result. Failed runs print totals before asserting the requested count.
+
+Photo grids remain harder to fill: the unchanged placement/selection strategy
+found valid geometry, but the tested photo worker replay did not complete a fill
+within 90 seconds. Longer fill probes did not resolve the tested candidate.
+Experiments with corner placement and earlier adaptive diversification were
+inconsistent (including slower initial geometry) and were reverted. The final
+change retains existing photo placement, quality ranking and fill-probe budgets;
+no filled photo result from those experiments is claimed for the shipped code.
+
+Validation of the final code: all three large geometry fixtures; 10 Rust tests;
+13 shared mandatory-run fixtures; 20 quality/selection unit tests; native
+reproducibility, small TS/Rust parity and active cancellation; a 23×31 one-mask
+TS/Rust trajectory comparison; server TypeScript/lint and Clippy. The full
+no-photo worker replay above independently verified every filled word, uniqueness,
+clue ownership and all geometric invariants.

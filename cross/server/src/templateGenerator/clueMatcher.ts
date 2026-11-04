@@ -2,7 +2,7 @@ import { arrowCellForCode, DIRS, scanSlotsDetailed } from "@megacross/cross-form
 import type { Cell, Grid } from "../types";
 import type { PictureBounds } from "./types";
 import { arrowOptions } from "./arrowOptions";
-import { matchClueGroups, type ClueOption } from "./clueMatching";
+import { matchClueGroups, type ClueMatchingCache, type ClueOption } from "./clueMatching";
 
 type StartGroup = { row: number; col: number; directions: number[]; options: ClueOption[] };
 
@@ -84,10 +84,10 @@ export function verifyClueOwnership(grid: Grid, pictures: readonly PictureBounds
   return errors;
 }
 
-export function clueAssignmentDiagnostics(grid: Grid, pictures: readonly PictureBounds[]) {
+export function clueAssignmentDiagnostics(grid: Grid, pictures: readonly PictureBounds[], cache?: ClueMatchingCache) {
   const { groups, resources } = startGroups(grid, pictures);
   const possible = new Set(groups.flatMap((group) => group.options.flatMap((option) => option.resources)));
-  const { selected, exhaustive, choices } = matchClueGroups(groups, 16);
+  const { selected, exhaustive, choices } = matchClueGroups(groups, 16, false, cache);
   const claimed = new Set([...selected.values()].flatMap((option) => option.resources));
   const singles = groups.filter((group) => group.directions.length === 1);
   const doubles = groups.filter((group) => group.directions.length === 2);

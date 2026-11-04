@@ -5,6 +5,12 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./storage-paths": "./src/storagePaths.ts",
+    "./postgres-url": {
+      "types": "./src/postgresUrl.d.mts",
+      "default": "./src/postgresUrl.mjs"
+    },
+    "./dictionary-search": "./src/dictionarySearch.ts"
   }
 }

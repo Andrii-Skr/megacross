@@ -77,6 +77,7 @@ export function localizeFillError(error: string | null | undefined, t: Translate
     "dictionary is empty for selected template": "scanwordsFillErrorDictionaryEmpty",
     "failed to create or load fill job": "scanwordsFillErrorJobUnavailable",
     "template is not available for regeneration": "scanwordsFillErrorTemplateUnavailable",
+    "review changed during regeneration; reload and try again": "scanwordsFillErrorReviewChanged",
   }[normalized];
   if (exactKey) return t(exactKey);
 
@@ -444,6 +445,17 @@ export function useScanwordFill({
   const prevFilesSignatureRef = useRef<string | undefined>(undefined);
   const loadedReviewJobIdRef = useRef<string | null>(null);
   const definitionDifficultyCacheRef = useRef<Map<string, number>>(new Map());
+  const fillRequestContext = useMemo(
+    () => ({ selectedEditionId, selectedIssueId, selectedTemplateId, filesSignature }),
+    [selectedEditionId, selectedIssueId, selectedTemplateId, filesSignature],
+  );
+  const requestContextRef = useRef<typeof fillRequestContext | null>(fillRequestContext);
+  useEffect(() => {
+    requestContextRef.current = fillRequestContext;
+    return () => {
+      requestContextRef.current = null;
+    };
+  }, [fillRequestContext]);
 
   const normalizeFillJob = useCallback((raw: unknown): FillJobState | null => {
     if (!raw || typeof raw !== "object") return null;
@@ -720,9 +732,8 @@ export function useScanwordFill({
         // ignore malformed event payloads
       }
     };
-    es.onerror = () => {
-      es.close();
-    };
+    // EventSource reconnects after transient network failures. Close it only
+    // when this job finishes or the selected job changes.
     return () => {
       es.close();
     };
@@ -998,8 +1009,15 @@ export function useScanwordFill({
           }));
         }
         toast.success(t("scanwordsSvgFontUploadSuccess"));
-      } catch {
-        toast.error(t("scanwordsSvgFontUploadError"));
+      } catch (error) {
+        const code = (error as { payload?: { errorCode?: string } })?.payload?.errorCode;
+        toast.error(
+          t(
+            code === "UPLOAD_UNSUPPORTED_FORMAT" || code === "UPLOAD_INVALID_FONT"
+              ? "scanwordsSvgFontFormatUnsupported"
+              : "scanwordsSvgFontUploadError",
+          ),
+        );
       } finally {
         setFontUploading(false);
       }
@@ -1080,6 +1098,7 @@ export function useScanwordFill({
 
   const handleFillStart = useCallback(async () => {
     if (!selectedIssueId) return;
+    const requestContext = requestContextRef.current;
     setFillStarting(true);
     setFillError(null);
     try {
@@ -1092,12 +1111,14 @@ export function useScanwordFill({
         },
         FILL_START_TIMEOUT_MS,
       );
+      if (requestContextRef.current !== requestContext) return;
       if (!response.ok) {
         throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, payload: data });
       }
       const job = normalizeFillJob(data);
       if (job) setFillJob(job);
     } catch (err) {
+      if (requestContextRef.current !== requestContext) return;
       const { status } = getActionErrorMeta(err);
       const apiMessage = extractApiErrorMessage(err);
       const message =
@@ -1105,7 +1126,7 @@ export function useScanwordFill({
       setFillError(message);
       toast.error(message);
     } finally {
-      setFillStarting(false);
+      if (requestContextRef.current === requestContext) setFillStarting(false);
     }
   }, [crossApiBase, fillOverrides, normalizeFillJob, selectedIssueId, t, templateSetup]);
 
@@ -1137,6 +1158,7 @@ export function useScanwordFill({
   const finalizeReview = useCallback(
     async (payload: FillFinalizePayload) => {
       if (!fillJob?.id) return;
+      const requestContext = requestContextRef.current;
       setReviewFinalizing(true);
       setReviewError(null);
       try {
@@ -1169,6 +1191,7 @@ export function useScanwordFill({
           }),
         });
         const data = await res.json();
+        if (requestContextRef.current !== requestContext) return;
         if (!res.ok) {
           throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status, payload: data });
         }
@@ -1180,6 +1203,7 @@ export function useScanwordFill({
           }
         }
       } catch (err) {
+        if (requestContextRef.current !== requestContext) return;
         const { status } = getActionErrorMeta(err);
         const apiMessage = extractApiErrorMessage(err);
         const message =
@@ -1188,7 +1212,7 @@ export function useScanwordFill({
         toast.error(message);
         throw err;
       } finally {
-        setReviewFinalizing(false);
+        if (requestContextRef.current === requestContext) setReviewFinalizing(false);
       }
     },
     [
@@ -1222,6 +1246,7 @@ export function useScanwordFill({
   const regenerateTemplate = useCallback(
     async (templateKey: string) => {
       if (!fillJob?.id || !templateKey) return;
+      const requestContext = requestContextRef.current;
       setRegeneratingTemplateKey(templateKey);
       setReviewError(null);
       try {
@@ -1235,6 +1260,7 @@ export function useScanwordFill({
           }),
         });
         const data = await res.json();
+        if (requestContextRef.current !== requestContext) return;
         if (!res.ok) {
           throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status, payload: data });
         }
@@ -1245,6 +1271,7 @@ export function useScanwordFill({
         loadedReviewJobIdRef.current = null;
         setReviewData(null);
       } catch (err) {
+        if (requestContextRef.current !== requestContext) return;
         const { status } = getActionErrorMeta(err);
         const apiMessage = extractApiErrorMessage(err);
         const message =
@@ -1253,7 +1280,7 @@ export function useScanwordFill({
         toast.error(message);
         throw err;
       } finally {
-        setRegeneratingTemplateKey(null);
+        if (requestContextRef.current === requestContext) setRegeneratingTemplateKey(null);
       }
     },
     [fillJob?.id, normalizeFillJob, t, templateSetup],

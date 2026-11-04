@@ -12,8 +12,8 @@ fn add(mask: &Mask, fixed: &[bool], marked: &mut [bool], focus: &mut Vec<usize>,
         }
     }
 }
-fn inspect(mask: &Mask, fixed: &[bool], arrows: &[Arrow]) -> (f64, Vec<usize>) {
-    let runs = topology::scan(mask, 3);
+fn inspect(mask: &Mask, fixed: &[bool], arrows: &ArrowTable) -> (f64, Vec<usize>) {
+    let runs = topology::scan(mask);
     let (h, v, cross) = topology::memberships(mask, &runs);
     let mut seen = vec![false; runs.len()];
     let mut components: usize = 0;
@@ -63,6 +63,19 @@ fn inspect(mask: &Mask, fixed: &[bool], arrows: &[Arrow]) -> (f64, Vec<usize>) {
             }
         }
     }
+    let excess_short = runs
+        .iter()
+        .filter(|r| r.cells.len() == 2)
+        .count()
+        .saturating_sub(1);
+    let invalid_lengths = runs.iter().filter(|r| r.cells.len() > 11).count();
+    for r in &runs {
+        if r.cells.len() > 11 || (excess_short > 0 && r.cells.len() == 2) {
+            for &i in r.cells.iter() {
+                add(mask, fixed, &mut marked, &mut focus, i);
+            }
+        }
+    }
     let mut weak = 0;
     for (id, r) in runs.iter().enumerate() {
         if cross[id] < 2 {
@@ -88,7 +101,11 @@ fn inspect(mask: &Mask, fixed: &[bool], arrows: &[Arrow]) -> (f64, Vec<usize>) {
         }
     }
     (
-        (20 * uncovered + 4 * weak + 8 * missing + 6 * components.saturating_sub(1)) as f64,
+        (12 * (excess_short + invalid_lengths)
+            + 20 * uncovered
+            + 4 * weak
+            + 8 * missing
+            + 6 * components.saturating_sub(1)) as f64,
         focus,
     )
 }
@@ -96,7 +113,7 @@ pub fn repair(
     mask: &mut Mask,
     pictures: &[Picture],
     rng: &mut Rng,
-    arrows: &[Arrow],
+    arrows: &ArrowTable,
     control: &Control,
 ) -> bool {
     let fixed = geometry::photo_margin(mask, pictures);
@@ -106,7 +123,7 @@ pub fn repair(
         if control.stopped() {
             return false;
         }
-        if topology::assign(mask, 3, arrows).is_some() {
+        if topology::assign(mask, arrows).is_some() {
             return true;
         }
         if state.1.is_empty() {
@@ -141,5 +158,5 @@ pub fn repair(
         tabu.insert(mask.key());
         state = inspect(mask, &fixed, arrows);
     }
-    topology::assign(mask, 3, arrows).is_some()
+    topology::assign(mask, arrows).is_some()
 }

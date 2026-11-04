@@ -8,7 +8,7 @@ import { getNumericUserId } from "@/lib/user";
 import { apiRoute } from "@/utils/appRoute";
 
 const schema = z.object({
-  text_opr: z.string().min(1),
+  text_opr: z.string().trim().min(1),
   note: z.string().max(512).optional(),
 });
 type Body = z.infer<typeof schema>;
@@ -40,6 +40,7 @@ const putHandler = async (_req: NextRequest, body: Body, params: { id: string },
       id: true,
       word_id: true,
       difficulty: true,
+      end_date: true,
       langId: true,
       word_v: { select: { id: true, word_text: true, length: true } },
     },
@@ -81,6 +82,7 @@ const putHandler = async (_req: NextRequest, body: Body, params: { id: string },
               description: newText,
               // Preserve current difficulty in the pending row
               difficulty: def.difficulty ?? 1,
+              end_date: def.end_date,
               note: JSON.stringify({
                 kind: "editDef",
                 opredId: String(def.id),
@@ -123,6 +125,7 @@ const deleteHandler = async (
     where: { id: opredId },
     data: {
       is_deleted: true,
+      deletedWithWord: false,
       ...(updateById != null ? { updateBy: updateById } : {}),
     },
     select: { id: true },

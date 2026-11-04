@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { crossApiHeaders } from "@/lib/crossApiAuth";
 
 function bases(): string[] {
   const configured = [process.env.CROSS_API_URL, process.env.NEXT_PUBLIC_CROSS_API_URL]
@@ -19,9 +20,14 @@ export async function fetchCrossTemplate(pathname: string, init?: RequestInit): 
   let lastError: unknown;
   for (const base of bases()) {
     try {
-      const response = await fetch(`${base}${pathname}`, { ...init, cache: "no-store" });
-      if (response.status !== 502 && response.status !== 503) return response;
-      lastError = new Error(`cross responded with ${response.status}`);
+      const response = await fetch(`${base}${pathname}`, {
+        ...init,
+        headers: crossApiHeaders(init?.headers),
+        cache: "no-store",
+      });
+      // An HTTP response means Cross is reachable. Preserve its status and
+      // diagnostic body, including configuration errors returned as 503.
+      return response;
     } catch (error) {
       lastError = error;
     }

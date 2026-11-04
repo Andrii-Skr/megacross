@@ -4,6 +4,7 @@ export type GenerateInput = {
   word: string;
   language: Lang;
   existing: string[];
+  avoid?: string[];
   maxLength: number;
 };
 

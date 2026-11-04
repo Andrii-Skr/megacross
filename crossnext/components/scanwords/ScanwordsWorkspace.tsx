@@ -38,7 +38,7 @@ export function ScanwordsWorkspace(props: ScanwordsWorkspaceProps) {
   } = props;
 
   const t = useTranslations();
-  const crossApiBase = (process.env.NEXT_PUBLIC_CROSS_API_URL || "http://localhost:3001").replace(/\/$/, "");
+  const crossApiBase = "/api/cross";
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("dictionary");
   const selectedIssueId = selectedIssue?.id ?? null;
   const tabStorageKey = selectedIssueId ? `scanwords:workspaceTab:${selectedIssueId}` : null;

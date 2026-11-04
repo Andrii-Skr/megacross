@@ -93,6 +93,8 @@ describe("proxy auth status", () => {
     expect(firstNonce).not.toBeNull();
     expect(secondNonce).not.toBeNull();
     expect(firstNonce).not.toBe(secondNonce);
+    expect(first.headers.get("x-middleware-request-content-security-policy")).toBe(firstCsp);
+    expect(first.headers.get("x-middleware-request-x-csp-nonce")).toBe(firstNonce);
   });
 
   it("adds CSP reporting headers", async () => {
@@ -117,6 +119,9 @@ describe("proxy auth status", () => {
     const res = await proxy(makeRequest("/ru/auth/sign-in"));
     expect(res.headers.get("content-security-policy")).toBeNull();
     expect(res.headers.get("content-security-policy-report-only")).toContain("script-src 'self' 'nonce-");
+    expect(res.headers.get("x-middleware-request-content-security-policy-report-only")).toBe(
+      res.headers.get("content-security-policy-report-only"),
+    );
   });
 
   it("does not forward next-router-state-tree request header", async () => {

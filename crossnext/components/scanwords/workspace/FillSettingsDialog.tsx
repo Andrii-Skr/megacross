@@ -424,7 +424,7 @@ export function FillSettingsDialog({
                 <Input
                   id="scanwords-svg-font-upload"
                   type="file"
-                  accept=".ttf,.otf,.woff,.woff2"
+                  accept=".ttf,.otf"
                   disabled={settingsSaving || fontUploading}
                   onChange={(event) => {
                     const file = event.currentTarget.files?.[0];

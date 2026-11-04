@@ -51,6 +51,8 @@ model DictionaryFilterTemplate {
 
 /// Added @@index([langId]) for FK lookups; added composite @@index([langId, word_text]) for language-scoped search by word
 model word_v {
+  isImageable Boolean @default(false)
+  imageGeneratedAt DateTime? @db.Timestamp(6)
   id             BigInt              @id @default(autoincrement())
   word_text      String              @db.VarChar(255)
   word_text_norm String?             @db.VarChar(255)
@@ -94,6 +96,7 @@ model ScanwordWordImage {
   width          Int
   height         Int
   aspectRatio    Decimal  @db.Decimal(12, 6)
+  needsReview    Boolean  @default(false)
   createdBy      Int?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -130,6 +133,7 @@ model opred_v {
   user_set      String                @default("") @db.VarChar(255)
   go_flag       Int                   @default(0) @db.SmallInt
   is_deleted    Boolean               @default(false)
+  deletedWithWord Boolean @default(false)
   langId        Int
   tags          OpredTag[]
   issueUsages   IssueOpredUsage[]

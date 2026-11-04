@@ -110,7 +110,7 @@ fn matching_budget_never_certifies_a_greedy_deficit() {
 fn incremental_runs_survive_trials_rollbacks_and_paired_commits() {
     let mut rng = Rng(1456789);
     for (rows, cols) in [(5, 7), (23, 31), (40, 40)] {
-        for min in [2, 3] {
+        for _ in 0..2 {
             let mut mask = Mask {
                 rows,
                 cols,
@@ -122,15 +122,15 @@ fn incremental_runs_survive_trials_rollbacks_and_paired_commits() {
                     })
                     .collect(),
             };
-            let mut index = topology::RunIndex::new(&mask, min);
+            let mut index = topology::RunIndex::new(&mask);
             for step in 0..80 {
-                assert_eq!(index.runs(&mask, &[]), topology::scan(&mask, min));
+                assert_eq!(index.runs(&mask, &[]), topology::scan(&mask));
                 let changes = [rng.int(mask.cells.len()), rng.int(mask.cells.len())];
                 let previous = [mask.cells[changes[0]], mask.cells[changes[1]]];
                 for &i in &changes {
                     mask.flip(i);
                 }
-                assert_eq!(index.runs(&mask, &changes), topology::scan(&mask, min));
+                assert_eq!(index.runs(&mask, &changes), topology::scan(&mask));
                 if step % 2 == 1 {
                     index.commit(&mask, &changes);
                 } else {
@@ -174,7 +174,9 @@ fn input_validation_rejects_unsafe_dimensions_and_arrow_tables() {
     let mut input: Input = serde_json::from_str(json).unwrap();
     assert!(input.validate().is_err());
     input.request.rows = 40;
-    input.arrows[0].directions = vec![255];
+    let mut invalid_arrows = input.arrows.to_vec();
+    invalid_arrows[0].directions = vec![255];
+    input.arrows = invalid_arrows.into();
     assert!(input.validate().is_err());
 }
 
@@ -213,4 +215,172 @@ fn disjoint_components_preserve_choices_with_interleaved_resources() {
     assert!(!limited.exhaustive);
     assert_eq!(limited.choices, 0);
     assert_eq!(covered(&groups, &limited), copies * 2);
+}
+
+#[test]
+fn mandatory_runs_match_shared_typescript_fixtures() {
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("../../../scripts/fixtures/template-runs.json")).unwrap();
+    let arrows: ArrowTable = serde_json::from_value(fixtures["arrows"].clone()).unwrap();
+    for case in fixtures["cases"].as_array().unwrap() {
+        let rows: Vec<String> = serde_json::from_value(case["mask"].clone()).unwrap();
+        let codes: Vec<Vec<u16>> = serde_json::from_value(case["codes"].clone()).unwrap();
+        let mask = Mask {
+            rows: rows.len(),
+            cols: rows[0].chars().count(),
+            cells: rows
+                .iter()
+                .flat_map(|row| {
+                    row.chars().map(|c| match c {
+                        '#' => CLUE,
+                        '%' => CUTOUT,
+                        _ => LETTER,
+                    })
+                })
+                .collect(),
+        };
+        let e = Evaluation {
+            mask: mask.clone(),
+            runs: Vec::new(),
+            codes: codes.into_iter().flatten().collect(),
+            intersections: 0,
+            distribution: [0; 12],
+            valid: false,
+            rendered_slots: Default::default(),
+        };
+        assert_eq!(
+            topology::verify(&e, &arrows).is_some(),
+            case["valid"].as_bool().unwrap(),
+            "{}",
+            case["name"]
+        );
+        if case["valid"] == true {
+            let assigned = topology::assign(&mask, &arrows).expect("all runs must be retained");
+            assert_eq!(assigned.runs.len(), topology::scan(&mask).len());
+            assert!(topology::verify(&assigned, &arrows).is_some());
+        }
+        if case["name"] == "multiple-two-letter-runs" || case["name"] == "overlong-run" {
+            assert!(topology::assign(&mask, &arrows).is_none());
+            let mut repaired = mask.clone();
+            assert!(repair::repair(
+                &mut repaired,
+                &[],
+                &mut Rng(589081236),
+                &arrows,
+                &control()
+            ));
+            let assigned = topology::assign(&repaired, &arrows).unwrap();
+            assert!(topology::verify(&assigned, &arrows).is_some());
+        }
+    }
+}
+
+#[test]
+fn matching_cache_preserves_choices_budgets_and_resource_relabeling() {
+    let mut rng = Rng(918273645);
+    let ctl = control();
+    let mut cache = matching::MatchingCache::default();
+    for _ in 0..600 {
+        let groups: Vec<_> = (0..1 + rng.int(8))
+            .map(|start| {
+                let double = rng.next() < 0.5;
+                let options = (0..rng.int(5))
+                    .map(|code| {
+                        let a = rng.int(10);
+                        let b = (a + 1 + rng.int(9)) % 10;
+                        matching::OptionClue {
+                            code: code as u16,
+                            resources: if double { vec![a, b] } else { vec![a] },
+                        }
+                    })
+                    .collect();
+                matching::Group {
+                    start,
+                    dirs: if double { vec![6, 8] } else { vec![6] },
+                    options,
+                }
+            })
+            .collect();
+        // Monotone relabeling changes global IDs and workspace dimensions but
+        // preserves each component's ranked resource graph and option order.
+        let shifted: Vec<_> = groups
+            .iter()
+            .map(|g| matching::Group {
+                start: g.start + 100,
+                dirs: g.dirs.clone(),
+                options: g
+                    .options
+                    .iter()
+                    .map(|o| matching::OptionClue {
+                        code: o.code + 20,
+                        resources: o.resources.iter().map(|r| r * 2 + 1).collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        for require_all in [false, true] {
+            for budget in [0, 1, 16, 2048] {
+                for (problem, resources) in [(&groups, 10), (&shifted, 21), (&groups, 10)] {
+                    let expected =
+                        matching::match_groups(problem, resources, budget, require_all, &ctl);
+                    let actual = matching::match_groups_cached(
+                        problem,
+                        resources,
+                        budget,
+                        require_all,
+                        &ctl,
+                        Some(&mut cache),
+                    );
+                    assert_eq!(actual.selected, expected.selected);
+                    assert_eq!(actual.choices, expected.choices);
+                    assert_eq!(actual.exhaustive, expected.exhaustive);
+                }
+            }
+        }
+    }
+    assert!(
+        cache.hits > 1000,
+        "test must exercise reusable conflict components"
+    );
+}
+
+#[test]
+fn compiled_arrow_table_preserves_order_and_first_code_lookup() {
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("../../../scripts/fixtures/template-runs.json")).unwrap();
+    let source: Vec<Arrow> = serde_json::from_value(fixtures["arrows"].clone()).unwrap();
+    let mut with_duplicate = source.clone();
+    with_duplicate.push(source[0].clone());
+    let table = ArrowTable::from(with_duplicate.clone());
+    for code in 0..=256 {
+        assert_eq!(
+            table
+                .get_code(code)
+                .map(|a| (a.code, &a.directions, &a.offsets)),
+            with_duplicate.iter().find(|a| a.code == code).map(|a| (
+                a.code,
+                &a.directions,
+                &a.offsets
+            ))
+        );
+    }
+    for dirs in [
+        vec![6],
+        vec![8],
+        vec![6, 8],
+        vec![8, 6],
+        vec![2, 6],
+        vec![8, 8],
+    ] {
+        let mask = dirs.iter().fold(0u16, |mask, &d| mask | (1 << d));
+        let expected: Vec<_> = with_duplicate
+            .iter()
+            .filter(|a| a.directions.iter().fold(0u16, |m, &d| m | (1 << d)) == mask)
+            .map(|a| a.code)
+            .collect();
+        assert_eq!(
+            table.matching(&dirs).map(|a| a.code).collect::<Vec<_>>(),
+            expected
+        );
+    }
 }

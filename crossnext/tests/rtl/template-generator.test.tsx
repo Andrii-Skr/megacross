@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TemplateGeneratorClient } from "@/components/template-generator/TemplateGeneratorClient";
 import type { GenerationJob, GenerationResult } from "@/components/template-generator/types";
@@ -56,7 +56,10 @@ beforeEach(() => {
   FakeEvents.instances = [];
   vi.stubGlobal("EventSource", FakeEvents);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 it("restores manual picture parameters and repeats with a new server seed", async () => {
   const restored = job("1", "completed", 0);

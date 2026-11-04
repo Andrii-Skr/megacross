@@ -1,5 +1,12 @@
 import type { Cell } from "../types";
 
+export const LARGE_TEMPLATE_AREA = 600;
+
+/** Large boards need time to balance mandatory words before restarting their mask. */
+export function balanceIterationBudget(area: number): number {
+  return Math.min(180, Math.max(24, Math.ceil(area / (area >= LARGE_TEMPLATE_AREA ? 4 : 12))));
+}
+
 export type MaskRun = { r: number; c: number; cells: [number, number][]; direction: "right" | "down" };
 export type ChangedCell = readonly [number, number];
 
@@ -8,7 +15,7 @@ export class MaskRunIndex {
   private horizontal: MaskRun[][];
   private vertical: MaskRun[][];
 
-  constructor(private readonly mask: Cell[][], private readonly minLength: number) {
+  constructor(private readonly mask: Cell[][]) {
     this.horizontal = mask.map((_, row) => this.scan(row, "right"));
     this.vertical = Array.from({ length: mask[0]?.length ?? 0 }, (_, col) => this.scan(col, "down"));
   }
@@ -24,7 +31,7 @@ export class MaskRunIndex {
         if (this.mask[row][col] === "#" || this.mask[row][col] === "%") break;
         cells.push([row, col]);
       }
-      if (cells.length >= this.minLength && cells.length <= 11) runs.push({ r: cells[0][0], c: cells[0][1], cells, direction });
+      if (cells.length >= 2) runs.push({ r: cells[0][0], c: cells[0][1], cells, direction });
       offset += 1;
     }
     return runs;
@@ -46,12 +53,12 @@ export class MaskRunIndex {
   }
 }
 
-/** Same largest eligible component policy as assignArrows, without string graphs. */
+/** Every geometric run is mandatory; none may be discarded to obtain coverage. */
 export function selectConnectedRuns(mask: Cell[][], input: readonly MaskRun[]): { runs: MaskRun[]; intersections: number; intersectionSum: number; valid: boolean } | null {
   const rows = mask.length;
   const cols = mask[0]?.length ?? 0;
-  let shortRuns = 0;
-  const runs = input.filter((run) => run.cells.length !== 2 || shortRuns++ === 0);
+  const runs = [...input];
+  if (runs.some((run) => run.cells.length > 11) || runs.filter((run) => run.cells.length === 2).length > 1) return null;
   const horizontal = new Int32Array(rows * cols).fill(-1);
   const vertical = new Int32Array(rows * cols).fill(-1);
   runs.forEach((run, id) => {
@@ -63,36 +70,27 @@ export function selectConnectedRuns(mask: Cell[][], input: readonly MaskRun[]): 
     counts[horizontal[cell]] += 1;
     counts[vertical[cell]] += 1;
   }
+  if (!runs.length || counts.some((count) => count < 2)) return null;
   const seen = new Uint8Array(runs.length);
-  let largest: number[] = [];
-  for (let root = 0; root < runs.length; root += 1) {
-    if (counts[root] < 2 || seen[root]) continue;
-    const component = [root];
-    seen[root] = 1;
-    for (let index = 0; index < component.length; index += 1) {
-      const run = runs[component[index]];
-      const opposite = run.direction === "right" ? vertical : horizontal;
-      for (const [row, col] of run.cells) {
-        const next = opposite[row * cols + col];
-        if (next < 0 || counts[next] < 2 || seen[next]) continue;
-        seen[next] = 1;
-        component.push(next);
-      }
+  const queue = [0];
+  seen[0] = 1;
+  for (let index = 0; index < queue.length; index += 1) {
+    const run = runs[queue[index]];
+    const opposite = run.direction === "right" ? vertical : horizontal;
+    for (const [row, col] of run.cells) {
+      const next = opposite[row * cols + col];
+      if (next < 0 || seen[next]) continue;
+      seen[next] = 1;
+      queue.push(next);
     }
-    if (component.length > largest.length) largest = component;
   }
-  if (!largest.length) return null;
-  const selected = new Uint8Array(runs.length);
-  largest.forEach((id) => { selected[id] = 1; });
+  if (queue.length !== runs.length) return null;
   let intersections = 0;
-  const selectedCounts = new Int32Array(runs.length);
   for (let row = 0; row < rows; row += 1) for (let col = 0; col < cols; col += 1) {
     const cell = row * cols + col;
-    const h = horizontal[cell]; const v = vertical[cell];
-    const inH = h >= 0 && selected[h]; const inV = v >= 0 && selected[v];
+    const inH = horizontal[cell] >= 0; const inV = vertical[cell] >= 0;
     if (mask[row][col] !== "#" && mask[row][col] !== "%" && !inH && !inV) return null;
-    if (inH && inV) { intersections += 1; selectedCounts[h] += 1; selectedCounts[v] += 1; }
+    if (inH && inV) intersections += 1;
   }
-  // Removing ineligible runs can remove crossings from an otherwise eligible run.
-  return { runs: runs.filter((_, id) => selected[id]), intersections, intersectionSum: intersections * 2, valid: largest.every((id) => selectedCounts[id] >= 2) };
+  return { runs, intersections, intersectionSum: intersections * 2, valid: true };
 }

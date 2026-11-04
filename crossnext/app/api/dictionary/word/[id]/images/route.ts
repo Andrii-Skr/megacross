@@ -1,6 +1,5 @@
-import fs from "node:fs/promises";
 import { PHOTO_IMAGE_RATIO_TOLERANCE } from "@megacross/cross-clues";
-import { Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import sharp from "sharp";
@@ -8,20 +7,14 @@ import { authOptions } from "@/auth";
 import { hasPermissionAsync, Permissions } from "@/lib/authz";
 import { prisma } from "@/lib/db";
 import {
-  buildWordImageStorageRelPath,
-  computeImageAspectRatio,
-  ensureWordImagesDir,
   isAspectRatioAllowed,
   isMissingWordImagesRelationError,
   normalizeImageMimeType,
   normalizeTargetBounds,
-  resolveWordImagesDir,
   SCANWORD_WORD_IMAGE_MAX_BYTES,
-  SCANWORD_WORD_IMAGES_NOT_READY_MESSAGE,
-  safeUnlink,
   sanitizeUploadFileName,
-  sha256Hex,
 } from "@/lib/scanwordWordImages";
+import { storeWordImage, toImageDto } from "@/lib/storeWordImage";
 import { getNumericUserId } from "@/lib/user";
 
 function error(status: number, message: string, errorCode: string, details?: Record<string, number>) {
@@ -37,27 +30,6 @@ function isUploadedFile(value: FormDataEntryValue | null): value is File {
     typeof candidate.size === "number" &&
     typeof candidate.arrayBuffer === "function"
   );
-}
-
-function toImageDto(image: {
-  id: bigint;
-  wordId: bigint;
-  fileName: string;
-  mimeType: string;
-  width: number;
-  height: number;
-  aspectRatio: Prisma.Decimal;
-}) {
-  return {
-    id: String(image.id),
-    wordId: String(image.wordId),
-    fileName: image.fileName,
-    mimeType: image.mimeType,
-    width: image.width,
-    height: image.height,
-    aspectRatio: Number(image.aspectRatio),
-    url: `/api/dictionary/word-images/${String(image.id)}`,
-  };
 }
 
 async function ensureAuthorized() {
@@ -96,6 +68,7 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
     width: number;
     height: number;
     aspectRatio: Prisma.Decimal;
+    needsReview: boolean;
   }> = [];
   try {
     images = await prisma.scanwordWordImage.findMany({
@@ -109,6 +82,7 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
         width: true,
         height: true,
         aspectRatio: true,
+        needsReview: true,
       },
     });
   } catch (dbError) {
@@ -189,8 +163,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     console.error("Word image upload failed while reading image metadata", metadataError);
     return error(400, "Failed to read image dimensions", "UPLOAD_IMAGE_DIMENSIONS_INVALID");
   }
-  const width = metadata.width ?? 0;
-  const height = metadata.height ?? 0;
+  const swapped = [5, 6, 7, 8].includes(metadata.orientation ?? 1);
+  const width = metadata.autoOrient?.width ?? (swapped ? metadata.height : metadata.width) ?? 0;
+  const height = metadata.autoOrient?.height ?? (swapped ? metadata.width : metadata.height) ?? 0;
   if (!(width > 0) || !(height > 0)) {
     return error(400, "Failed to read image dimensions", "UPLOAD_IMAGE_DIMENSIONS_INVALID");
   }
@@ -211,93 +186,13 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     });
   }
 
-  const sha256 = sha256Hex(bytes);
-  let existing: {
-    id: bigint;
-    wordId: bigint;
-    fileName: string;
-    mimeType: string;
-    width: number;
-    height: number;
-    aspectRatio: Prisma.Decimal;
-  } | null = null;
-  try {
-    existing = await prisma.scanwordWordImage.findUnique({
-      where: {
-        wordId_sha256: {
-          wordId,
-          sha256,
-        },
-      },
-      select: {
-        id: true,
-        wordId: true,
-        fileName: true,
-        mimeType: true,
-        width: true,
-        height: true,
-        aspectRatio: true,
-      },
-    });
-  } catch (dbError) {
-    if (!isMissingWordImagesRelationError(dbError)) {
-      console.error("Word image upload failed while checking for an existing image", dbError);
-      return error(500, "Failed to read image data", "UPLOAD_DB_READ_FAILED");
-    }
-    return error(503, SCANWORD_WORD_IMAGES_NOT_READY_MESSAGE, "WORD_IMAGE_STORAGE_NOT_READY");
-  }
-  if (existing) {
-    return NextResponse.json({ success: true, image: toImageDto(existing) });
-  }
-
-  const storageRelPath = buildWordImageStorageRelPath(wordId, sha256, originalName);
-  let absolutePath: string;
-  try {
-    absolutePath = await ensureWordImagesDir(storageRelPath);
-    await fs.mkdir(resolveWordImagesDir(), { recursive: true });
-    await fs.writeFile(absolutePath, bytes);
-  } catch (storageError) {
-    console.error("Word image upload failed while writing the image file", storageError);
-    return error(500, "Failed to write image file", "UPLOAD_STORAGE_WRITE_FAILED");
-  }
-
-  const createdBy = getNumericUserId(auth.session?.user as { id?: string | number | null } | null);
-  try {
-    const created = await prisma.scanwordWordImage.create({
-      data: {
-        wordId,
-        fileName: originalName,
-        mimeType,
-        storageRelPath,
-        sha256,
-        sizeBytes: BigInt(bytes.byteLength),
-        width,
-        height,
-        aspectRatio: new Prisma.Decimal(computeImageAspectRatio(width, height)),
-        ...(createdBy != null ? { createdBy } : {}),
-      },
-      select: {
-        id: true,
-        wordId: true,
-        fileName: true,
-        mimeType: true,
-        width: true,
-        height: true,
-        aspectRatio: true,
-      },
-    });
-
-    return NextResponse.json({ success: true, image: toImageDto(created) });
-  } catch (dbError) {
-    try {
-      await safeUnlink(absolutePath);
-    } catch (cleanupError) {
-      console.error("Word image upload failed while cleaning up the image file", cleanupError);
-    }
-    if (!isMissingWordImagesRelationError(dbError)) {
-      console.error("Word image upload failed while saving image data", dbError);
-      return error(500, "Failed to save image data", "UPLOAD_DB_WRITE_FAILED");
-    }
-    return error(503, SCANWORD_WORD_IMAGES_NOT_READY_MESSAGE, "WORD_IMAGE_STORAGE_NOT_READY");
-  }
+  return storeWordImage({
+    wordId,
+    bytes,
+    originalName,
+    mimeType,
+    width,
+    height,
+    createdBy: getNumericUserId(auth.session?.user as { id?: string | number | null } | null),
+  });
 }

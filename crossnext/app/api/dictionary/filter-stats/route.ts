@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { buildDictionarySearchRegex, filterDictionarySearchRows } from "@/lib/dictionarySearch";
 import { apiRoute } from "@/utils/appRoute";
 
 const filterSchema = z.object({
@@ -28,8 +29,6 @@ type StatsResponse = {
   tagCounts: Array<{ tagId: number; name: string; count: number }>;
   lengthCounts: Array<{ length: number; count: number }>;
 };
-
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const postHandler = async (
   _req: Request,
@@ -63,6 +62,7 @@ const postHandler = async (
       : {};
 
   const opredSomeBase: Record<string, unknown> = {
+    is_deleted: false,
     language: { is: { code: langCode } },
   };
   if (tagNames.length)
@@ -179,12 +179,12 @@ const postHandler = async (
         }
       : {}),
     ...(q && scope === "def" ? { text_opr: textFilter } : {}),
+    ...(q && scope === "both"
+      ? { AND: [{ OR: [{ word_v: { is: { word_text: textFilter } } }, { text_opr: textFilter }] }] }
+      : {}),
   };
 
-  const searchRegex =
-    (searchMode === "startsWith" || searchMode === "exact") && q.length
-      ? new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(q)}${searchMode === "exact" ? "([^\\p{L}\\p{N}]|$)" : ""}`, "iu")
-      : null;
+  const searchRegex = buildDictionarySearchRegex(q, searchMode);
 
   const rows = await prisma.word_v.findMany({
     where,
@@ -218,45 +218,8 @@ const postHandler = async (
     }>;
   };
 
-  const matchesSearch = (text: string) => {
-    if (!searchRegex) return true;
-    return searchRegex.test(text);
-  };
-
-  const filterExact = <T extends SearchableWord>(items: T[]) => {
-    if (!searchRegex) return items;
-    return items
-      .map((w) => {
-        const defMatches = w.opred_v.filter((d) => matchesSearch(d.text_opr));
-        const wordMatches = matchesSearch(w.word_text);
-        if (scope === "word" && wordMatches) return { ...w, opred_v: defMatches };
-        if (scope === "def" && defMatches.length) return { ...w, opred_v: defMatches };
-        if (scope === "both" && (wordMatches || defMatches.length))
-          return { ...w, opred_v: defMatches.length ? defMatches : w.opred_v };
-        return null;
-      })
-      .filter((w): w is NonNullable<typeof w> => !!w);
-  };
-
-  const filterStartsWith = <T extends SearchableWord>(items: T[]) => {
-    if (!searchRegex) return items;
-    return items
-      .map((w) => {
-        const defMatches = w.opred_v.filter((d) => matchesSearch(d.text_opr));
-        const wordMatches = matchesSearch(w.word_text);
-        if (scope === "word") return wordMatches ? w : null;
-        if (scope === "def") return defMatches.length ? { ...w, opred_v: defMatches } : null;
-        if (scope === "both") return wordMatches || defMatches.length ? w : null;
-        return null;
-      })
-      .filter((w): w is NonNullable<typeof w> => !!w);
-  };
-
-  const filterBySearch = <T extends SearchableWord>(items: T[]) => {
-    if (searchMode === "exact") return filterExact(items);
-    if (searchMode === "startsWith") return filterStartsWith(items);
-    return items;
-  };
+  const filterBySearch = <T extends SearchableWord>(items: T[]) =>
+    filterDictionarySearchRows(items, searchRegex, scope);
 
   const filteredRows = searchRegex ? filterBySearch(rows as SearchableWord[]) : (rows as SearchableWord[]);
 

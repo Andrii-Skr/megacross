@@ -1,11 +1,10 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { extname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
 import { create, type Font, type FontCollection } from "fontkit";
 
-const INKSCAPE_MAX_OUTPUT_BUFFER = 64 * 1024 * 1024;
 const PROCESS_OUTPUT_BUFFER = 1024 * 1024;
 const DEFAULT_POSTPROCESS_CONCURRENCY = 3;
 const MAX_POSTPROCESS_CONCURRENCY = 8;
@@ -79,20 +78,16 @@ function prepareFontConfig(profileDir: string, font: EpsFont): string {
   return configPath;
 }
 
-function throwProcessError(context: string, result: ReturnType<typeof spawnSync>): never {
-  if (result.error) {
-    const error = result.error as NodeJS.ErrnoException;
-    const reason = error.code === "ENOENT" ? `${context} executable was not found.` : error.message;
-    throw new Error(`EPS export failed: ${reason}`);
-  }
-  const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-  throw new Error(`EPS export failed during ${context}.${details ? ` ${details}` : ""}`);
-}
-
-function runProcess(context: string, executable: string, args: readonly string[]): Promise<void> {
+function runProcess(
+  context: string,
+  executable: string,
+  args: readonly string[],
+  env?: NodeJS.ProcessEnv
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       stdio: ["ignore", "pipe", "pipe"],
+      env,
     });
     const output: string[] = [];
     let outputLength = 0;
@@ -108,7 +103,11 @@ function runProcess(context: string, executable: string, args: readonly string[]
     child.stdout.on("data", collectOutput);
     child.stderr.on("data", collectOutput);
     child.once("error", (error: NodeJS.ErrnoException) => {
-      const reason = error.code === "ENOENT" ? `${context} executable was not found.` : error.message;
+      const reason = error.code === "ENOENT"
+        ? context === "Inkscape"
+          ? `Inkscape was not found (${executable}). Install it or set CROSS_INKSCAPE_BIN.`
+          : `${context} executable was not found.`
+        : error.message;
       reject(new Error(`EPS export failed: ${reason}`));
     });
     child.once("close", (code, signal) => {
@@ -231,61 +230,39 @@ export async function exportSvgFilesToEps(svgPaths: readonly string[], font?: Ep
   const profileDir = mkdtempSync(join(tmpdir(), "megacross-inkscape-"));
   const temporarySvgPaths: string[] = [];
   const temporaryEpsPaths: string[] = [];
-  const result = (() => {
-    try {
-      const fontConfig = font ? prepareFontConfig(profileDir, font) : null;
-      const inputPaths = font
-        ? svgPaths.map((svgPath) => {
-            const parsed = parse(svgPath);
-            const temporarySvgPath = join(parsed.dir, `${parsed.name}.eps-source-${randomUUID()}.svg`);
-            const embeddedFontStyle = `<style type="text/css"><![CDATA[${font.fontFaceCss}]]></style>`;
-            const source = readFileSync(svgPath, "utf8");
-            if (!source.includes(embeddedFontStyle)) {
-              throw new Error(`EPS export could not locate the uploaded font in ${svgPath}`);
-            }
-            writeFileSync(temporarySvgPath, source.replace(embeddedFontStyle, ""));
-            temporarySvgPaths.push(temporarySvgPath);
-            temporaryEpsPaths.push(toEpsPath(temporarySvgPath));
-            return temporarySvgPath;
-          })
-        : svgPaths;
-      return spawnSync(
-        resolveInkscapeBin(),
-        [
-          "--export-type=eps",
-          "--export-area-drawing",
-          "--export-text-to-path",
-          "--export-overwrite",
-          ...inputPaths,
-        ],
-        {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            INKSCAPE_PROFILE_DIR: profileDir,
-            ...(fontConfig ? { FONTCONFIG_FILE: fontConfig, XDG_CACHE_HOME: profileDir } : {}),
-          },
-          maxBuffer: INKSCAPE_MAX_OUTPUT_BUFFER,
-          stdio: ["ignore", "ignore", "pipe"],
-        }
-      );
-    } finally {
-      rmSync(profileDir, { recursive: true, force: true });
-      for (const temporarySvgPath of temporarySvgPaths) rmSync(temporarySvgPath, { force: true });
-    }
-  })();
-
   try {
-    if (result.error) {
-      const error = result.error as NodeJS.ErrnoException;
-      const reason = error.code === "ENOENT"
-        ? `Inkscape was not found (${resolveInkscapeBin()}). Install it or set CROSS_INKSCAPE_BIN.`
-        : error.message;
-      throw new Error(`EPS export failed: ${reason}`);
-    }
-    if (result.status !== 0) {
-      throwProcessError("Inkscape", result);
-    }
+    const fontConfig = font ? prepareFontConfig(profileDir, font) : null;
+    const inputPaths = font
+      ? svgPaths.map((svgPath) => {
+          const parsed = parse(svgPath);
+          const temporarySvgPath = join(parsed.dir, `${parsed.name}.eps-source-${randomUUID()}.svg`);
+          const embeddedFontStyle = `<style type="text/css"><![CDATA[${font.fontFaceCss}]]></style>`;
+          const source = readFileSync(svgPath, "utf8");
+          if (!source.includes(embeddedFontStyle)) {
+            throw new Error(`EPS export could not locate the uploaded font in ${svgPath}`);
+          }
+          writeFileSync(temporarySvgPath, source.replace(embeddedFontStyle, ""));
+          temporarySvgPaths.push(temporarySvgPath);
+          temporaryEpsPaths.push(toEpsPath(temporarySvgPath));
+          return temporarySvgPath;
+        })
+      : svgPaths;
+    await runProcess(
+      "Inkscape",
+      resolveInkscapeBin(),
+      [
+        "--export-type=eps",
+        "--export-area-drawing",
+        "--export-text-to-path",
+        "--export-overwrite",
+        ...inputPaths,
+      ],
+      {
+        ...process.env,
+        INKSCAPE_PROFILE_DIR: profileDir,
+        ...(fontConfig ? { FONTCONFIG_FILE: fontConfig, XDG_CACHE_HOME: profileDir } : {}),
+      }
+    );
 
     const generatedEpsPaths = font ? temporaryEpsPaths : epsPaths;
     const missing = generatedEpsPaths.filter((epsPath) => !existsSync(epsPath));
@@ -296,6 +273,8 @@ export async function exportSvgFilesToEps(svgPaths: readonly string[], font?: Ep
       generatedEpsPaths.forEach((generatedPath, index) => renameSync(generatedPath, epsPaths[index]));
     }
   } finally {
+    rmSync(profileDir, { recursive: true, force: true });
+    for (const temporarySvgPath of temporarySvgPaths) rmSync(temporarySvgPath, { force: true });
     for (const temporaryEpsPath of temporaryEpsPaths) rmSync(temporaryEpsPath, { force: true });
   }
 

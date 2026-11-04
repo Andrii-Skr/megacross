@@ -1,27 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseFshBytes, SlotCoverageError, scanSlots, validateSlotCoverage } from "@megacross/cross-format";
+import {
+  InvalidStorageNameError,
+  resolveIssueStorageDirectory,
+  sanitizeStorageName as sanitizeName,
+} from "@megacross/cross-format/storage-paths";
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth";
 import { hasPermissionAsync, Permissions } from "@/lib/authz";
 import { prisma } from "@/lib/db";
+import { replaceDirectory } from "@/lib/replaceDirectory";
 
 function error(status: number, message: string, errorCode: string) {
   return NextResponse.json({ success: false, message, errorCode }, { status });
-}
-
-function sanitizeName(name: string) {
-  // Drop path components, normalize, and allow Unicode letters/numbers
-  const base = path
-    .basename(name)
-    .replace(/[\r\n\t]/g, " ")
-    .trim();
-  const normalized = base.normalize("NFC");
-  // Allow letters, numbers, marks, space, dash, underscore, dot; replace others with _
-  const safe = normalized.replace(/[^\p{L}\p{N}\p{M}\-_. ]+/gu, "_");
-  return safe.replace(/_{2,}/g, "_").replace(/ {2,}/g, " ");
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -108,7 +102,7 @@ export async function POST(req: Request) {
       return error(500, "CROSS_SAMPLES_DIR is not configured", "UPLOAD_CONFIG_MISSING");
     }
     // Validate the whole batch before replacing any existing templates.
-    const validatedFiles: { file: File; buf: Buffer }[] = [];
+    const validatedFiles: { name: string; buf: Buffer }[] = [];
     for (const file of files) {
       if (file.size > MAX_FILE_SIZE_BYTES) {
         return error(413, "File too large", "UPLOAD_FILE_TOO_LARGE");
@@ -132,7 +126,7 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
-      validatedFiles.push({ file, buf });
+      validatedFiles.push({ name: sanitizeName(file.name || "file"), buf });
     }
     let dest = baseDir;
     if (issueId) {
@@ -153,24 +147,30 @@ export async function POST(req: Request) {
       if (blocker === "review") {
         return error(409, "Complete the current review before replacing templates", "UPLOAD_REVIEW_PENDING");
       }
-      const editionDir = sanitizeName(issue.edition.code);
-      const issueDir = sanitizeName(issue.issueNumber.label);
-      dest = path.join(baseDir, editionDir, issueDir);
-      await fs.rm(dest, { recursive: true, force: true });
+      dest = resolveIssueStorageDirectory(baseDir, issue.edition.code, issue.issueNumber.label);
     }
-    await fs.mkdir(dest, { recursive: true });
-
-    const usedNames = new Set<string>();
-    const saved: { name: string; size: number }[] = [];
-    for (const { file: f, buf } of validatedFiles) {
-      const name = await pickUniqueName(dest, sanitizeName(f.name || "file"), usedNames);
-      const target = path.join(dest, name);
-      await fs.writeFile(target, buf);
-      saved.push({ name, size: buf.length });
+    const writeFiles = async (directory: string) => {
+      const usedNames = new Set<string>();
+      const saved: { name: string; size: number }[] = [];
+      for (const { name: rawName, buf } of validatedFiles) {
+        const name = await pickUniqueName(directory, rawName, usedNames);
+        await fs.writeFile(path.join(directory, name), buf);
+        saved.push({ name, size: buf.length });
+      }
+      return saved;
+    };
+    let saved: { name: string; size: number }[];
+    if (issueId) {
+      saved = await replaceDirectory(dest, writeFiles);
+    } else {
+      await fs.mkdir(dest, { recursive: true });
+      saved = await writeFiles(dest);
     }
 
     return NextResponse.json({ ok: true, saved, dest });
   } catch (err) {
+    if (err instanceof InvalidStorageNameError)
+      return error(400, "Invalid storage name", "UPLOAD_INVALID_STORAGE_NAME");
     console.error("Failed to upload scanword templates", err);
     return error(500, "Internal server error", "UPLOAD_INTERNAL_ERROR");
   }

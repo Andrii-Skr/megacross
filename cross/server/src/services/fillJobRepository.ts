@@ -86,6 +86,37 @@ export async function loadFillJobById(prisma: PrismaClient, jobId: bigint): Prom
   return rows[0] ?? null;
 }
 
+export async function claimFillJobForFinalization(prisma: PrismaClient, jobId: bigint): Promise<FillJobRow | null> {
+  const rows = await prisma.$queryRaw<FillJobRow[]>(Prisma.sql`
+    UPDATE scanword_fill_jobs
+    SET status = 'running', "updatedAt" = now()
+    WHERE id = ${jobId} AND status = 'review'
+    RETURNING *
+  `);
+  return rows[0] ?? null;
+}
+
+export async function saveRegeneratedReviewIfCurrent(
+  prisma: PrismaClient,
+  jobId: bigint,
+  previousReview: unknown,
+  nextReview: unknown,
+  templates: unknown,
+  completedTemplates: number,
+  totalTemplates: number,
+): Promise<boolean> {
+  const updated = await prisma.$executeRaw(Prisma.sql`
+    UPDATE scanword_fill_jobs
+    SET status = 'review', progress = 100, "currentTemplate" = NULL,
+        "completedTemplates" = ${completedTemplates}, "totalTemplates" = ${totalTemplates},
+        error = NULL, templates = ${JSON.stringify(templates)}::jsonb,
+        "reviewData" = ${JSON.stringify(nextReview)}::jsonb, "updatedAt" = now()
+    WHERE id = ${jobId} AND status = 'review'
+      AND "reviewData" = ${JSON.stringify(previousReview)}::jsonb
+  `);
+  return updated > 0;
+}
+
 export async function loadLatestFillJobByIssue(
   prisma: PrismaClient,
   issueId: bigint

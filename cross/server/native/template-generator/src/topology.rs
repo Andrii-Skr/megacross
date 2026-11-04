@@ -1,6 +1,6 @@
 use crate::model::*;
 
-pub fn scan_line(mask: &Mask, line: usize, down: bool, min: usize) -> Vec<Run> {
+pub fn scan_line(mask: &Mask, line: usize, down: bool) -> Vec<Run> {
     let size = if down { mask.rows } else { mask.cols };
     let mut runs = Vec::new();
     let mut offset = 0;
@@ -18,7 +18,7 @@ pub fn scan_line(mask: &Mask, line: usize, down: bool, min: usize) -> Vec<Run> {
             cells.push(cell);
             offset += 1;
         }
-        if cells.len() >= min && cells.len() <= 11 {
+        if cells.len() >= 2 {
             runs.push(Run {
                 start: cells[0],
                 down,
@@ -29,12 +29,12 @@ pub fn scan_line(mask: &Mask, line: usize, down: bool, min: usize) -> Vec<Run> {
     }
     runs
 }
-pub fn scan(mask: &Mask, min: usize) -> Vec<Run> {
+pub fn scan(mask: &Mask) -> Vec<Run> {
     let mut runs: Vec<_> = (0..mask.rows)
-        .flat_map(|r| scan_line(mask, r, false, min))
+        .flat_map(|r| scan_line(mask, r, false))
         .collect();
     let mut v: Vec<_> = (0..mask.cols)
-        .flat_map(|c| scan_line(mask, c, true, min))
+        .flat_map(|c| scan_line(mask, c, true))
         .collect();
     v.sort_by_key(|s| s.start);
     runs.extend(v);
@@ -43,18 +43,12 @@ pub fn scan(mask: &Mask, min: usize) -> Vec<Run> {
 pub struct RunIndex {
     horizontal: Vec<Vec<Run>>,
     vertical: Vec<Vec<Run>>,
-    min: usize,
 }
 impl RunIndex {
-    pub fn new(mask: &Mask, min: usize) -> Self {
+    pub fn new(mask: &Mask) -> Self {
         Self {
-            horizontal: (0..mask.rows)
-                .map(|r| scan_line(mask, r, false, min))
-                .collect(),
-            vertical: (0..mask.cols)
-                .map(|c| scan_line(mask, c, true, min))
-                .collect(),
-            min,
+            horizontal: (0..mask.rows).map(|r| scan_line(mask, r, false)).collect(),
+            vertical: (0..mask.cols).map(|c| scan_line(mask, c, true)).collect(),
         }
     }
     pub fn runs(&self, mask: &Mask, changed: &[usize]) -> Vec<Run> {
@@ -67,7 +61,7 @@ impl RunIndex {
         let mut result = Vec::new();
         for (r, runs) in self.horizontal.iter().enumerate() {
             if rows[r] {
-                result.extend(scan_line(mask, r, false, self.min));
+                result.extend(scan_line(mask, r, false));
             } else {
                 result.extend(runs.iter().cloned());
             }
@@ -75,7 +69,7 @@ impl RunIndex {
         let mut vertical = Vec::new();
         for (c, runs) in self.vertical.iter().enumerate() {
             if cols[c] {
-                vertical.extend(scan_line(mask, c, true, self.min));
+                vertical.extend(scan_line(mask, c, true));
             } else {
                 vertical.extend(runs.iter().cloned());
             }
@@ -93,12 +87,12 @@ impl RunIndex {
         }
         for (r, changed) in rows.iter().enumerate() {
             if *changed {
-                self.horizontal[r] = scan_line(mask, r, false, self.min);
+                self.horizontal[r] = scan_line(mask, r, false);
             }
         }
         for (c, changed) in cols.iter().enumerate() {
             if *changed {
-                self.vertical[c] = scan_line(mask, c, true, self.min);
+                self.vertical[c] = scan_line(mask, c, true);
             }
         }
     }
@@ -124,11 +118,8 @@ pub fn memberships(mask: &Mask, runs: &[Run]) -> (Vec<usize>, Vec<usize>, Vec<us
     }
     (h, v, counts)
 }
-pub fn matching_arrows<'a>(arrows: &'a [Arrow], dirs: &[u8]) -> impl Iterator<Item = &'a Arrow> {
-    let wanted = dirs.iter().fold(0u16, |v, &d| v | (1u16 << d));
-    arrows
-        .iter()
-        .filter(move |a| a.directions.iter().fold(0u16, |v, &d| v | (1u16 << d)) == wanted)
+pub fn matching_arrows<'a>(arrows: &'a ArrowTable, dirs: &[u8]) -> impl Iterator<Item = &'a Arrow> {
+    arrows.matching(dirs)
 }
 pub fn fits(mask: &Mask, start: usize, arrow: &Arrow) -> bool {
     arrow.offsets.iter().all(|p| {
@@ -136,76 +127,49 @@ pub fn fits(mask: &Mask, start: usize, arrow: &Arrow) -> bool {
             .is_some_and(|i| mask.cells[i] == CLUE)
     })
 }
-pub fn first_code(mask: &Mask, start: usize, dirs: &[u8], arrows: &[Arrow]) -> Option<u16> {
+pub fn first_code(mask: &Mask, start: usize, dirs: &[u8], arrows: &ArrowTable) -> Option<u16> {
     matching_arrows(arrows, dirs)
         .find(|a| fits(mask, start, a))
         .map(|a| a.code)
 }
-pub fn evaluate(mask: &Mask, input: Vec<Run>, arrows: &[Arrow]) -> Option<Evaluation> {
-    let mut short = 0;
-    let runs: Vec<_> = input
-        .into_iter()
-        .filter(|r| {
-            if r.cells.len() != 2 {
-                true
-            } else {
-                short += 1;
-                short == 1
-            }
-        })
-        .collect();
-    let (h, v, counts) = memberships(mask, &runs);
-    let mut seen = vec![false; runs.len()];
-    let mut largest = Vec::new();
-    for root in 0..runs.len() {
-        if counts[root] < 2 || seen[root] {
-            continue;
-        }
-        let mut component = vec![root];
-        seen[root] = true;
-        let mut at = 0;
-        while at < component.len() {
-            let run = &runs[component[at]];
-            at += 1;
-            for &i in run.cells.iter() {
-                let other = if run.down { h[i] } else { v[i] };
-                if other != NONE && counts[other] >= 2 && !seen[other] {
-                    seen[other] = true;
-                    component.push(other);
-                }
-            }
-        }
-        if component.len() > largest.len() {
-            largest = component;
-        }
-    }
-    if largest.is_empty() {
+pub fn evaluate(mask: &Mask, input: Vec<Run>, arrows: &ArrowTable) -> Option<Evaluation> {
+    let runs = input;
+    if runs.iter().any(|r| r.cells.len() > 11)
+        || runs.iter().filter(|r| r.cells.len() == 2).count() > 1
+    {
         return None;
     }
-    let mut selected = vec![false; runs.len()];
-    for &i in &largest {
-        selected[i] = true;
+    let (h, v, counts) = memberships(mask, &runs);
+    if runs.is_empty() || counts.iter().any(|&count| count < 2) {
+        return None;
+    }
+    let mut seen = vec![false; runs.len()];
+    let mut queue = vec![0];
+    seen[0] = true;
+    let mut at = 0;
+    while at < queue.len() {
+        let run = &runs[queue[at]];
+        at += 1;
+        for &i in run.cells.iter() {
+            let other = if run.down { h[i] } else { v[i] };
+            if other != NONE && !seen[other] {
+                seen[other] = true;
+                queue.push(other);
+            }
+        }
+    }
+    if queue.len() != runs.len() {
+        return None;
     }
     let mut intersections = 0;
-    let mut actual = vec![0; runs.len()];
     for i in 0..mask.cells.len() {
-        let ih = h[i] != NONE && selected[h[i]];
-        let iv = v[i] != NONE && selected[v[i]];
-        if mask.cells[i] == LETTER && !ih && !iv {
+        if mask.cells[i] == LETTER && h[i] == NONE && v[i] == NONE {
             return None;
         }
-        if ih && iv {
+        if h[i] != NONE && v[i] != NONE {
             intersections += 1;
-            actual[h[i]] += 1;
-            actual[v[i]] += 1;
         }
     }
-    let valid = largest.iter().all(|&id| actual[id] >= 2);
-    let runs: Vec<_> = runs
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, r)| if selected[i] { Some(r) } else { None })
-        .collect();
     let mut starts = vec![Vec::new(); mask.cells.len()];
     for run in &runs {
         starts[run.start].push(if run.down { 8 } else { 6 });
@@ -226,21 +190,25 @@ pub fn evaluate(mask: &Mask, input: Vec<Run>, arrows: &[Arrow]) -> Option<Evalua
         codes,
         intersections,
         distribution,
-        valid,
+        valid: true,
         rendered_slots: Default::default(),
     })
 }
-pub fn assign(mask: &Mask, min: usize, arrows: &[Arrow]) -> Option<Evaluation> {
-    evaluate(mask, scan(mask, min), arrows)
+pub fn assign(mask: &Mask, arrows: &ArrowTable) -> Option<Evaluation> {
+    evaluate(mask, scan(mask), arrows)
 }
 
 /** Independent final scan of the materialized arrow codes, including coverage. */
-pub fn verify(e: &Evaluation, arrows: &[Arrow]) -> Option<Evaluation> {
+pub fn verify(e: &Evaluation, arrows: &ArrowTable) -> Option<Evaluation> {
     let slots = e.scan_slots(arrows);
     if slots.is_empty()
         || slots.iter().any(|s| s.cells.len() > 11)
         || slots.iter().filter(|s| s.cells.len() == 2).count() > 1
     {
+        return None;
+    }
+    let expected = scan(&e.mask);
+    if expected.len() != slots.len() || expected.iter().any(|run| !slots.contains(run)) {
         return None;
     }
     let (h, v, counts) = memberships(&e.mask, &slots);

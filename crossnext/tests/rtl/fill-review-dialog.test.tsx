@@ -466,6 +466,139 @@ describe("FillReviewDialog", () => {
     expect(screen.getAllByAltText("cat.png")).toHaveLength(2);
   });
 
+  it.each([true, false])("generates a photo from the current meaning and handles success=%s", async (success) => {
+    let finishGeneration: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => {
+      finishGeneration = resolve;
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/images/generate")) return pending;
+      if (init?.method === "PUT") return jsonResponse({ success: true });
+      return jsonResponse({ available: false, rows: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const payload = makeReviewPayload();
+    const slot = payload.templates[0].slots[0];
+    slot.isPhotoDefinition = true;
+    slot.photoAreaBounds = { minRow: 0, minCol: 0, maxRow: 0, maxCol: 1 };
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-generate"
+        reviewData={payload}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={vi.fn()}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+    const button = await screen.findByRole("button", { name: "scanwordsReviewImageGenerate" });
+    await userEvent.click(button);
+    expect(screen.getByRole("button", { name: "scanwordsReviewImageGenerating" })).toBeDisabled();
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/images/generate"));
+    expect(String(call?.[0])).toBe("/api/dictionary/word/10/images/generate");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ definition: "Кот", targetWidth: 2, targetHeight: 1 });
+    await act(async () =>
+      finishGeneration(
+        success
+          ? jsonResponse({
+              image: {
+                id: "generated-42",
+                wordId: "10",
+                fileName: "generated.png",
+                mimeType: "image/png",
+                width: 200,
+                height: 100,
+                aspectRatio: 2,
+                url: "/api/dictionary/word-images/generated-42",
+                needsReview: true,
+              },
+            })
+          : jsonResponse({ errorCode: "AI_NOT_CONFIGURED" }, 503),
+      ),
+    );
+    if (success) {
+      await waitFor(() => expect(screen.getAllByAltText("generated.png")).toHaveLength(2));
+    } else {
+      await screen.findByText("scanwordsReviewImageAiNotConfigured");
+      expect(screen.queryByAltText("generated.png")).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: "scanwordsReviewImageGenerate" })).toBeEnabled();
+  });
+
+  it("only offers square images for a 4x4 area, ignoring a stale rectangular selection", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/scanwords/fill-review-draft?jobId=job-2" && (!init?.method || init.method === "GET")) {
+        return jsonResponse({ available: false, rows: [] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload = makeReviewPayload();
+    const firstTemplate = payload.templates[0];
+    const firstSlot = firstTemplate?.slots[0];
+    if (!firstTemplate || !firstSlot) {
+      throw new Error("Missing review slot fixture");
+    }
+    firstTemplate.slots[0] = {
+      ...firstSlot,
+      isPhotoDefinition: true,
+      photoAreaBounds: { minRow: 0, minCol: 0, maxRow: 3, maxCol: 3 },
+      availableImages: [
+        {
+          id: "img-1",
+          wordId: "10",
+          fileName: "cat.png",
+          mimeType: "image/png",
+          width: 500,
+          height: 500,
+          aspectRatio: 1,
+          url: "/api/dictionary/word-images/img-1",
+        },
+        ...[
+          { id: "portrait", width: 400, height: 500 },
+          { id: "landscape", width: 500, height: 400 },
+        ].map((image) => ({
+          ...image,
+          wordId: "10",
+          fileName: `${image.id}.jpg`,
+          mimeType: "image/jpeg",
+          aspectRatio: image.width / image.height,
+          url: `/api/dictionary/word-images/${image.id}`,
+        })),
+      ],
+      selectedImageId: "portrait",
+    };
+
+    render(
+      <FillReviewDialog
+        open
+        onOpenChange={vi.fn()}
+        reviewJobId="job-2"
+        reviewData={payload}
+        definitionLimits={{ maxPerCell: 30, maxPerHalfCell: 15 }}
+        loading={false}
+        finalizing={false}
+        error={null}
+        onFinalize={vi.fn().mockResolvedValue(undefined)}
+        onRequestCandidates={vi.fn().mockResolvedValue([])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Кот")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "scanwordsReviewImageUpload" })).toBeInTheDocument();
+    expect(screen.getByText("scanwordsReviewImageChoose")).toBeInTheDocument();
+    expect(screen.getAllByAltText("cat.png")).toHaveLength(2);
+    expect(screen.queryByAltText("portrait.jpg")).not.toBeInTheDocument();
+    expect(screen.queryByAltText("landscape.jpg")).not.toBeInTheDocument();
+  });
+
   it("shows the exact aspect-ratio error for a rejected image upload", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);

@@ -16,8 +16,9 @@ import { boundaryDirectionMetrics, boundaryPattern } from "./boundary";
 export { geometryFingerprint } from "./diversity";
 export { evaluateTemplateQuality, targetDoubleArrowCount } from "./quality";
 import { assignUniqueClues, clueAssignmentDiagnostics, verifyClueOwnership } from "./clueMatcher";
+import { ClueMatchingCache } from "./clueMatching";
 import { firstArrowCode } from "./arrowOptions";
-import { MaskRunIndex, selectConnectedRuns, type ChangedCell, type MaskRun } from "./topology";
+import { balanceIterationBudget, MaskRunIndex, selectConnectedRuns, type ChangedCell, type MaskRun } from "./topology";
 import { searchRegionalRepair, type MaskChange } from "./regionalRepair";
 import {
   CUTOUT_PRESETS,
@@ -224,7 +225,7 @@ function placeRequestedPictures(request: TemplateGenerationRequest, forbidden: R
   return placePictures(request.rows, request.cols, Array.from({ length: request.pictures.count }, () => ({ width: 4, height: 4 })), forbidden, rng);
 }
 
-export function maximalRuns(mask: Cell[][], direction: "right" | "down", minLength = 3): Array<{ r: number; c: number; cells: [number, number][] }> {
+export function maximalRuns(mask: Cell[][], direction: "right" | "down", minLength = 2): Array<{ r: number; c: number; cells: [number, number][] }> {
   const rows = mask.length;
   const cols = mask[0]?.length ?? 0;
   const runs: Array<{ r: number; c: number; cells: [number, number][] }> = [];
@@ -235,13 +236,13 @@ export function maximalRuns(mask: Cell[][], direction: "right" | "down", minLeng
     if (barrier(r, c) || (r - dr >= 0 && c - dc >= 0 && !barrier(r - dr, c - dc))) continue;
     const cells: [number, number][] = [];
     for (let rr = r, cc = c; rr < rows && cc < cols && !barrier(rr, cc); rr += dr, cc += dc) cells.push([rr, cc]);
-    if (cells.length >= minLength && cells.length <= 11) runs.push({ r, c, cells });
+    if (cells.length >= minLength) runs.push({ r, c, cells });
   }
   return runs;
 }
 
-export function assignArrows(mask: Cell[][], minLength = 3): Grid | null {
-  return evaluateArrowMask(mask, new MaskRunIndex(mask, minLength).runs())?.grid ?? null;
+export function assignArrows(mask: Cell[][]): Grid | null {
+  return evaluateArrowMask(mask, new MaskRunIndex(mask).runs())?.grid ?? null;
 }
 
 function evaluateArrowMask(mask: Cell[][], inputRuns: readonly MaskRun[]): { grid: Grid; report: TemplateInvariantReport } | null {
@@ -289,6 +290,14 @@ export function verifyTemplateInvariants(grid: Grid): TemplateInvariantReport {
   const errors: string[] = [];
   const slots = scanSlotsDetailed(grid, { mode: "arrow", minLen: 2 }).slots;
   if (!slots.length) errors.push("template has no word slots");
+  // Scan geometry independently of arrows: perpendicular coverage cannot hide a missing word.
+  const mask = grid.data.map((row) => [...row] as Cell[]);
+  const slotKeys = new Set(slots.map((slot) => `${slot.r},${slot.c},${slot.dir === DIRS.right ? "right" : "down"},${slot.cells.map(([r, c]) => `${r}:${c}`).join(";")}`));
+  for (const direction of ["right", "down"] as const) for (const run of maximalRuns(mask, direction)) {
+    const key = `${run.r},${run.c},${direction},${run.cells.map(([r, c]) => `${r}:${c}`).join(";")}`;
+    if (!slotKeys.has(key)) errors.push(`letter run at ${run.r},${run.c} direction ${direction} length ${run.cells.length} has no complete word`);
+  }
+
   if (slots.some((slot) => slot.len < 2 || slot.len > 11)) errors.push("all word lengths must be from 2 to 11");
   if (slots.filter((slot) => slot.len === 2).length > 1) errors.push("at most one two-letter word is allowed");
   const membership = new Map<string, number[]>();
@@ -537,14 +546,12 @@ export function buildMask(request: TemplateGenerationRequest, rng: SeededRandom,
 function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], rng: SeededRandom, profileStrength: number, lengthWeights?: Readonly<Record<number, number>>, diagnostics?: Record<string, number>, adaptiveSearch = false, regionalRepair = true, dictionaryCounts?: Readonly<Record<number, number>>): { grid: Grid; regionalRepairCount: number } | null {
   const mask = maskInput.map((row) => [...row]);
   if (!assignArrows(mask) && !repairStructuralMask(mask, pictures, rng)) { if (diagnostics) diagnostics.repairRejected = (diagnostics.repairRejected ?? 0) + 1; return null; }
-  // A two-letter start is optional and rare, rather than forced into every grid.
-  const minLength = lengthWeights?.[2] && rng.next() < Math.min(0.05, lengthWeights[2] * mask.length * mask[0].length) ? 2 : 3;
-  const initialGrid = assignArrows(mask, minLength);
+  const initialGrid = assignArrows(mask);
   if (!initialGrid) return null;
   let grid: Grid = initialGrid;
-  const runIndex = new MaskRunIndex(mask, minLength);
+  const runIndex = new MaskRunIndex(mask);
   const area = grid.rows * grid.cols;
-  const maxIterations = Math.min(180, Math.max(24, Math.ceil(area / 12)));
+  const maxIterations = balanceIterationBudget(area);
   const sampleLimit = Math.min(200, Math.max(50, Math.ceil(area * 0.22)));
   const photoMargin = new Set<string>();
   for (const picture of pictures) for (let row = picture.row - 1; row <= picture.row + picture.height; row += 1) {
@@ -553,10 +560,13 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
       if (row >= 0 && col >= 0 && row < grid.rows && col < grid.cols) photoMargin.add(`${row},${col}`);
     }
   }
+  const matchingCache = new ClueMatchingCache();
   type BalanceState = { gap: number; bad: number; score: number; targetDoubleStarts: number; matchingPossible: boolean; supplyDeficit: number; edgeDirectionDeficit: number };
   const inspect = (candidate: Grid, report = verifyTemplateInvariants(candidate)): BalanceState | null => {
     if (!report.valid) return null;
-    const ownership = clueAssignmentDiagnostics(candidate, pictures);
+    const hitsBefore = matchingCache.hits;
+    const ownership = clueAssignmentDiagnostics(candidate, pictures, matchingCache);
+    if (diagnostics) diagnostics.matchingCacheHits = (diagnostics.matchingCacheHits ?? 0) + matchingCache.hits - hitsBefore;
     if (!ownership.matchingExhaustive && diagnostics) diagnostics.matchingBudgetExhaustions = (diagnostics.matchingBudgetExhaustions ?? 0) + 1;
     const gap = ownership.answerCount - ownership.resourceCount;
     const bad = ownership.noOptionResources.length + ownership.noOptionStarts.length;
@@ -604,6 +614,7 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
   let regionalRepairCount = 0;
 
   for (let iteration = 0; iteration <= maxIterations; iteration += 1) {
+    if (diagnostics) diagnostics.balanceIterations = (diagnostics.balanceIterations ?? 0) + 1;
     if (state.gap === 0 && state.bad === 0 && state.supplyDeficit === 0 && state.edgeDirectionDeficit === 0 && state.matchingPossible) {
       const matched = assignUniqueClues(grid, pictures, 2048);
       if (matched && !verifyClueOwnership(matched, pictures).length && samePictureBounds(recognizePictureBounds(matched), pictures)) {
@@ -618,7 +629,10 @@ function balanceClues(maskInput: Cell[][], pictures: readonly PictureBounds[], r
         }
       }
     }
-    if (iteration === maxIterations) break;
+    if (iteration === maxIterations) {
+      if (diagnostics) diagnostics.balanceIterationLimitStops = (diagnostics.balanceIterationLimitStops ?? 0) + 1;
+      break;
+    }
     const cells: Array<[number, number]> = [];
     for (let row = 0; row < grid.rows; row += 1) for (let col = 0; col < grid.cols; col += 1) {
       if (mask[row][col] !== "%" && !photoMargin.has(`${row},${col}`)) cells.push([row, col]);
@@ -761,6 +775,12 @@ export function repairStructuralMask(mask: Cell[][], pictures: readonly PictureB
         while (mask[rr]?.[cc] === "*") { add(rr, cc); rr += dr; cc += dc; }
       }
     }
+    const excessShort = Math.max(0, runs.filter((run) => run.cells.length === 2).length - 1);
+    let invalidLengths = 0;
+    for (const run of runs) if (run.cells.length > 11 || (excessShort && run.cells.length === 2)) {
+      if (run.cells.length > 11) invalidLengths += 1;
+      run.cells.forEach(([r, c]) => add(r, c));
+    }
     let weak = 0;
     runs.forEach((run, id) => { if (crossings[id] < 2) { weak += 1; run.cells.forEach(([r, c]) => add(r, c)); } });
     const grid = { rows, cols, data: mask.map((row) => row.join("")) };
@@ -768,7 +788,7 @@ export function repairStructuralMask(mask: Cell[][], pictures: readonly PictureB
     for (const run of runs) { const key = `${run.r},${run.c}`; starts.set(key, [...(starts.get(key) ?? []), run.direction]); }
     let missing = 0;
     for (const [key, directions] of starts) { const [r, c] = key.split(",").map(Number); if (firstArrowCode(grid, r, c, directions.map((direction) => direction === "right" ? 6 : 8)) == null) { missing += 1; add(r, c); } }
-    return { score: 20 * uncovered + 4 * weak + 8 * missing + 6 * Math.max(0, components - 1), focus: [...focus], uncovered, weak, missing, components };
+    return { score: 12 * (invalidLengths + excessShort) + 20 * uncovered + 4 * weak + 8 * missing + 6 * Math.max(0, components - 1), focus: [...focus], uncovered, weak, missing, components };
   };
   let state = inspect();
   onProgress?.(state);

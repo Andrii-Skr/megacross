@@ -504,7 +504,7 @@ pub fn build(
         mask.flip(cell);
     }
     let mut covered = vec![false; mask.cells.len()];
-    for run in crate::topology::scan(&mask, 3) {
+    for run in crate::topology::scan(&mask) {
         for &i in run.cells.iter() {
             covered[i] = true;
         }

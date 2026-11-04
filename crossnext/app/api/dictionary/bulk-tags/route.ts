@@ -4,6 +4,7 @@ import type { Session } from "next-auth";
 import { z } from "zod";
 import { Permissions } from "@/lib/authz";
 import { prisma } from "@/lib/db";
+import { buildDictionarySearchRegex, matchesDictionarySearch } from "@/lib/dictionarySearch";
 import { getNumericUserId } from "@/lib/user";
 import type { DictionaryFilterInput } from "@/types/dictionary-bulk";
 import { apiRoute } from "@/utils/appRoute";
@@ -50,6 +51,7 @@ function error(status: number, message: string, errorCode: string) {
 function buildDefinitionWhere(filter: DictionaryFilterInput): Prisma.opred_vWhereInput {
   const language = filter.language.toLowerCase();
   const q = filter.query?.trim() ?? "";
+  const scope = filter.scope ?? "both";
   const textFilter = { contains: q, mode: "insensitive" as const };
   const tagNames = Array.from(new Set((filter.tagNames ?? []).map((s) => s.trim()).filter(Boolean)));
   const excludeTagNames = Array.from(new Set((filter.excludeTagNames ?? []).map((s) => s.trim()).filter(Boolean)));
@@ -70,14 +72,19 @@ function buildDefinitionWhere(filter: DictionaryFilterInput): Prisma.opred_vWher
           },
         }
       : {}),
-    ...(q && (filter.scope === "word" || filter.scope === "both") ? { word_text: textFilter } : {}),
+    ...(q && scope === "word" ? { word_text: textFilter } : {}),
   };
 
   const where: Prisma.opred_vWhereInput = {
     is_deleted: false,
     OR: [{ end_date: null }, { end_date: { gte: now } }],
     language: { is: { code: language } },
-    ...(q && (filter.scope === "def" || filter.scope === "both") ? { text_opr: textFilter } : {}),
+    ...(q && scope === "def" ? { text_opr: textFilter } : {}),
+    ...(q && scope === "both"
+      ? {
+          AND: [{ OR: [{ word_v: { is: { word_text: textFilter } } }, { text_opr: textFilter }] }],
+        }
+      : {}),
     ...(filter.lenFilterField === "def" && (lenMin != null || lenMax != null)
       ? {
           length: {
@@ -170,38 +177,24 @@ const postHandler = async (
   let cursor: bigint | undefined;
   let applied = 0;
   const q = filter.query?.trim() ?? "";
-  const scope = filter.scope;
+  const scope = filter.scope ?? "both";
   const searchMode =
     filter.searchMode === "startsWith" || filter.searchMode === "exact" ? filter.searchMode : "contains";
-  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const searchRegex =
-    (searchMode === "startsWith" || searchMode === "exact") && q.length
-      ? new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(q)}${searchMode === "exact" ? "([^\\p{L}\\p{N}]|$)" : ""}`, "iu")
-      : null;
-  const shouldCheckWord = scope === "word" || scope === "both";
-  const shouldCheckDef = scope === "def" || scope === "both";
-  const matchesSearch = (text: string) => {
-    if (!searchRegex) return true;
-    return searchRegex.test(text);
-  };
+  const searchRegex = buildDictionarySearchRegex(q, searchMode);
 
   await prisma.$transaction(async (tx) => {
     while (true) {
+      // Adding a tag can remove the cursor row from this filter. Advance by ID
+      // rather than skipping a row relative to that changing result set.
       const rows = await tx.opred_v.findMany({
-        where,
+        where: { ...where, ...(cursor != null ? { id: { gt: cursor } } : {}) },
         select: { id: true, text_opr: true, word_v: { select: { word_text: true } } },
         orderBy: { id: "asc" },
         take: batchSize,
-        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       });
       if (!rows.length) break;
       const filteredRows = searchRegex
-        ? rows.filter((r) => {
-            const wordText = r.word_v?.word_text ?? "";
-            const wordMatches = shouldCheckWord ? matchesSearch(wordText) : true;
-            const defMatches = shouldCheckDef ? matchesSearch(r.text_opr) : true;
-            return wordMatches && defMatches;
-          })
+        ? rows.filter((r) => matchesDictionarySearch(searchRegex, scope, r.word_v?.word_text ?? "", r.text_opr))
         : rows;
       const targets = filteredRows.filter((r) => !excludeSet.has(String(r.id)));
       if (targets.length) {

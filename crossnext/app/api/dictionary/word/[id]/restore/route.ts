@@ -27,9 +27,10 @@ const postHandler = async (_req: NextRequest, _body: unknown, params: { id: stri
       },
     });
     await tx.opred_v.updateMany({
-      where: { word_id: wordId },
+      where: { word_id: wordId, is_deleted: true, deletedWithWord: true },
       data: {
         is_deleted: false,
+        deletedWithWord: false,
         ...(updateById != null ? { updateBy: updateById } : {}),
       },
     });

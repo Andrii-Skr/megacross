@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { appendTemplateFiles } from "./appendFiles";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { Prisma, createPrismaClient } from "../db/prisma";
 import { loadDictionary, loadDictionaryByTemplate, type DictionaryFilterTemplate } from "../services/dictionary";
@@ -318,9 +319,12 @@ export function scheduleTemplateGenerationCleanup(): () => void {
 
 export async function appendTemplatesToIssue(jobId: bigint, resultIds: bigint[], issueId: bigint) {
   const prisma = createPrismaClient();
-  const written: string[] = [];
   try {
-    const active = await prisma.$queryRaw<Array<{ id: bigint }>>(Prisma.sql`SELECT id FROM scanword_fill_jobs WHERE "issueId" = ${issueId} AND status IN ('queued','running','review') LIMIT 1`);
+    const active = await prisma.$queryRaw<Array<{ id: bigint }>>(Prisma.sql`SELECT id FROM scanword_fill_jobs WHERE "issueId" = ${issueId} AND (
+      status IN ('queued','running') OR (
+        status = 'review' AND id = (SELECT id FROM scanword_fill_jobs WHERE "issueId" = ${issueId} ORDER BY id DESC LIMIT 1)
+      )
+    ) LIMIT 1`);
     if (active.length) throw Object.assign(new Error("fill job is active for this issue"), { status: 409 });
     const issueRows = await prisma.$queryRaw<Array<{ editionCode: string; issueLabel: string }>>(Prisma.sql`
       SELECT e.code AS "editionCode", n.label AS "issueLabel" FROM issues i
@@ -332,41 +336,32 @@ export async function appendTemplatesToIssue(jobId: bigint, resultIds: bigint[],
     const base = process.env.CROSS_SAMPLES_DIR?.trim();
     if (!base) throw new Error("CROSS_SAMPLES_DIR is not configured");
     const directory = getSamplesDirForIssue(issue);
-    await mkdir(directory, { recursive: true });
     const results = await getTemplateResultsByIds(prisma, jobId, resultIds);
     if (results.length !== resultIds.length) throw Object.assign(new Error("one or more results were not found"), { status: 404 });
-    const existing = new Set(await readdir(directory));
-    for (const result of results) {
-      const stem = `generated_${jobId.toString()}_${result.ordinal}`;
-      let name = `${stem}.fsh`;
-      let suffix = 2;
-      while (existing.has(name)) { name = `${stem}_${suffix}.fsh`; suffix += 1; }
-      const target = path.join(directory, name);
-      const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
-      await writeFile(temporary, Buffer.from(result.fshBytes));
-      await rename(temporary, target);
-      existing.add(name);
-      written.push(name);
-    }
-    const files = (await readdir(directory)).filter((name) => name.toLowerCase().endsWith(".fsh")).sort();
-    const snapshotFiles = await Promise.all(files.map(async (name) => {
-      const { size } = await stat(path.join(directory, name));
-      return { key: `${name}:${size}`, name, size };
-    }));
-    const neededStats: Record<string, number> = { total: 0 };
-    for (const name of files) {
-      try {
-        const grid = parseFsh(path.join(directory, name));
-        const slots = slotsForSolver(grid);
-        neededStats.total += slots.length;
-        for (const slot of slots) neededStats[slot.len] = (neededStats[slot.len] ?? 0) + 1;
-      } catch { /* keep snapshot usable when a legacy file is malformed */ }
-    }
-    await prisma.$executeRaw(Prisma.sql`
-      INSERT INTO scanword_upload_snapshots ("issueId", "fileCount", "errorCount", "neededStats", files, errors, "createdAt", "updatedAt")
-      VALUES (${issueId}, ${files.length}, 0, ${JSON.stringify(neededStats)}::jsonb, ${JSON.stringify(snapshotFiles)}::jsonb, '[]'::jsonb, now(), now())
-      ON CONFLICT ("issueId") DO UPDATE SET "fileCount" = EXCLUDED."fileCount", "errorCount" = 0, "neededStats" = EXCLUDED."neededStats", files = EXCLUDED.files, errors = EXCLUDED.errors, "updatedAt" = now()
-    `);
-    return { written, fileCount: files.length, neededStats };
+    return await appendTemplateFiles(directory, results.map((result) => ({
+      stem: `generated_${jobId.toString()}_${result.ordinal}`,
+      bytes: result.fshBytes,
+    })), async (written) => {
+      const files = (await readdir(directory)).filter((name) => name.toLowerCase().endsWith(".fsh")).sort();
+      const snapshotFiles = await Promise.all(files.map(async (name) => {
+        const { size } = await stat(path.join(directory, name));
+        return { key: `${name}:${size}`, name, size };
+      }));
+      const neededStats: Record<string, number> = { total: 0 };
+      for (const name of files) {
+        try {
+          const grid = parseFsh(path.join(directory, name));
+          const slots = slotsForSolver(grid);
+          neededStats.total += slots.length;
+          for (const slot of slots) neededStats[slot.len] = (neededStats[slot.len] ?? 0) + 1;
+        } catch { /* keep snapshot usable when a legacy file is malformed */ }
+      }
+      await prisma.$executeRaw(Prisma.sql`
+        INSERT INTO scanword_upload_snapshots ("issueId", "fileCount", "errorCount", "neededStats", files, errors, "createdAt", "updatedAt")
+        VALUES (${issueId}, ${files.length}, 0, ${JSON.stringify(neededStats)}::jsonb, ${JSON.stringify(snapshotFiles)}::jsonb, '[]'::jsonb, now(), now())
+        ON CONFLICT ("issueId") DO UPDATE SET "fileCount" = EXCLUDED."fileCount", "errorCount" = 0, "neededStats" = EXCLUDED."neededStats", files = EXCLUDED.files, errors = EXCLUDED.errors, "updatedAt" = now()
+      `);
+      return { written, fileCount: files.length, neededStats };
+    });
   } finally { await prisma.$disconnect(); }
 }

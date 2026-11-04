@@ -354,3 +354,19 @@ describe("review draft state helpers", () => {
     expect(wordMatchesFixedLetters("АГУТИН", fixedLetters)).toBe(false);
   });
 });
+
+describe("photo area image selection", () => {
+  it("drops an incompatible saved image when building the finalize payload", () => {
+    const payload = makeReviewPayload();
+    const slot = payload.templates[0]?.slots[0];
+    if (!slot) throw new Error("Missing slot fixture");
+    slot.isPhotoDefinition = true;
+    slot.photoAreaBounds = { minRow: 0, minCol: 0, maxRow: 3, maxCol: 3 };
+    slot.selectedImageId = "700";
+    const states = Object.fromEntries(
+      buildEditableTemplateStates(payload.templates).map((template) => [template.key, template.slots]),
+    );
+    const result = buildFinalizePayload(payload, states, { maxPerCell: 30, maxPerHalfCell: 15 });
+    expect(result.templates[0]?.slots[0]?.imageId).toBeNull();
+  });
+});

@@ -2,6 +2,11 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import {
+  isValidStorageName,
+  resolveIssueStorageDirectory,
+  sanitizeStorageName as sanitizeName,
+} from "@megacross/cross-format/storage-paths";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
@@ -33,7 +38,7 @@ const editionSchema = z.object({
 
 const issueSchema = z.object({
   editionId: z.number().int().positive(),
-  label: z.string().trim().min(1).max(64),
+  label: z.string().trim().min(1).max(64).refine(isValidStorageName, { message: "INVALID_ISSUE_LABEL" }),
 });
 
 const issueTemplateSchema = z.object({
@@ -404,16 +409,6 @@ function samplesBaseDir() {
   return configured;
 }
 
-function sanitizeName(name: string) {
-  const base = path
-    .basename(name)
-    .replace(/[\r\n\t]/g, " ")
-    .trim();
-  const normalized = base.normalize("NFC");
-  const safe = normalized.replace(/[^\p{L}\p{N}\p{M}\-_. ]+/gu, "_");
-  return safe.replace(/_{2,}/g, "_").replace(/ {2,}/g, " ");
-}
-
 async function resolveIssueSamplesDir(issueId: bigint): Promise<string | null> {
   const issue = await prisma.issue.findUnique({
     where: { id: issueId },
@@ -423,7 +418,7 @@ async function resolveIssueSamplesDir(issueId: bigint): Promise<string | null> {
     },
   });
   if (!issue) return null;
-  return path.join(samplesBaseDir(), sanitizeName(issue.edition.code), sanitizeName(issue.issueNumber.label));
+  return resolveIssueStorageDirectory(samplesBaseDir(), issue.edition.code, issue.issueNumber.label);
 }
 
 function buildPreviewCells(slots: TemplateSetupPreviewSlot[]): TemplateSetupPreviewCell[] {
@@ -575,7 +570,10 @@ async function loadPreviewArrowAssets(): Promise<Record<number, PreviewArrowAsse
     const entries = await Promise.all(
       Object.entries(PREVIEW_ARROW_FILES).map(async ([rawCode, fileName]) => {
         const code = Number(rawCode);
-        const raw = await readFile(path.join(baseDir, fileName), "utf8");
+        const raw = await readFile(
+          /* turbopackIgnore: true */ path.join(/* turbopackIgnore: true */ baseDir, fileName),
+          "utf8",
+        );
         const svgMatch = raw.match(/<svg[^>]*>([\s\S]*?)<\/svg>/i);
         const bodyRaw = svgMatch?.[1] ?? raw;
         const bodyStyled = inlinePreviewArrowClassStyles(bodyRaw, parsePreviewArrowClassStyles(raw))
@@ -1288,8 +1286,9 @@ export async function getScanwordTemplateSetupPreviewAction(
   const templates: TemplateSetupPreviewTemplate[] = [];
 
   for (const [order, file] of snapshot.files.entries()) {
-    const filePath = path.join(samplesDir, sanitizeName(file.name));
-    const buffer = await readFile(filePath);
+    // Uploaded templates live in runtime storage, outside the application bundle.
+    const filePath = path.join(/* turbopackIgnore: true */ samplesDir, sanitizeName(file.name));
+    const buffer = await readFile(/* turbopackIgnore: true */ filePath);
     const grid = parseFshBytes(buffer);
     validate(grid);
     const slotScan = scanSlotsDetailed(grid);
@@ -1521,6 +1520,7 @@ export async function listScanwordSvgFontsAction() {
         "createdAt",
         "updatedAt"
       FROM "public"."scanword_svg_fonts"
+      WHERE "format" IN ('ttf', 'otf')
       ORDER BY "displayName" ASC, "id" DESC
     `);
     return rows.map((row) => ({
@@ -1610,8 +1610,8 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
   const systemFontFamily = normalizeSystemFontFamily(data.systemFontFamily ?? DEFAULT_SVG_SYSTEM_FONT_FAMILY);
 
   if (fontId != null) {
-    const rows = await prisma.$queryRaw<Array<{ id: bigint }>>(Prisma.sql`
-      SELECT "id"
+    const rows = await prisma.$queryRaw<Array<{ id: bigint; format: string }>>(Prisma.sql`
+      SELECT "id", "format"
       FROM "public"."scanword_svg_fonts"
       WHERE "id" = ${fontId}
       LIMIT 1
@@ -1620,6 +1620,7 @@ export async function saveScanwordIssueSvgSettingsAction(input: z.infer<typeof i
     if (!font) {
       throw actionError("SVG_FONT_NOT_FOUND", 404);
     }
+    if (font.format !== "ttf" && font.format !== "otf") throw actionError("SVG_FONT_UNSUPPORTED_FORMAT", 400);
   }
 
   await prisma.$executeRaw(Prisma.sql`

@@ -119,4 +119,36 @@ describe("/api/template-generator/jobs", () => {
     expect(response.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each([502, 503])("preserves upstream %s diagnostics without replaying a POST", async (status) => {
+    const body = { error: "Cross API authentication is not configured" };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(
+      makeReq("POST", "http://localhost/api/template-generator/jobs", requestBody),
+      makeCtx({}),
+    );
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(body);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("tries another address when the connection fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "91" }), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(
+      makeReq("POST", "http://localhost/api/template-generator/jobs", requestBody),
+      makeCtx({}),
+    );
+    expect(response.status).toBe(202);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

@@ -1,6 +1,8 @@
+import { getPhotoAreaSize, isPhotoImageRatioAllowed } from "@megacross/cross-clues";
 import type {
   FillDefinitionLimits,
   FillFinalizePayload,
+  FillPhotoAreaBounds,
   FillReviewDefinitionOption,
   FillReviewPayload,
   FillReviewSlot,
@@ -93,11 +95,21 @@ export function normalizeDefinitionOptions(
   return [...byText.values()];
 }
 
+export function filterSlotImages(
+  images: WordImageOption[] | null | undefined,
+  bounds?: FillPhotoAreaBounds | null,
+): WordImageOption[] {
+  const safeImages = Array.isArray(images) ? images : [];
+  const size = getPhotoAreaSize(bounds);
+  return size ? safeImages.filter((image) => isPhotoImageRatioAllowed(image, size)) : safeImages;
+}
+
 export function resolveSelectedImageId(
   images: WordImageOption[] | null | undefined,
   preferredImageId?: string | null,
+  bounds?: FillPhotoAreaBounds | null,
 ): string | null {
-  const safeImages = Array.isArray(images) ? images : [];
+  const safeImages = filterSlotImages(images, bounds);
   if (preferredImageId && safeImages.some((image) => image.id === preferredImageId)) {
     return preferredImageId;
   }
@@ -385,7 +397,12 @@ export function buildFinalizePayload(
         definition: (slot.definition ?? "").trim(),
         wordId: slot.wordId ?? null,
         opredId: slot.opredId ?? null,
-        imageId: slot.selectedImageId ?? resolveSelectedImageId(slot.availableImages),
+        imageId: (() => {
+          const bounds = template.slots.find((item) => item.slotId === slot.slotId)?.photoAreaBounds;
+          return bounds
+            ? resolveSelectedImageId(slot.availableImages, slot.selectedImageId, bounds)
+            : (slot.selectedImageId ?? resolveSelectedImageId(slot.availableImages));
+        })(),
       })),
     })),
     definitionLimits: {

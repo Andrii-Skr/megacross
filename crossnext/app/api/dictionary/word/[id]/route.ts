@@ -9,7 +9,8 @@ import { getNumericUserId } from "@/lib/user";
 import { apiRoute } from "@/utils/appRoute";
 
 const schema = z.object({
-  word_text: z.string().min(1),
+  word_text: z.string().trim().min(1),
+  isImageable: z.boolean().optional(),
   note: z.string().max(512).optional(),
 });
 type Body = z.infer<typeof schema>;
@@ -41,7 +42,7 @@ const getHandler = async (req: NextRequest, _body: unknown, params: { id: string
 
   const baseWord = await prisma.word_v.findFirst({
     where: { id: wordId, is_deleted: false },
-    select: { id: true, word_text: true, langId: true },
+    select: { id: true, word_text: true, langId: true, isImageable: true },
   });
   if (!baseWord) {
     return error(404, "Word not found", "WORD_NOT_FOUND");
@@ -92,6 +93,7 @@ const getHandler = async (req: NextRequest, _body: unknown, params: { id: string
   return NextResponse.json({
     id: String(baseWord.id),
     word_text: baseWord.word_text,
+    isImageable: baseWord.isImageable,
     opred_v: defs.map((d) => ({
       id: String(d.id),
       text_opr: d.text_opr,
@@ -141,6 +143,7 @@ const putHandler = async (_req: NextRequest, body: Body, params: { id: string },
         langId: base.langId,
         note: JSON.stringify({
           kind: "editWord",
+          ...(body.isImageable !== undefined ? { isImageable: body.isImageable } : {}),
           createdBy: userLabel(user),
           ...(textNote ? { text: textNote } : {}),
         }),
@@ -183,9 +186,10 @@ const deleteHandler = async (
       },
     });
     await tx.opred_v.updateMany({
-      where: { word_id: wordId },
+      where: { word_id: wordId, is_deleted: false },
       data: {
         is_deleted: true,
+        deletedWithWord: true,
         ...(updateById != null ? { updateBy: updateById } : {}),
       },
     });

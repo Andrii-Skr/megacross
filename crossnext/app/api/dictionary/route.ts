@@ -1,8 +1,12 @@
 import { Prisma } from "@prisma/client";
 import { type NextRequest, NextResponse } from "next/server";
 import type { Session } from "next-auth";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { buildDictionarySearchRegex, filterDictionarySearchRows } from "@/lib/dictionarySearch";
 import { apiRoute } from "@/utils/appRoute";
+
+const pageSizeSchema = z.coerce.number().int().min(1);
 
 function error(status: number, message: string, errorCode: string) {
   return NextResponse.json({ success: false, message, errorCode }, { status });
@@ -54,7 +58,9 @@ const getHandler = async (
   const diffMaxRaw = searchParams.get("difficultyMax");
   const difficultyMin = diffMinRaw && diffMinRaw !== "" ? Number.parseInt(diffMinRaw, 10) : undefined;
   const difficultyMax = diffMaxRaw && diffMaxRaw !== "" ? Number.parseInt(diffMaxRaw, 10) : undefined;
-  const take = Math.min(Number(searchParams.get("take") || 20), 50);
+  const pageSize = pageSizeSchema.safeParse(searchParams.get("take") ?? 20);
+  if (!pageSize.success) return error(400, "Invalid page size", "INVALID_PAGE_SIZE");
+  const take = Math.min(pageSize.data, 50);
   const cursorParam = searchParams.get("cursor");
   let cursor: bigint | undefined;
   if (cursorParam) {
@@ -65,13 +71,8 @@ const getHandler = async (
     }
   }
   const now = new Date();
-  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
   const textFilter = { contains: q, mode: "insensitive" as const };
-  const searchRegex =
-    (searchMode === "startsWith" || searchMode === "exact") && q.length
-      ? new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(q)}${searchMode === "exact" ? "([^\\p{L}\\p{N}]|$)" : ""}`, "iu")
-      : null;
+  const searchRegex = buildDictionarySearchRegex(q, searchMode);
   const wordSearch = q && (scope === "word" || scope === "both") ? { word_text: textFilter } : undefined;
 
   const whereLenWord =
@@ -87,6 +88,7 @@ const getHandler = async (
   // Combine definition-level filters (tag, length, difficulty) so a single definition must satisfy all.
   // Text search is applied separately depending on scope.
   const opredSomeBase: Record<string, unknown> = {
+    is_deleted: false,
     language: { is: { code: langCode } },
   };
   if (tagNames.length)
@@ -140,6 +142,7 @@ const getHandler = async (
       : null;
 
   const baseWhere = {
+    ...(searchParams.get("isImageable") === "true" ? { isImageable: true } : {}),
     is_deleted: false,
     // filter words by selected dictionary language
     language: { is: { code: langCode } },
@@ -208,6 +211,9 @@ const getHandler = async (
           }
         : {}),
     ...(q && scope === "def" ? { text_opr: textFilter } : {}),
+    ...(q && scope === "both"
+      ? { AND: [{ OR: [{ word_v: { is: { word_text: textFilter } } }, { text_opr: textFilter }] }] }
+      : {}),
   };
 
   const orderBy: Prisma.word_vOrderByWithRelationInput[] =
@@ -257,52 +263,15 @@ const getHandler = async (
     word_text: string;
     opred_v: Array<{ id: bigint | string; text_opr: string }>;
   };
-  const matchesSearch = (text: string) => {
-    if (!searchRegex) return true;
-    return searchRegex.test(text);
-  };
-
-  const filterExact = <T extends SearchableWord>(items: T[]) => {
-    if (!searchRegex) return items;
-    return items
-      .map((w) => {
-        const defMatches = w.opred_v.filter((d) => matchesSearch(d.text_opr));
-        const wordMatches = matchesSearch(w.word_text);
-        if (scope === "word" && wordMatches) return { ...w, opred_v: defMatches };
-        if (scope === "def" && defMatches.length) return { ...w, opred_v: defMatches };
-        if (scope === "both" && (wordMatches || defMatches.length))
-          return { ...w, opred_v: defMatches.length ? defMatches : w.opred_v };
-        return null;
-      })
-      .filter((w): w is NonNullable<typeof w> => !!w);
-  };
-
-  const filterStartsWith = <T extends SearchableWord>(items: T[]) => {
-    if (!searchRegex) return items;
-    return items
-      .map((w) => {
-        const defMatches = w.opred_v.filter((d) => matchesSearch(d.text_opr));
-        const wordMatches = matchesSearch(w.word_text);
-        if (scope === "word") return wordMatches ? w : null;
-        if (scope === "def") return defMatches.length ? { ...w, opred_v: defMatches } : null;
-        if (scope === "both") return wordMatches || defMatches.length ? w : null;
-        return null;
-      })
-      .filter((w): w is NonNullable<typeof w> => !!w);
-  };
-
-  const filterBySearch = <T extends SearchableWord>(items: T[]) => {
-    if (searchMode === "exact") return filterExact(items);
-    if (searchMode === "startsWith") return filterStartsWith(items);
-    return items;
-  };
+  const filterBySearch = <T extends SearchableWord>(items: T[]) =>
+    filterDictionarySearchRows(items, searchRegex, scope);
 
   // Fetch and, for "exact"/"startsWith" modes, keep pulling batches until the first page is filled with matching rows.
   const items = await fetchBatch(cursor);
   let hasMore = items.length > take;
   const collected = hasMore ? items.slice(0, take) : items;
   let collectedFiltered = filterBySearch(collected);
-  let scanCursor: bigint | undefined = hasMore ? items[items.length - 1]?.id : undefined;
+  let scanCursor: bigint | undefined = hasMore ? collected[collected.length - 1]?.id : undefined;
 
   if (searchRegex) {
     while (collectedFiltered.length < take && hasMore) {
@@ -315,7 +284,7 @@ const getHandler = async (
       const slice = hasMore ? nextBatch.slice(0, take) : nextBatch;
       collected.push(...slice);
       collectedFiltered = filterBySearch(collected);
-      scanCursor = hasMore ? nextBatch[nextBatch.length - 1]?.id : undefined;
+      scanCursor = hasMore ? slice[slice.length - 1]?.id : undefined;
     }
   }
 
@@ -374,6 +343,7 @@ const getHandler = async (
   const safe = pageRaw.map((w) => ({
     id: String(w.id),
     word_text: w.word_text,
+    isImageable: w.isImageable,
     is_pending_edit: wordPendingSet.has(String(w.id)),
     defs_total: defsCountMap.get(String(w.id)) ?? w.opred_v.length,
     opred_v: w.opred_v.map((d) => ({

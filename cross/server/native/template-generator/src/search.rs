@@ -37,6 +37,7 @@ struct Search<'a> {
     visited: HashSet<Vec<u8>>,
     cache: HashMap<Vec<u8>, Option<Arc<Trial>>>,
     order: VecDeque<Vec<u8>>,
+    matching_cache: matching::MatchingCache,
 }
 impl Search<'_> {
     fn weights(&self) -> Option<&std::collections::BTreeMap<usize, f64>> {
@@ -51,7 +52,19 @@ impl Search<'_> {
             return None;
         }
         let matching_started = self.input.profile.then(Instant::now);
-        let own = matching::diagnose(&e, self.pictures, &self.input.arrows, self.control);
+        let hits_before = self.matching_cache.hits;
+        let own = matching::diagnose(
+            &e,
+            self.pictures,
+            &self.input.arrows,
+            self.control,
+            Some(&mut self.matching_cache),
+        );
+        bump(
+            self.d,
+            "matchingCacheHits",
+            self.matching_cache.hits - hits_before,
+        );
         record_elapsed(self.d, "matchingMs", matching_started);
         bump(self.d, "matchingSearchNodes", own.choices);
         if !own.exhaustive {
@@ -243,7 +256,7 @@ fn balance(
     control: &Control,
 ) -> Option<(Evaluation, usize)> {
     let mut m = built.mask.clone();
-    if topology::assign(&m, 3, &input.arrows).is_none()
+    if topology::assign(&m, &input.arrows).is_none()
         && !repair::repair(&mut m, &built.pictures, rng, &input.arrows, control)
     {
         bump(d, "repairRejected", 1);
@@ -254,17 +267,10 @@ fn balance(
     } else {
         None
     };
-    let min = if weight(weights, 2) > 0.0
-        && rng.next() < (weight(weights, 2) * m.cells.len() as f64).min(0.05)
-    {
-        2
-    } else {
-        3
-    };
-    let initial = topology::assign(&m, min, &input.arrows)?;
-    let mut index = topology::RunIndex::new(&m, min);
+    let initial = topology::assign(&m, &input.arrows)?;
+    let mut index = topology::RunIndex::new(&m);
     let area = m.cells.len();
-    let iterations = area.div_ceil(12).clamp(24, 180);
+    let iterations = balance_iteration_budget(area);
     let limit = (area as f64 * 0.22).ceil().clamp(50.0, 200.0) as usize;
     let collar = geometry::photo_margin(&m, &built.pictures);
     let mut s = Search {
@@ -276,6 +282,7 @@ fn balance(
         visited: HashSet::new(),
         cache: HashMap::new(),
         order: VecDeque::new(),
+        matching_cache: Default::default(),
     };
     let mut current = s.inspect(initial)?;
     s.visited.insert(m.key());
@@ -290,6 +297,7 @@ fn balance(
         if control.stopped() {
             return None;
         }
+        bump(s.d, "balanceIterations", 1);
         let state = &current.state;
         if state.gap == 0
             && state.bad == 0
@@ -302,9 +310,14 @@ fn balance(
             {
                 if geometry::same_pictures(&matched.mask, &built.pictures) {
                     if let Some(verified) = topology::verify(&matched, &input.arrows) {
-                        let doubles =
-                            matching::diagnose(&matched, &built.pictures, &input.arrows, control)
-                                .doubles;
+                        let doubles = matching::diagnose(
+                            &matched,
+                            &built.pictures,
+                            &input.arrows,
+                            control,
+                            None,
+                        )
+                        .doubles;
                         let minimum = if state.target == 0 {
                             0
                         } else {
@@ -328,6 +341,7 @@ fn balance(
             }
         }
         if iteration == iterations {
+            bump(s.d, "balanceIterationLimitStops", 1);
             break;
         }
         let mut cells: Vec<_> = (0..area)
@@ -455,7 +469,7 @@ fn balance(
         s.d.insert("lastGap".into(), current.state.gap as f64);
         s.d.insert("lastBad".into(), current.state.bad as f64);
         s.d.insert("lastScore".into(), current.state.score);
-        let own = matching::diagnose(&current.e, &built.pictures, &input.arrows, control);
+        let own = matching::diagnose(&current.e, &built.pictures, &input.arrows, control, None);
         s.d.insert("lastUnmatched".into(), own.unmatched as f64);
     }
     fallback

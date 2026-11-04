@@ -8,6 +8,8 @@
     "preinstall": "npx only-allow pnpm",
     "start": "pnpm exec tsx src/index.ts",
     "fsh": "tsx scripts/fsh.ts",
+    "image-generation:candidates": "node --import tsx scripts/image-generation-batch.ts list",
+    "image-generation:mark": "node --import tsx scripts/image-generation-batch.ts mark",
     "length-stats": "tsx scripts/length-stats.ts",
     "fill-crw": "tsx scripts/fill-crw.ts",
     "fill-export": "tsx scripts/fill-export.ts",
@@ -22,6 +24,7 @@
     "test:solution-polish-smoke": "tsx scripts/solution-polish-smoke.ts",
     "test:fill-review-regeneration-smoke": "tsx scripts/fill-review-regeneration-smoke.ts",
     "test:solver-priority-slack-smoke": "tsx scripts/solver-priority-slack-smoke.ts",
+    "test:solver-imageability-smoke": "node --import tsx scripts/solver-imageability-smoke.ts",
     "test:solver-csp-smoke": "tsx scripts/solver-csp-smoke.ts",
     "test:solver-csp-parity-smoke": "tsx scripts/solver-csp-parity-smoke.ts",
     "test:solver-csp-perf-smoke": "tsx scripts/solver-csp-perf-smoke.ts",
@@ -34,6 +37,9 @@
     "test:template-pipeline": "node --import tsx scripts/template-pipeline-benchmark.ts",
     "test:template-rust-benchmark": "node --import tsx scripts/template-rust-benchmark.ts",
     "build:template-native": "node scripts/build-template-native.mjs",
+    "test:template-large": "node --import tsx scripts/template-large-smoke.ts",
+    "test:template-search-profile": "node --import tsx scripts/template-search-profile.ts",
+    "test:template-runs": "node --import tsx scripts/template-run-smoke.ts",
     "test:template-generator": "tsx scripts/template-generator-smoke.ts",
     "test:structure-worker": "tsx scripts/structure-worker-smoke.ts",
     "test:template-search-benchmark": "tsx scripts/template-search-benchmark.ts",
@@ -82,7 +88,7 @@
     "express": "^5.2.1",
     "fontkit": "^2.0.4",
     "hyphen": "^1.14.1",
-    "sharp": "0.35.4"
+    "sharp": "0.35.5"
   },
   "packageManager": "pnpm@10.28.1+sha512.7d7dbbca9e99447b7c3bf7a73286afaaf6be99251eb9498baefa7d406892f67b879adb3a1d7e687fc4ccc1a388c7175fbaae567a26ab44d1067b54fcb0d6a316"
 }

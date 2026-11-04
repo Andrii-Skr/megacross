@@ -1,5 +1,6 @@
 use crate::model::*;
 use crate::topology::{fits, matching_arrows};
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone)]
 pub struct OptionClue {
@@ -16,7 +17,7 @@ pub struct Problem {
     pub groups: Vec<Group>,
     pub resources: Vec<Option<usize>>,
 }
-pub fn problem(e: &Evaluation, pictures: &[Picture], arrows: &[Arrow]) -> Problem {
+pub fn problem(e: &Evaluation, pictures: &[Picture], arrows: &ArrowTable) -> Problem {
     let mask = &e.mask;
     let mut by_cell = vec![NONE; mask.cells.len()];
     let mut resources = vec![None; pictures.len()];
@@ -122,6 +123,10 @@ struct Component<'a> {
     singles: Vec<usize>,
     doubles: Vec<usize>,
     reserved: Vec<bool>,
+    reserved_count: usize,
+    claimed: Vec<usize>,
+    single_selected: Vec<Option<usize>>,
+    seen: Vec<usize>,
     chosen: Vec<Option<usize>>,
     best: Vec<Option<usize>>,
     best_count: isize,
@@ -134,36 +139,36 @@ struct Component<'a> {
 }
 impl Component<'_> {
     fn singles(&mut self) -> bool {
-        let mut claimed = vec![NONE; self.reserved.len()];
-        let mut selected = vec![None; self.groups.len()];
-        let mut seen = vec![NONE; claimed.len()];
+        self.claimed.fill(NONE);
+        self.single_selected.fill(None);
+        self.seen.fill(NONE);
+        let mut count = self.reserved_count;
         for &g in &self.singles {
-            if !augment(
+            if augment(
                 g,
                 self.groups,
                 &self.reserved,
-                &mut seen,
+                &mut self.seen,
                 g,
-                &mut claimed,
-                &mut selected,
-            ) && self.require_all
-            {
+                &mut self.claimed,
+                &mut self.single_selected,
+            ) {
+                count += 1;
+            } else if self.require_all {
                 return false;
             }
         }
-        let count = self.reserved.iter().filter(|&&v| v).count()
-            + claimed.iter().filter(|&&v| v != NONE).count();
         if count as isize > self.best_count {
             self.best_count = count as isize;
             self.best.clone_from(&self.chosen);
             for &g in &self.singles {
-                self.best[g] = selected[g];
+                self.best[g] = self.single_selected[g];
             }
         }
         true
     }
     fn search(&mut self, index: usize) {
-        let reserved = self.reserved.iter().filter(|&&v| v).count();
+        let reserved = self.reserved_count;
         if self.best_count == self.upper as isize
             || (reserved + 2 * (self.doubles.len() - index) + self.singles.len()) as isize
                 <= self.best_count
@@ -195,11 +200,13 @@ impl Component<'_> {
             self.chosen[group] = Some(option);
             for &r in ids {
                 self.reserved[r] = true;
+                self.reserved_count += 1;
             }
             self.search(index + 1);
             self.chosen[group] = None;
             for &r in &self.groups[group].options[option].resources {
                 self.reserved[r] = false;
+                self.reserved_count -= 1;
             }
             if self.best_count == self.upper as isize {
                 return;
@@ -210,12 +217,60 @@ impl Component<'_> {
         }
     }
 }
+#[derive(Clone)]
+struct CachedComponent {
+    selected: Vec<Option<usize>>,
+    choices: usize,
+    exhaustive: bool,
+}
+#[derive(Default)]
+pub struct MatchingCache {
+    entries: HashMap<Vec<usize>, CachedComponent>,
+    order: VecDeque<Vec<usize>>,
+    key_words: usize,
+    pub hits: usize,
+}
+impl MatchingCache {
+    fn insert(&mut self, key: Vec<usize>, value: CachedComponent) {
+        const MAX_WORDS: usize = 262144;
+        if key.len() > MAX_WORDS {
+            return;
+        }
+        while self.entries.len() >= 2048 || self.key_words + key.len() > MAX_WORDS {
+            let Some(old) = self.order.pop_front() else {
+                break;
+            };
+            self.key_words -= old.len();
+            self.entries.remove(&old);
+        }
+        self.key_words += key.len();
+        self.order.push_back(key.clone());
+        self.entries.insert(key, value);
+    }
+}
 pub fn match_groups(
     groups: &[Group],
     resource_count: usize,
     max_choices: usize,
     require_all: bool,
     control: &Control,
+) -> Match {
+    match_groups_cached(
+        groups,
+        resource_count,
+        max_choices,
+        require_all,
+        control,
+        None,
+    )
+}
+pub(crate) fn match_groups_cached(
+    groups: &[Group],
+    resource_count: usize,
+    max_choices: usize,
+    require_all: bool,
+    control: &Control,
+    mut cache: Option<&mut MatchingCache>,
 ) -> Match {
     let mut owners = vec![Vec::new(); resource_count];
     let mut seen = vec![NONE; resource_count];
@@ -268,6 +323,37 @@ pub fn match_groups(
         for (local, &global) in resource_ids.iter().enumerate() {
             resource_local[global] = local;
         }
+        // Resource ranks and component order fully describe this subproblem.
+        // Include the remaining shared branch budget: a truncated result is not
+        // interchangeable with an exact result or a result from a larger budget.
+        let key = cache.as_ref().filter(|_| component.len() <= 8).map(|_| {
+            let mut key = vec![
+                max_choices.saturating_sub(choices),
+                usize::from(require_all),
+                resource_ids.len(),
+                component.len(),
+            ];
+            for &g in &component {
+                key.extend([groups[g].dirs.len(), groups[g].options.len()]);
+                for option in &groups[g].options {
+                    key.push(option.resources.len());
+                    key.extend(option.resources.iter().map(|&r| resource_local[r]));
+                }
+            }
+            key
+        });
+        if let (Some(cache), Some(key)) = (cache.as_deref_mut(), key.as_ref()) {
+            if let Some(saved) = cache.entries.get(key) {
+                for (&global, &choice) in component.iter().zip(&saved.selected) {
+                    selected[global] = choice;
+                }
+                choices += saved.choices;
+                exhaustive &= saved.exhaustive;
+                cache.hits += 1;
+                continue;
+            }
+        }
+        let choices_before = choices;
         let compact = component.len() * 2 < groups.len();
         let local_groups: Vec<_> = if compact {
             component
@@ -317,6 +403,10 @@ pub fn match_groups(
             singles,
             doubles,
             reserved: vec![false; resource_count],
+            reserved_count: 0,
+            claimed: vec![NONE; resource_count],
+            single_selected: vec![None; groups.len()],
+            seen: vec![NONE; resource_count],
             chosen: vec![None; groups.len()],
             best: vec![None; groups.len()],
             best_count: -1,
@@ -337,12 +427,14 @@ pub fn match_groups(
                 state.chosen[g] = Some(o);
                 for &r in &ids.resources {
                     state.reserved[r] = true;
+                    state.reserved_count += 1;
                 }
             }
         }
         state.singles();
         state.chosen.fill(None);
         state.reserved.fill(false);
+        state.reserved_count = 0;
         if state.best_count < state.upper as isize {
             let mut answers = Vec::new();
             for &g in &local_ids {
@@ -370,6 +462,18 @@ pub fn match_groups(
         if state.truncated && state.best_count < state.upper as isize {
             exhaustive = false;
         }
+        if !control.stopped() {
+            if let (Some(cache), Some(key)) = (cache.as_deref_mut(), key) {
+                cache.insert(
+                    key,
+                    CachedComponent {
+                        selected: local_ids.iter().map(|&id| state.best[id]).collect(),
+                        choices: *state.choices - choices_before,
+                        exhaustive: !state.truncated || state.best_count == state.upper as isize,
+                    },
+                );
+            }
+        }
         for (&local, &global) in local_ids.iter().zip(&component) {
             selected[global] = state.best[local];
         }
@@ -394,11 +498,12 @@ pub struct Diagnostic {
 pub fn diagnose(
     e: &Evaluation,
     pictures: &[Picture],
-    arrows: &[Arrow],
+    arrows: &ArrowTable,
     control: &Control,
+    cache: Option<&mut MatchingCache>,
 ) -> Diagnostic {
     let p = problem(e, pictures, arrows);
-    let matched = match_groups(&p.groups, p.resources.len(), 16, false, control);
+    let matched = match_groups_cached(&p.groups, p.resources.len(), 16, false, control, cache);
     let mut possible = vec![false; p.resources.len()];
     let mut used = possible.clone();
     for (g, group) in p.groups.iter().enumerate() {
@@ -453,7 +558,7 @@ pub fn diagnose(
 pub fn assign_unique(
     e: &Evaluation,
     pictures: &[Picture],
-    arrows: &[Arrow],
+    arrows: &ArrowTable,
     control: &Control,
 ) -> Option<Evaluation> {
     let p = problem(e, pictures, arrows);

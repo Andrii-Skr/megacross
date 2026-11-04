@@ -478,6 +478,7 @@ export function WordList() {
         onOpenChange={(v) => !v && setEditWord(null)}
         wordId={editWord?.id ?? ""}
         initialValue={editWord?.text ?? ""}
+        initialIsImageable={items.find((word) => word.id === editWord?.id)?.isImageable ?? false}
         onSaved={async () => {
           incrementPending({ words: 1, descriptions: 0 });
           toast.success(t("wordChangeQueued"));

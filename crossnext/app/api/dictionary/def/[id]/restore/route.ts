@@ -21,6 +21,7 @@ const postHandler = async (_req: NextRequest, _body: unknown, params: { id: stri
     where: { id: opredId },
     data: {
       is_deleted: false,
+      deletedWithWord: false,
       ...(updateById != null ? { updateBy: updateById } : {}),
     },
     select: { id: true },

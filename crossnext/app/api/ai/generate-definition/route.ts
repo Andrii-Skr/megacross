@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { z } from "zod";
-import { buildUserPrompt, systemEn } from "@/lib/ai/prompts";
+import { buildUserPrompt, normalizeGeneratedDefinition, systemEn } from "@/lib/ai/prompts";
 import { generateWithAnthropic } from "@/lib/ai/providers/anthropic";
 import { generateWithGemini } from "@/lib/ai/providers/gemini";
 import { generateWithNvidia } from "@/lib/ai/providers/nvidia";
@@ -13,6 +13,7 @@ const schema = z.object({
   word: z.string().min(1),
   language: z.enum(["ru", "uk", "en"]).default("ru"),
   existing: z.array(z.string()).default([]),
+  avoid: z.array(z.string()).default([]),
   // Accept numeric strings too; keep strict bounds
   maxLength: z.coerce.number().int().min(10).max(512).default(255),
 });
@@ -27,9 +28,9 @@ const aiLog = (msg: string, meta?: Record<string, unknown>) => {
 export const POST = apiRoute<Body>(
   async (_req, body, _params, _user: Session["user"] | null) => {
     // Provider-agnostic config
-    const provider = (process.env.AI_PROVIDER || "nvidia").toLowerCase(); // nvidia|openai|anthropic|gemini
+    const provider = (process.env.AI_PROVIDER || "openai").toLowerCase(); // nvidia|openai|anthropic|gemini
     const commonModel = process.env.AI_MODEL;
-    const openAIModel = process.env.OPENAI_MODEL || (provider === "openai" ? commonModel : undefined) || "gpt-4o-mini";
+    const openAIModel = process.env.OPENAI_MODEL || (provider === "openai" ? commonModel : undefined) || "gpt-4.1-mini";
     const anthropicModel =
       process.env.ANTHROPIC_MODEL ||
       (provider === "anthropic" ? commonModel : undefined) ||
@@ -38,12 +39,12 @@ export const POST = apiRoute<Body>(
       process.env.GEMINI_MODEL || (provider === "gemini" ? commonModel : undefined) || "gemini-2.0-flash";
     const nvidiaModel =
       process.env.NVIDIA_MODEL || (provider === "nvidia" ? commonModel : undefined) || "google/gemma-3n-e4b-it";
-    const baseUrlOpenAI = (process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.openai.com").replace(
+    const baseUrlOpenAI = (process.env.OPENAI_BASE_URL || process.env.AI_BASE_URL || "https://api.openai.com").replace(
       /\/$/,
       "",
     );
     const baseUrlNvidia = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com").replace(/\/$/, "");
-    const apiKeyOpenAI = (process.env.AI_API_KEY || process.env.OPENAI_API_KEY)?.trim();
+    const apiKeyOpenAI = (process.env.OPENAI_API_KEY || process.env.AI_API_KEY)?.trim();
     const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim() || apiKeyOpenAI;
     const geminiKey = process.env.GEMINI_API_KEY?.trim() || process.env.AI_API_KEY?.trim();
     const nvidiaKey = process.env.NVIDIA_API_KEY?.trim() || process.env.AI_API_KEY?.trim();
@@ -130,7 +131,7 @@ export const POST = apiRoute<Body>(
       );
     }
 
-    const { word, existing, language, maxLength } = body;
+    const { word, existing, avoid, language, maxLength } = body;
     const timeoutMs = Math.max(1000, Math.min(60000, Number(process.env.AI_TIMEOUT_MS) || 20000));
 
     try {
@@ -141,6 +142,7 @@ export const POST = apiRoute<Body>(
             word,
             language,
             existing,
+            avoid,
             maxLength,
           },
           {
@@ -149,7 +151,7 @@ export const POST = apiRoute<Body>(
             version: process.env.ANTHROPIC_VERSION || "2023-06-01",
             extraHeaders,
             systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength),
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
             timeoutMs,
           },
         );
@@ -172,6 +174,7 @@ export const POST = apiRoute<Body>(
             word,
             language,
             existing,
+            avoid,
             maxLength,
           },
           {
@@ -183,7 +186,7 @@ export const POST = apiRoute<Body>(
             authHeader: process.env.GEMINI_AUTH_HEADER?.trim(),
             extraHeaders,
             systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength),
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
             timeoutMs,
           },
         );
@@ -206,6 +209,7 @@ export const POST = apiRoute<Body>(
             word,
             language,
             existing,
+            avoid,
             maxLength,
           },
           {
@@ -214,7 +218,7 @@ export const POST = apiRoute<Body>(
             model: nvidiaModel,
             extraHeaders,
             systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength),
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
             path: process.env.NVIDIA_PATH || "/v1/chat/completions",
             authHeader: process.env.NVIDIA_AUTH_HEADER || "Authorization",
             authScheme: process.env.NVIDIA_AUTH_SCHEME ?? "Bearer",
@@ -244,6 +248,7 @@ export const POST = apiRoute<Body>(
             word,
             language,
             existing,
+            avoid,
             maxLength,
           },
           {
@@ -252,7 +257,7 @@ export const POST = apiRoute<Body>(
             model: openAIModel,
             extraHeaders,
             systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength),
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
             path: process.env.AI_PATH || "/v1/chat/completions",
             authHeader: process.env.AI_AUTH_HEADER || "Authorization",
             authScheme: process.env.AI_AUTH_SCHEME ?? "Bearer",
@@ -273,40 +278,10 @@ export const POST = apiRoute<Body>(
         }
         textOut = r.text;
       }
-      const cleaned = (textOut || "")
-        .trim()
-        .replace(/^\p{Pd}+\s*/u, "")
-        .replace(/^"|"$/g, "")
-        .split(/\r?\n/)[0]
-        .slice(0, maxLength);
-
-      // Final guard: avoid returning role markers or placeholders as a valid definition
-      const cleanedLc = cleaned.toLowerCase();
-      const badSingles = new Set(["model", "assistant", "user", "system", "null", "undefined"]);
-      if (badSingles.has(cleanedLc) || /^(model|assistant|user|system)\s*:$/i.test(cleaned)) {
-        aiLog("AI returned invalid content", { provider });
-        return NextResponse.json(
-          {
-            success: false,
-            message: "AI returned invalid content",
-          },
-          {
-            status: 502,
-          },
-        );
-      }
-
+      const cleaned = normalizeGeneratedDefinition(textOut, word, [...existing, ...avoid], maxLength);
       if (!cleaned) {
-        aiLog("AI returned empty response", { provider });
-        return NextResponse.json(
-          {
-            success: false,
-            message: "Empty response",
-          },
-          {
-            status: 500,
-          },
-        );
+        aiLog("AI returned an invalid, duplicate or overlong definition", { provider });
+        return NextResponse.json({ success: false, message: "AI returned invalid content" }, { status: 502 });
       }
 
       return NextResponse.json({

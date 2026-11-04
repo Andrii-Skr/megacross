@@ -38,10 +38,12 @@ describe("/api/ai/generate-definition (POST)", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses NVIDIA as default provider and sends expected request payload", async () => {
+  it("uses OpenAI as default provider and sends expected request payload", async () => {
     delete process.env.AI_PROVIDER;
     process.env.AI_REQUIRE_API_KEY = "true";
-    process.env.NVIDIA_API_KEY = "nvapi-test";
+    process.env.OPENAI_API_KEY = "sk-test";
+    delete process.env.OPENAI_MODEL;
+    delete process.env.AI_MODEL;
     delete process.env.NVIDIA_MODEL;
 
     const fetchMock = vi
@@ -65,10 +67,10 @@ describe("/api/ai/generate-definition (POST)", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://integrate.api.nvidia.com/v1/chat/completions");
+    expect(url).toBe("https://api.openai.com/v1/chat/completions");
 
     const headers = init.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer nvapi-test");
+    expect(headers.Authorization).toBe("Bearer sk-test");
 
     const body = JSON.parse(String(init.body)) as {
       model: string;
@@ -76,10 +78,33 @@ describe("/api/ai/generate-definition (POST)", () => {
       temperature: number;
       top_p: number;
     };
-    expect(body.model).toBe("google/gemma-3n-e4b-it");
-    expect(body.stream).toBe(false);
-    expect(body.temperature).toBe(0.2);
-    expect(body.top_p).toBe(0.7);
+    expect(body.model).toBe("gpt-4.1-mini");
+    expect(body.temperature).toBe(0.3);
+  });
+
+  it("passes dictionary definitions and rejected variants as separate context", async () => {
+    process.env.AI_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "sk-test";
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "овощ с острым вкусом" } }] })));
+    const res = await POST(
+      makeReq("POST", "http://localhost/api/ai/generate-definition", {
+        word: "лук",
+        language: "ru",
+        existing: ["репчатый овощ", "оружие с тетивой"],
+        avoid: ["растение для стрельбы"],
+        maxLength: 60,
+      }),
+      makeCtx({}),
+    );
+    expect(res.status).toBe(200);
+    const upstream = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const context = JSON.parse(upstream.messages[1].content);
+    expect(context.word).toBe("лук");
+    expect(context.existing).toEqual(["репчатый овощ", "оружие с тетивой"]);
+    expect(context.avoid).toEqual(["растение для стрельбы"]);
+    expect(context.existing).not.toContain("растение для стрельбы");
   });
 
   it("returns 400 for NVIDIA when API key is missing", async () => {

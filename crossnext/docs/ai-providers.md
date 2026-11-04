@@ -1,7 +1,7 @@
 AI Providers (generation)
 
 Common env
-- `AI_PROVIDER` — `nvidia` | `openai` | `anthropic` | `gemini` (по умолчанию `nvidia`)
+- `AI_PROVIDER` — `nvidia` | `openai` | `anthropic` | `gemini` (по умолчанию `openai`)
 - `AI_MODEL` — общее имя модели (можно переопределить провайдер-специфичным)
 - `AI_REQUIRE_API_KEY` — `true|false` (по умолчанию true). Для локальных прокси можно выключить
 - `AI_EXTRA_HEADERS` — JSON с доп. заголовками
@@ -19,8 +19,8 @@ NVIDIA NIM
   - `NVIDIA_PRESENCE_PENALTY` (по умолчанию `0`)
 
 OpenAI‑совместимые
-- Ключ: `AI_API_KEY` или `OPENAI_API_KEY`
-- База/путь: `AI_BASE_URL` (или `OPENAI_BASE_URL`), `AI_PATH` (по умолчанию `/v1/chat/completions`)
+- Ключ: `OPENAI_API_KEY` или `AI_API_KEY` (приоритет у `OPENAI_API_KEY`)
+- База/путь: `OPENAI_BASE_URL` (или `AI_BASE_URL`), `AI_PATH` (по умолчанию `/v1/chat/completions`)
 - Заголовок/схема авторизации: `AI_AUTH_HEADER` (по умолчанию `Authorization`), `AI_AUTH_SCHEME` (по умолчанию `Bearer`)
 
 Anthropic (Claude)
@@ -35,7 +35,7 @@ Google Gemini
 
 Примеры `.env.local`
 
-NVIDIA (default)
+NVIDIA (optional)
 ```
 AI_PROVIDER=nvidia
 NVIDIA_MODEL=google/gemma-3n-e4b-it
@@ -47,8 +47,8 @@ NVIDIA_API_KEY=nvapi-...
 OpenAI
 ```
 AI_PROVIDER=openai
-AI_MODEL=gpt-4o-mini
-AI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=sk-...
 # AI_BASE_URL=https://api.openai.com
 # AI_PATH=/v1/chat/completions
 ```
@@ -83,3 +83,28 @@ GEMINI_API_KEY=AIza...
 Безопасность
 - Не коммитить реальные ключи. Используйте `.env.local`
 - Для CI/Prod — секреты через настройки окружения (Docker/Compose/Cloud)
+
+## Word images in fill review
+
+Photo slots offer **Generate image** using the current answer and selected definition. Generation is manual, one image per click. Existing uploads and image selection remain available. The generated image is selected immediately, saved in the word image library with `needsReview=true`, and fitted with white padding to the slot ratio without cutting off the subject. The operator must visually inspect it before finalizing.
+
+- `OPENAI_API_KEY` — server-side key for both definitions and images (`AI_API_KEY` is a fallback).
+- `OPENAI_MODEL` — definition model, default `gpt-4.1-mini`.
+- `OPENAI_IMAGE_MODEL` — image model, default `gpt-image-1.5`.
+- `OPENAI_IMAGE_MAX_EDGE` — maximum stored image edge in pixels, default `512` (128–2048). Dimensions preserve the exact slot ratio: 5:4 becomes 510×408, 1:1 becomes 512×512. OpenAI may return a larger source image; it is resized before saving.
+- `OPENAI_IMAGE_TIMEOUT_MS` — image timeout, default `180000`, maximum `300000`.
+- `OPENAI_BASE_URL` — optional OpenAI endpoint override; the Images API uses `/v1/images/generations` independently of `AI_PATH` and legacy provider settings.
+
+The image endpoint is `POST /api/dictionary/word/:id/images/generate`, requires `DictionaryWrite`, and accepts `{ definition, targetWidth, targetHeight }` (slot dimensions in cells). It reads the answer from the database. Generation failures do not create images or mark the word as generated. Successful saves preserve an existing `imageGeneratedAt`. No database migration is needed.
+
+For local model selection, edit `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL` and `OPENAI_IMAGE_MAX_EDGE` in `crossnext/.env`; keep `OPENAI_API_KEY` in `.env.local`. Restart the app after changing settings.
+
+Definition prompts allow a new wording of an established meaning instead of forcing an invented new sense. Overlong, multiline, duplicate or answer-revealing results are rejected instead of being sliced mid-word.
+
+API references: [OpenAI image generation](https://developers.openai.com/api/reference/resources/images/methods/generate), [GPT-4o mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini).
+
+OpenAI definition generation makes at most one correction attempt when the result violates output constraints; it never truncates the clue or retries quota errors.
+
+The definition request sends the answer (`word`) and all supplied dictionary definitions (`existing`) as meaning context. Rejected or previously generated variants are passed separately in `avoid` and are excluded from output without becoming meaning context. For homonyms, the prompt asks for one established sense rather than combining unrelated meanings.
+
+Newly generated images are named `<word>-<width>x<height>-<number>.png`, for example `иран-512x512-3.png`. Numbering is separate for each word and stored pixel size. Existing images of the same size count as versions; existing numbered suffixes are respected so gaps do not cause collisions. A database word-row lock serializes number allocation and saving across concurrent generation requests. Existing files keep their names.

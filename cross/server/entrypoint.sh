@@ -17,11 +17,9 @@ if [ -z "${DATABASE_URL:-}" ]; then
   DB_USER="${POSTGRES_USER:-app}"
   DB_NAME="${POSTGRES_DB:-app}"
 
-  if [ -n "$PW" ]; then
-    export DATABASE_URL="postgresql://${DB_USER}:${PW}@${DB_HOST}:${DB_PORT}/${DB_NAME}?schema=public"
-  else
-    export DATABASE_URL="postgresql://${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}?schema=public"
-  fi
+  DATABASE_URL="$(POSTGRES_USER="$DB_USER" POSTGRES_PASSWORD="$PW" POSTGRES_HOST="$DB_HOST" POSTGRES_PORT="$DB_PORT" POSTGRES_DB="$DB_NAME" \
+    node --input-type=module -e 'import { buildPostgresUrlFromEnv } from "@megacross/cross-format/postgres-url"; process.stdout.write(buildPostgresUrlFromEnv());')"
+  export DATABASE_URL
   log "DATABASE_URL constructed for ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 else
   log "DATABASE_URL provided"

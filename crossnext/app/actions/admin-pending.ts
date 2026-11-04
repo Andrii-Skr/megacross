@@ -4,12 +4,19 @@ import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { getServerSession } from "next-auth";
 import { getLocale } from "next-intl/server";
+import { z } from "zod";
 import { authOptions } from "@/auth";
 import { actionError } from "@/lib/action-error";
 import { hasPermissionAsync, Permissions } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { getNumericUserId } from "@/lib/user";
 import { normalizeWordTextForLang } from "@/lib/word-normalize";
+import { pendingImageability } from "@/lib/wordImageability";
+
+const pendingDescriptionIdSchema = z
+  .string()
+  .regex(/^\d+$/u)
+  .transform((value) => BigInt(value));
 
 const CLEANUP_INTERVAL_MS = 1000 * 60 * 60 * 6; // run at most once per 6h per instance
 const CLEANUP_RETENTION_MS = 1000 * 60 * 60 * 24 * 30; // keep 30 days of resolved pendings
@@ -119,181 +126,210 @@ export async function savePendingAction(formData: FormData) {
   const idRaw = formData.get("id");
   if (!idRaw) return;
   const pendingId = BigInt(String(idRaw));
-  const pw = await prisma.pendingWords.findUnique({
-    where: { id: pendingId },
-    select: { targetWordId: true, note: true, createBy: true },
-  });
-  if (!pw) return;
-
-  if (scope === "own" && !isCreatedBy(pw.note, currentLabel, pw.createBy, userId)) {
-    return;
-  }
-
-  const langCode = String(formData.get("language") || "");
-  if (langCode && !pw.targetWordId) {
-    const lang = await prisma.language.findUnique({
-      where: { code: langCode },
-    });
-    if (lang) {
-      await prisma.pendingWords.update({
-        where: { id: pendingId },
-        data: {
-          langId: lang.id,
-          ...(updateById != null ? { updateBy: updateById } : {}),
-        },
-      });
-      await prisma.pendingDescriptions.updateMany({
-        where: { pendingWordId: pendingId },
-        data: {
-          langId: lang.id,
-          ...(updateById != null ? { updateBy: updateById } : {}),
-        },
-      });
-    }
-  }
-
-  const word = String(formData.get("word") || "").trim();
-  if (word) {
-    await prisma.pendingWords.update({
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM pending_words WHERE id = ${pendingId} FOR UPDATE`;
+    const pw = await tx.pendingWords.findUnique({
       where: { id: pendingId },
-      data: {
-        word_text: word,
-        length: word.length,
-        ...(updateById != null ? { updateBy: updateById } : {}),
-      },
+      select: { targetWordId: true, note: true, createBy: true, status: true },
     });
-  }
+    if (!pw || pw.status !== "PENDING") return;
 
-  const updates: Array<Promise<unknown>> = [];
-  const deleteDescIds = new Set<string>();
-  const tagsToApply = new Map<bigint, number[]>();
-  for (const [key, value] of formData.entries()) {
-    if (typeof key === "string" && key.startsWith("desc_text_")) {
-      const idStr = key.substring("desc_text_".length);
-      const descId = BigInt(idStr);
-      const text = String(value).trim();
-      if (text)
-        updates.push(
-          prisma.pendingDescriptions.update({
-            where: { id: descId },
-            data: {
-              description: text,
-              ...(updateById != null ? { updateBy: updateById } : {}),
-            },
-          }),
-        );
+    if (scope === "own" && !isCreatedBy(pw.note, currentLabel, pw.createBy, userId)) {
+      return;
     }
-    if (typeof key === "string" && key.startsWith("desc_diff_")) {
-      const idStr = key.substring("desc_diff_".length);
-      const descId = BigInt(idStr);
-      const difficulty = Number.parseInt(String(value), 10);
-      if (Number.isFinite(difficulty))
-        updates.push(
-          prisma.pendingDescriptions.update({
-            where: { id: descId },
-            data: {
-              difficulty,
-              ...(updateById != null ? { updateBy: updateById } : {}),
-            },
-          }),
-        );
+
+    const submittedIds = new Set<bigint>();
+    const originalEndDates = new Map<bigint, Date | null>();
+    for (const [key, value] of formData.entries()) {
+      const match = key.match(/^desc_(?:text|diff|end|tags)_(.+)$/u);
+      const rawId = match?.[1] ?? (key === "delete_desc_ids" ? String(value) : null);
+      if (rawId == null || rawId === "") continue;
+      const parsed = pendingDescriptionIdSchema.safeParse(rawId);
+      if (!parsed.success) throw actionError("INVALID_DESCRIPTION_ID", 400);
+      submittedIds.add(parsed.data);
     }
-    if (typeof key === "string" && key.startsWith("desc_end_")) {
-      const idStr = key.substring("desc_end_".length);
-      const descId = BigInt(idStr);
-      const str = String(value);
-      const dt = str ? new Date(str) : null;
-      if (!str) {
-        updates.push(
-          prisma.pendingDescriptions.update({
-            where: { id: descId },
-            data: {
-              end_date: null,
-              ...(updateById != null ? { updateBy: updateById } : {}),
-            },
-          }),
-        );
-      } else if (dt && !Number.isNaN(dt.getTime())) {
-        updates.push(
-          prisma.pendingDescriptions.update({
-            where: { id: descId },
-            data: {
-              end_date: dt,
-              ...(updateById != null ? { updateBy: updateById } : {}),
-            },
-          }),
-        );
+    if (submittedIds.size) {
+      const owned = await tx.pendingDescriptions.findMany({
+        where: { id: { in: [...submittedIds] }, pendingWordId: pendingId, status: "PENDING" },
+        select: { id: true, end_date: true },
+      });
+      if (owned.length !== submittedIds.size) throw actionError("FORBIDDEN", 403);
+      for (const row of owned) originalEndDates.set(row.id, row.end_date);
+    }
+
+    const langCode = String(formData.get("language") || "");
+    if (langCode && !pw.targetWordId) {
+      const lang = await tx.language.findUnique({
+        where: { code: langCode },
+      });
+      if (lang) {
+        await tx.pendingWords.update({
+          where: { id: pendingId },
+          data: {
+            langId: lang.id,
+            ...(updateById != null ? { updateBy: updateById } : {}),
+          },
+        });
+        await tx.pendingDescriptions.updateMany({
+          where: { pendingWordId: pendingId },
+          data: {
+            langId: lang.id,
+            ...(updateById != null ? { updateBy: updateById } : {}),
+          },
+        });
       }
     }
-    if (typeof key === "string" && key.startsWith("desc_tags_")) {
-      const idStr = key.substring("desc_tags_".length);
-      const descId = BigInt(idStr);
-      let arr: number[] = [];
-      try {
-        const parsed = JSON.parse(String(value));
-        if (Array.isArray(parsed)) {
-          arr = parsed.filter((x) => typeof x === "number" && Number.isInteger(x)).map((x) => x as number);
-        }
-      } catch {}
-      tagsToApply.set(descId, arr);
-    }
-    if (typeof key === "string" && key === "delete_desc_ids") {
-      const val = String(value);
-      if (val) deleteDescIds.add(val);
-    }
-  }
-  if (updates.length) await Promise.all(updates);
 
-  if (tagsToApply.size > 0) {
-    const tagUpdates: Promise<unknown>[] = [];
-    for (const [descId, tags] of tagsToApply.entries()) {
-      tagUpdates.push(
-        (async () => {
-          const row = await prisma.pendingDescriptions.findUnique({
-            where: { id: descId },
-            select: { note: true },
-          });
-          let obj: Record<string, unknown> = {};
-          if (row?.note) {
-            try {
-              const parsed = JSON.parse(row.note) as unknown;
-              if (parsed && typeof parsed === "object") obj = parsed as Record<string, unknown>;
-            } catch {}
-          }
-          obj.tags = tags;
-          await prisma.pendingDescriptions.update({
-            where: { id: descId },
-            data: {
-              note: JSON.stringify(obj),
-              ...(updateById != null ? { updateBy: updateById } : {}),
-            },
-          });
-        })(),
-      );
-    }
-    await Promise.all(tagUpdates);
-  }
-
-  // Delete selected descriptions (only if more than one exists)
-  if (deleteDescIds.size > 0) {
-    const idsToDelete = [...deleteDescIds].map((id) => BigInt(id));
-    const descs = await prisma.pendingDescriptions.findMany({
-      where: { id: { in: idsToDelete }, pendingWordId: pendingId },
-      select: { id: true },
-    });
-    if (descs.length > 0) {
-      await prisma.pendingDescriptions.deleteMany({
-        where: { id: { in: descs.map((d) => d.id) } },
+    const word = String(formData.get("word") || "").trim();
+    if (word) {
+      await tx.pendingWords.update({
+        where: { id: pendingId },
+        data: {
+          word_text: word,
+          length: word.length,
+          ...(updateById != null ? { updateBy: updateById } : {}),
+        },
       });
     }
-  }
 
-  if (updateById != null) {
-    await prisma.pendingWords.update({
-      where: { id: pendingId },
-      data: { updateBy: updateById },
-    });
-  }
+    const updates: Array<Promise<unknown>> = [];
+    const deleteDescIds = new Set<string>();
+    const noteChanges = new Map<bigint, Record<string, unknown>>();
+    for (const [key, value] of formData.entries()) {
+      if (typeof key === "string" && key.startsWith("desc_text_")) {
+        const idStr = key.substring("desc_text_".length);
+        const descId = BigInt(idStr);
+        const text = String(value).trim();
+        if (text)
+          updates.push(
+            tx.pendingDescriptions.update({
+              where: { id: descId, pendingWordId: pendingId, status: "PENDING" },
+              data: {
+                description: text,
+                ...(updateById != null ? { updateBy: updateById } : {}),
+              },
+            }),
+          );
+      }
+      if (typeof key === "string" && key.startsWith("desc_diff_")) {
+        const idStr = key.substring("desc_diff_".length);
+        const descId = BigInt(idStr);
+        const difficulty = Number.parseInt(String(value), 10);
+        if (Number.isFinite(difficulty))
+          updates.push(
+            tx.pendingDescriptions.update({
+              where: { id: descId, pendingWordId: pendingId, status: "PENDING" },
+              data: {
+                difficulty,
+                ...(updateById != null ? { updateBy: updateById } : {}),
+              },
+            }),
+          );
+      }
+      if (typeof key === "string" && key.startsWith("desc_end_")) {
+        const idStr = key.substring("desc_end_".length);
+        const descId = BigInt(idStr);
+        const str = String(value);
+        const dt = str ? new Date(str) : null;
+        if ((!str && originalEndDates.get(descId) != null) || (dt && !Number.isNaN(dt.getTime()))) {
+          noteChanges.set(descId, { ...noteChanges.get(descId), endDateChanged: true });
+        }
+        if (!str) {
+          updates.push(
+            tx.pendingDescriptions.update({
+              where: { id: descId, pendingWordId: pendingId, status: "PENDING" },
+              data: {
+                end_date: null,
+                ...(updateById != null ? { updateBy: updateById } : {}),
+              },
+            }),
+          );
+        } else if (dt && !Number.isNaN(dt.getTime())) {
+          updates.push(
+            tx.pendingDescriptions.update({
+              where: { id: descId, pendingWordId: pendingId, status: "PENDING" },
+              data: {
+                end_date: dt,
+                ...(updateById != null ? { updateBy: updateById } : {}),
+              },
+            }),
+          );
+        }
+      }
+      if (typeof key === "string" && key.startsWith("desc_tags_")) {
+        const idStr = key.substring("desc_tags_".length);
+        const descId = BigInt(idStr);
+        let arr: number[] = [];
+        try {
+          const parsed = JSON.parse(String(value));
+          if (Array.isArray(parsed)) {
+            arr = parsed.filter((x) => typeof x === "number" && Number.isInteger(x)).map((x) => x as number);
+          }
+        } catch {}
+        noteChanges.set(descId, { ...noteChanges.get(descId), tags: arr });
+      }
+      if (typeof key === "string" && key === "delete_desc_ids") {
+        const val = String(value);
+        if (val) deleteDescIds.add(val);
+      }
+    }
+    if (updates.length) await Promise.all(updates);
+
+    if (noteChanges.size > 0) {
+      const tagUpdates: Promise<unknown>[] = [];
+      for (const [descId, changes] of noteChanges.entries()) {
+        tagUpdates.push(
+          (async () => {
+            const row = await tx.pendingDescriptions.findUnique({
+              where: { id: descId, pendingWordId: pendingId, status: "PENDING" },
+              select: { note: true },
+            });
+            let obj: Record<string, unknown> = {};
+            if (row?.note) {
+              try {
+                const parsed = JSON.parse(row.note) as unknown;
+                if (parsed && typeof parsed === "object") obj = parsed as Record<string, unknown>;
+              } catch {}
+            }
+            Object.assign(obj, changes);
+            await tx.pendingDescriptions.update({
+              where: { id: descId, pendingWordId: pendingId, status: "PENDING" },
+              data: {
+                note: JSON.stringify(obj),
+                ...(updateById != null ? { updateBy: updateById } : {}),
+              },
+            });
+          })(),
+        );
+      }
+      await Promise.all(tagUpdates);
+    }
+
+    // Delete selected descriptions (only if more than one exists)
+    if (deleteDescIds.size > 0) {
+      const idsToDelete = [...deleteDescIds].map((id) => BigInt(id));
+      const remaining = await tx.pendingDescriptions.count({
+        where: { pendingWordId: pendingId, id: { notIn: idsToDelete } },
+      });
+      if (remaining === 0) throw actionError("LAST_DESCRIPTION_REQUIRED", 400);
+      const descs = await tx.pendingDescriptions.findMany({
+        where: { id: { in: idsToDelete }, pendingWordId: pendingId },
+        select: { id: true },
+      });
+      if (descs.length > 0) {
+        await tx.pendingDescriptions.deleteMany({
+          where: { id: { in: descs.map((d) => d.id) } },
+        });
+      }
+    }
+
+    if (updateById != null) {
+      await tx.pendingWords.update({
+        where: { id: pendingId },
+        data: { updateBy: updateById },
+      });
+    }
+  });
 
   const locale = await getLocale();
   revalidatePath(`/${locale}/pending`);
@@ -310,6 +346,7 @@ export async function approvePendingAction(formData: FormData) {
   const approverId = userId ?? null;
 
   await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM pending_words WHERE id = ${pendingId} FOR UPDATE`;
     const resolveCreatedById = (
       explicit: number | null | undefined,
       note: string | null | undefined,
@@ -356,12 +393,17 @@ export async function approvePendingAction(formData: FormData) {
       include: { descriptions: true, language: { select: { code: true, wordReplaceMap: true } } },
     });
     if (!pw || pw.status !== "PENDING") return;
+    const isImageable = pendingImageability(pw.note);
     const pendingCreatorId = resolveCreatedById(pw.createBy, pw.note);
     const normalizedWordText = normalizeWordTextForLang(pw.word_text, pw.language?.code, pw.language?.wordReplaceMap);
 
     let wordId = pw.targetWordId ?? null;
 
     if (!wordId) {
+      // Different pending cards may introduce the same word. Serialize lookup
+      // and creation even before a word row exists to lock.
+      const wordLockKey = JSON.stringify(["pending-word", pw.langId, pw.word_text]);
+      await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${wordLockKey}, 0))`;
       // Reuse an existing word (same text/lang) so multiple pending definitions don't fail unique constraints
       const existingWord = await tx.word_v.findFirst({
         where: { word_text: pw.word_text, langId: pw.langId, is_deleted: false },
@@ -373,6 +415,7 @@ export async function approvePendingAction(formData: FormData) {
         try {
           const createdWord = await tx.word_v.create({
             data: {
+              ...(isImageable !== undefined ? { isImageable } : {}),
               word_text: pw.word_text,
               word_text_norm: normalizedWordText,
               length: pw.length,
@@ -430,6 +473,11 @@ export async function approvePendingAction(formData: FormData) {
       throw actionError("INVARIANT_TARGET_WORD_NOT_ASSIGNED", 500);
     }
     const ensuredWordId: bigint = wordId;
+    // Cards for an existing word also need to serialize definition deduplication.
+    await tx.$queryRaw`SELECT id FROM word_v WHERE id = ${ensuredWordId} FOR UPDATE`;
+    if (isImageable !== undefined) {
+      await tx.word_v.update({ where: { id: ensuredWordId }, data: { isImageable } });
+    }
     const existingDefinitions = await tx.opred_v.findMany({
       where: { word_id: ensuredWordId, is_deleted: false },
       select: { id: true, text_opr: true },
@@ -443,10 +491,15 @@ export async function approvePendingAction(formData: FormData) {
     }
     for (const d of pw.descriptions) {
       // Extract info from note
-      let parsed: { tags?: number[]; kind?: string; opredId?: string } | null = null;
+      let parsed: { tags?: number[]; kind?: string; opredId?: string; endDateChanged?: boolean } | null = null;
       if (d.note) {
         try {
-          const p = JSON.parse(d.note) as { tags?: number[]; kind?: string; opredId?: string };
+          const p = JSON.parse(d.note) as {
+            tags?: number[];
+            kind?: string;
+            opredId?: string;
+            endDateChanged?: boolean;
+          };
           parsed = p;
         } catch {}
       }
@@ -470,7 +523,7 @@ export async function approvePendingAction(formData: FormData) {
             length: d.description.length,
             textUpdatedAt: new Date(),
             ...(difficulty !== undefined ? { difficulty } : {}),
-            ...(d.end_date ? { end_date: d.end_date } : {}),
+            ...(d.end_date || parsed.endDateChanged === true ? { end_date: d.end_date ?? null } : {}),
             ...(submitterId != null ? { updateBy: submitterId } : {}),
             ...(approverId != null ? { approvedBy: approverId } : {}),
           },
@@ -554,6 +607,7 @@ export async function rejectPendingAction(formData: FormData) {
   const pendingId = BigInt(String(id));
 
   await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM pending_words WHERE id = ${pendingId} FOR UPDATE`;
     const pw = await tx.pendingWords.findUnique({
       where: { id: pendingId },
       include: { descriptions: true },

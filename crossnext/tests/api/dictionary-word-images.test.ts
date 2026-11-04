@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { storeWordImage } from "@/lib/storeWordImage";
 import { DELETE } from "../../app/api/dictionary/word/[id]/images/[imageId]/route";
 import { GET, POST } from "../../app/api/dictionary/word/[id]/images/route";
 import { prisma, resetMocks, setAuthed } from "../mocks";
@@ -6,6 +7,10 @@ import { makeCtx, makePrismaKnownError, readJson } from "./_utils";
 
 const { sharpMetadataMock } = vi.hoisted(() => ({
   sharpMetadataMock: vi.fn(),
+}));
+
+vi.mock("node:fs/promises", () => ({
+  default: { mkdir: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), access: vi.fn(), unlink: vi.fn() },
 }));
 
 vi.mock("sharp", () => ({
@@ -32,6 +37,7 @@ describe("/api/dictionary/word/[id]/images", () => {
         width: 200,
         height: 100,
         aspectRatio: 2,
+        needsReview: true,
       },
     ]);
 
@@ -43,6 +49,7 @@ describe("/api/dictionary/word/[id]/images", () => {
       expect.objectContaining({
         id: "5",
         url: "/api/dictionary/word-images/5",
+        needsReview: true,
       }),
     ]);
   });
@@ -148,6 +155,100 @@ describe("/api/dictionary/word/[id]/images", () => {
 
     expect(status).toBe(200);
     expect(json.image).toEqual(expect.objectContaining({ width, height }));
+    expect(prisma.word_v.update).toHaveBeenCalledWith({ where: { id: 10n }, data: { isImageable: true } });
+  });
+
+  it("marks a word inside the transaction when a new image is stored", async () => {
+    prisma.word_v.findFirst.mockResolvedValue({ id: 10n });
+    prisma.scanwordWordImage.findUnique.mockResolvedValue(null);
+    prisma.scanwordWordImage.create.mockResolvedValue({
+      id: 6n,
+      wordId: 10n,
+      fileName: "cat.png",
+      mimeType: "image/png",
+      width: 300,
+      height: 100,
+      aspectRatio: 3,
+    });
+    prisma.$transaction.mockImplementation(async (cb) => cb(prisma));
+    const form = {
+      get: (key: string) =>
+        key === "file"
+          ? { name: "cat.png", type: "image/png", size: 3, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }
+          : null,
+    };
+    const res = await POST({ formData: async () => form } as unknown as Request, makeCtx({ id: "10" }));
+    expect(res.status).toBe(200);
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(prisma.word_v.update).toHaveBeenCalledWith({ where: { id: 10n }, data: { isImageable: true } });
+  });
+
+  it("atomically marks generated images for review and tracks generation only on successful storage", async () => {
+    prisma.scanwordWordImage.findUnique.mockResolvedValue(null);
+    prisma.scanwordWordImage.create.mockResolvedValue({
+      id: 6n,
+      wordId: 10n,
+      fileName: "generated.png",
+      mimeType: "image/png",
+      width: 300,
+      height: 100,
+      aspectRatio: 3,
+      needsReview: true,
+    });
+    prisma.$transaction.mockImplementation(async (cb) => cb(prisma));
+    const generatedAt = new Date("2026-11-04");
+    const res = await storeWordImage({
+      wordId: 10n,
+      bytes: Buffer.from("png"),
+      originalName: "generated.png",
+      mimeType: "image/png",
+      width: 300,
+      height: 100,
+      createdBy: 17,
+      generatedAt,
+    });
+    expect(res.status).toBe(200);
+    expect(prisma.scanwordWordImage.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ needsReview: true }) }),
+    );
+    expect(prisma.word_v.update).toHaveBeenCalledWith({
+      where: { id: 10n },
+      data: { isImageable: true, imageGeneratedAt: generatedAt },
+    });
+  });
+
+  it.each([
+    [[], "иран-512x512-1.png"],
+    [["generated-7619.png", "иран-4x4.jpg"], "иран-512x512-3.png"],
+    [["иран-512x512-1.png", "иран-512x512-3.png"], "иран-512x512-4.png"],
+  ] as const)("numbers generated images after existing versions %j", async (names, expectedName) => {
+    prisma.scanwordWordImage.findUnique.mockResolvedValue(null);
+    prisma.$queryRaw.mockResolvedValue([{ id: 10n }]);
+    prisma.scanwordWordImage.findMany.mockResolvedValue(names.map((fileName) => ({ fileName })));
+    prisma.scanwordWordImage.create.mockImplementation(async ({ data }) => ({ ...data, id: 6n }));
+    prisma.$transaction.mockImplementation(async (cb) => cb(prisma));
+    const res = await storeWordImage({
+      wordId: 10n,
+      bytes: Buffer.from("png"),
+      originalName: "generated.png",
+      generatedWord: "ИРАН",
+      mimeType: "image/png",
+      width: 512,
+      height: 512,
+      createdBy: 17,
+      generatedAt: new Date(),
+    });
+    const { json, status } = await readJson<{ image: { fileName: string } }>(res);
+    expect(status).toBe(200);
+    expect(json.image.fileName).toBe(expectedName);
+    expect(prisma.scanwordWordImage.findMany).toHaveBeenCalledWith({
+      where: { wordId: 10n, width: 512, height: 512 },
+      select: { fileName: true },
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.scanwordWordImage.findMany.mock.invocationCallOrder[0],
+    );
   });
 
   it("accepts a multipart file-like value from another runtime realm", async () => {
@@ -200,6 +301,7 @@ describe("/api/dictionary/word/[id]/images", () => {
 
     expect(status).toBe(200);
     expect(json.id).toBe("5");
+    expect(prisma.word_v.update).not.toHaveBeenCalled();
     expect(prisma.scanwordWordImage.delete).toHaveBeenCalledWith({
       where: { id: 5n },
     });

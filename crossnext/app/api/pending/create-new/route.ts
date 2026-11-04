@@ -18,6 +18,7 @@ const definitionSchema = z.object({
 const schema = z
   .object({
     word: z.string().min(1),
+    isImageable: z.boolean().optional(),
     definitions: z.array(definitionSchema).min(1).optional(),
     definition: z.string().min(1).optional(),
     note: z.string().max(512).optional(),
@@ -58,15 +59,15 @@ const postHandler = async (
   if (!/^\p{L}+$/u.test(normalized)) {
     return error(400, "Word must contain letters only", "WORD_ONLY_LETTERS");
   }
-  const exists = await prisma.word_v.findFirst({
-    where: { word_text: normalized, is_deleted: false },
-    select: { id: true },
-  });
-  if (exists) return error(409, "Word already exists", "WORD_EXISTS");
   const lang = await prisma.language.findUnique({
     where: { code: body.language.toLowerCase() },
   });
   if (!lang) return error(400, "Language not found", "LANGUAGE_NOT_FOUND");
+  const exists = await prisma.word_v.findFirst({
+    where: { word_text: normalized, langId: lang.id, is_deleted: false },
+    select: { id: true },
+  });
+  if (exists) return error(409, "Word already exists", "WORD_EXISTS");
 
   const defsInput = body.definitions?.length
     ? body.definitions
@@ -123,6 +124,7 @@ const postHandler = async (
           langId: lang.id,
           note: JSON.stringify({
             kind: "newWord",
+            isImageable: body.isImageable ?? false,
             createdBy: userLabel(user),
           }),
           ...(createdById != null ? { createBy: createdById } : {}),

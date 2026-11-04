@@ -12,6 +12,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SlotInput {
+  allowed_words: Option<Vec<String>>,
   len: usize,
   cells: Vec<[usize; 2]>,
 }
@@ -54,6 +55,7 @@ struct SolveInput {
 
 #[derive(Clone)]
 struct Slot {
+  allowed_words: Option<HashSet<Vec<char>>>,
   id: usize,
   len: usize,
   cells: Vec<(usize, usize)>,
@@ -594,6 +596,7 @@ fn solve_csp_internal(
     .enumerate()
     .map(|(i, s)| Slot {
       id: i,
+      allowed_words: s.allowed_words.map(|words| words.into_iter().map(|word| word.chars().collect()).collect()),
       len: s.len,
       cells: s.cells.into_iter().map(|c| (c[0], c[1])).collect(),
     })
@@ -750,6 +753,7 @@ fn solve_dlx_internal(
     .enumerate()
     .map(|(i, s)| Slot {
       id: i,
+      allowed_words: s.allowed_words.map(|words| words.into_iter().map(|word| word.chars().collect()).collect()),
       len: s.len,
       cells: s.cells.into_iter().map(|c| (c[0], c[1])).collect(),
     })
@@ -1276,6 +1280,7 @@ fn remap_slots(slots: &[Slot], ids: &[usize]) -> Vec<Slot> {
       id: *map.get(&slot.id).unwrap_or(&slot.id),
       len: slot.len,
       cells: slot.cells.clone(),
+      allowed_words: slot.allowed_words.clone(),
     });
   }
   out
@@ -1299,6 +1304,9 @@ fn init_grid(rows: &[String]) -> Vec<Vec<char>> {
 }
 
 fn slot_matches_fixed_grid(fixed_grid: &[Vec<char>], slot: &Slot, word_chars: &[char]) -> bool {
+  if slot.allowed_words.as_ref().map(|allowed| !allowed.contains(word_chars)).unwrap_or(false) {
+    return false;
+  }
   for (i, (r, c)) in slot.cells.iter().enumerate() {
     let fixed = fixed_grid
       .get(*r)
@@ -3505,18 +3513,22 @@ mod tests {
       rows: vec!["..".to_string(), "..".to_string()],
       slots: vec![
         SlotInput {
+          allowed_words: None,
           len: 2,
           cells: vec![[0, 0], [0, 1]],
         },
         SlotInput {
+          allowed_words: None,
           len: 2,
           cells: vec![[1, 0], [1, 1]],
         },
         SlotInput {
+          allowed_words: None,
           len: 2,
           cells: vec![[0, 0], [1, 0]],
         },
         SlotInput {
+          allowed_words: None,
           len: 2,
           cells: vec![[0, 1], [1, 1]],
         },
@@ -3554,10 +3566,12 @@ mod tests {
       rows: vec!["..".to_string(), "..".to_string()],
       slots: vec![
         SlotInput {
+          allowed_words: None,
           len: 2,
           cells: vec![[0, 0], [0, 1]],
         },
         SlotInput {
+          allowed_words: None,
           len: 2,
           cells: vec![[0, 1], [1, 1]],
         },
@@ -3637,12 +3651,12 @@ mod tests {
   #[test]
   fn dlx_seed_fixed_letters_and_progress_paths_agree() {
     let slots = vec![
-      Slot { id: 0, len: 3, cells: vec![(0,0),(0,1),(0,2)] },
-      Slot { id: 1, len: 3, cells: vec![(1,0),(1,1),(1,2)] },
-      Slot { id: 2, len: 3, cells: vec![(2,0),(2,1),(2,2)] },
-      Slot { id: 3, len: 3, cells: vec![(0,0),(1,0),(2,0)] },
-      Slot { id: 4, len: 3, cells: vec![(0,1),(1,1),(2,1)] },
-      Slot { id: 5, len: 3, cells: vec![(0,2),(1,2),(2,2)] },
+      Slot { allowed_words: None, id: 0, len: 3, cells: vec![(0,0),(0,1),(0,2)] },
+      Slot { allowed_words: None, id: 1, len: 3, cells: vec![(1,0),(1,1),(1,2)] },
+      Slot { allowed_words: None, id: 2, len: 3, cells: vec![(2,0),(2,1),(2,2)] },
+      Slot { allowed_words: None, id: 3, len: 3, cells: vec![(0,0),(1,0),(2,0)] },
+      Slot { allowed_words: None, id: 4, len: 3, cells: vec![(0,1),(1,1),(2,1)] },
+      Slot { allowed_words: None, id: 5, len: 3, cells: vec![(0,2),(1,2),(2,2)] },
     ];
     let dict = Dict::from_map(HashMap::from([("3".to_string(), vec!["АБВ", "ГДЕ", "ЖЗИ", "АГЖ", "БДЗ", "ВЕИ"].iter().map(|w| w.to_string()).collect())]));
     let rows = vec!["А..".to_string(), "...".to_string(), "...".to_string()];

@@ -11,6 +11,7 @@ type ReviewSlot = {
   wordId: string | null;
   opredId: string | null;
   definition: string;
+  selectedImageId?: string | null;
   isPhotoDefinition?: boolean;
   photoAreaBounds?: {
     minRow: number;
@@ -175,7 +176,7 @@ export function buildFinalSlotState(
   const definition = normalizeDefinitionText(input?.definition ?? slot.definition);
   const wordId = parseOptionalBigInt(input?.wordId ?? slot.wordId);
   const opredId = parseOptionalBigInt(input?.opredId ?? slot.opredId);
-  const imageId = parseOptionalBigInt(input?.imageId);
+  const imageId = parseOptionalBigInt(input?.imageId === undefined ? slot.selectedImageId : input.imageId);
   const errors: string[] = [];
 
   if (!rawWord) {

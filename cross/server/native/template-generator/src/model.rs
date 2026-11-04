@@ -49,6 +49,60 @@ pub struct Arrow {
     pub offsets: Vec<[isize; 2]>,
     pub render_directions: Vec<u8>,
 }
+// The wire format remains the arrow array; lookup tables are compiled once per request.
+#[derive(Clone, Deserialize)]
+#[serde(from = "Vec<Arrow>")]
+pub struct ArrowTable {
+    arrows: Vec<Arrow>,
+    by_code: [usize; 256],
+    by_directions: [Vec<usize>; 8],
+}
+fn direction_mask(dirs: &[u8]) -> usize {
+    dirs.iter().fold(0, |mask, dir| {
+        mask | match dir {
+            2 => 1,
+            6 => 2,
+            8 => 4,
+            _ => 0,
+        }
+    })
+}
+impl From<Vec<Arrow>> for ArrowTable {
+    fn from(arrows: Vec<Arrow>) -> Self {
+        let mut table = Self {
+            arrows,
+            by_code: [NONE; 256],
+            by_directions: Default::default(),
+        };
+        for (index, arrow) in table.arrows.iter().enumerate() {
+            if let Some(entry) = table.by_code.get_mut(arrow.code as usize) {
+                if *entry == NONE {
+                    *entry = index;
+                }
+            }
+            table.by_directions[direction_mask(&arrow.directions)].push(index);
+        }
+        table
+    }
+}
+impl std::ops::Deref for ArrowTable {
+    type Target = [Arrow];
+    fn deref(&self) -> &Self::Target {
+        &self.arrows
+    }
+}
+impl ArrowTable {
+    pub fn get_code(&self, code: u16) -> Option<&Arrow> {
+        self.by_code
+            .get(code as usize)
+            .and_then(|&index| self.arrows.get(index))
+    }
+    pub fn matching(&self, dirs: &[u8]) -> impl Iterator<Item = &Arrow> {
+        self.by_directions[direction_mask(dirs)]
+            .iter()
+            .map(|&index| &self.arrows[index])
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Input {
@@ -71,7 +125,7 @@ pub struct Input {
     #[serde(default = "default_true")]
     pub regional_repair: bool,
     pub mask_family: Option<String>,
-    pub arrows: Vec<Arrow>,
+    pub arrows: ArrowTable,
     pub max_ms: Option<f64>,
 }
 fn default_attempts() -> usize {
@@ -212,16 +266,16 @@ pub struct Evaluation {
     pub rendered_slots: OnceLock<Vec<Run>>,
 }
 impl Evaluation {
-    pub fn slots(&self, arrows: &[Arrow]) -> &[Run] {
+    pub fn slots(&self, arrows: &ArrowTable) -> &[Run] {
         self.rendered_slots.get_or_init(|| self.scan_slots(arrows))
     }
-    pub fn scan_slots(&self, arrows: &[Arrow]) -> Vec<Run> {
+    pub fn scan_slots(&self, arrows: &ArrowTable) -> Vec<Run> {
         let mut slots = Vec::new();
         for start in 0..self.codes.len() {
             if self.codes[start] == 0 {
                 continue;
             }
-            let Some(arrow) = arrows.iter().find(|a| a.code == self.codes[start]) else {
+            let Some(arrow) = arrows.get_code(self.codes[start]) else {
                 continue;
             };
             for &dir in &arrow.render_directions {
@@ -329,6 +383,13 @@ impl Control {
 }
 pub fn weight(w: Option<&BTreeMap<usize, f64>>, len: usize) -> f64 {
     w.and_then(|m| m.get(&len)).copied().unwrap_or(0.0)
+}
+pub const LARGE_TEMPLATE_AREA: usize = 600;
+
+/// Large boards require enough balancing moves before discarding a promising mask.
+pub fn balance_iteration_budget(area: usize) -> usize {
+    area.div_ceil(if area >= LARGE_TEMPLATE_AREA { 4 } else { 12 })
+        .clamp(24, 180)
 }
 pub fn double_target(n: usize) -> usize {
     ((n as f64 * 0.035).round() as usize).min(20)

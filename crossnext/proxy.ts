@@ -1,4 +1,4 @@
-import { type NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 import createMiddleware from "next-intl/middleware";
 import { allSessionCookieNames, sessionCookieName, useSecureCookies } from "@/lib/authCookies";
@@ -74,6 +74,9 @@ export async function proxy(req: NextRequest) {
   const reportUri = env.CSP_REPORT_ENABLED ? reportEndpoint : null;
   const csp = buildCsp(nonce, reportUri);
   const shouldUseReportOnly = env.CSP_REPORT_ONLY;
+  requestHeaders.delete("Content-Security-Policy");
+  requestHeaders.delete("Content-Security-Policy-Report-Only");
+  requestHeaders.set(shouldUseReportOnly ? "Content-Security-Policy-Report-Only" : "Content-Security-Policy", csp);
 
   // Auth gating for all non-auth pages (supports locale prefix)
   const token = await getToken({
@@ -156,7 +159,8 @@ export async function proxy(req: NextRequest) {
 
   const res = hasLocale
     ? NextResponse.next({ request: { headers: requestHeaders } })
-    : (intl(req) ?? NextResponse.next({ request: { headers: requestHeaders } }));
+    : (intl(new NextRequest(req, { headers: requestHeaders })) ??
+      NextResponse.next({ request: { headers: requestHeaders } }));
   if (shouldUseReportOnly) {
     res.headers.set("Content-Security-Policy-Report-Only", csp);
   } else {

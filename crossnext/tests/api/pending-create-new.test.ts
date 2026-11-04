@@ -6,6 +6,7 @@ import { makeCtx, makePrismaKnownError, makeReq, readJson } from "./_utils";
 describe("/api/pending/create-new (POST)", () => {
   beforeEach(() => {
     resetMocks();
+    prisma.language.findUnique.mockResolvedValue({ id: 9, code: "ru" });
     prisma.$transaction.mockImplementation(async (cb) => cb(prisma));
   });
 
@@ -60,6 +61,27 @@ describe("/api/pending/create-new (POST)", () => {
     expect(parsed.status).toBe(409);
   });
 
+  it.each([3, 9])("checks duplicates within the requested language when existing langId=%s", async (existingLangId) => {
+    const existing = { id: 1n, langId: existingLangId, word_text: "такси" };
+    prisma.word_v.findFirst.mockImplementation(async ({ where }) =>
+      where.word_text === existing.word_text && (where.langId == null || where.langId === existing.langId)
+        ? { id: existing.id }
+        : null,
+    );
+    prisma.pendingWords.create.mockResolvedValue({ id: 42n, descriptions: [] });
+    const response = await POST(
+      makeReq("POST", "http://localhost/api/pending/create-new", {
+        word: "Такси",
+        definition: "Автомобиль",
+        language: "RU",
+      }),
+      makeCtx({}),
+    );
+    expect(response.status).toBe(existingLangId === 9 ? 409 : 200);
+    if (existingLangId === 9) expect(prisma.pendingWords.create).not.toHaveBeenCalled();
+    else expect(prisma.pendingWords.create.mock.calls[0][0].data.langId).toBe(9);
+  });
+
   it("returns 400 if language not found", async () => {
     setAuthed({ id: "u1" });
     prisma.word_v.findFirst.mockResolvedValueOnce(null);
@@ -100,6 +122,24 @@ describe("/api/pending/create-new (POST)", () => {
       | { data?: { descriptions?: { create?: Array<Record<string, unknown>> } } }
       | undefined;
     expect(createArgs?.data?.descriptions?.create?.length).toBe(1);
+  });
+
+  it.each([true, false, undefined])("stores new-word imageability %s for moderation", async (isImageable) => {
+    prisma.word_v.findFirst.mockResolvedValueOnce(null);
+    prisma.language.findUnique.mockResolvedValueOnce({ id: 9, code: "ru" });
+    prisma.pendingWords.create.mockResolvedValueOnce({ id: 42n, descriptions: [] });
+    const res = await POST(
+      makeReq("POST", "http://localhost/api/pending/create-new", {
+        word: "кактус",
+        definition: "Растение",
+        language: "ru",
+        isImageable,
+      }),
+      makeCtx({}),
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(prisma.pendingWords.create.mock.calls[0][0].data.note).isImageable).toBe(isImageable ?? false);
+    expect(prisma.word_v.update).not.toHaveBeenCalled();
   });
 
   it("stores end date when provided", async () => {

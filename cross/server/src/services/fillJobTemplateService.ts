@@ -1,8 +1,11 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { resolveIssueStorageDirectory, sanitizeStorageName as sanitizeName } from "@megacross/cross-format/storage-paths";
 import { parseFsh } from "../utils/parseFsh";
 import { scanSlotsDetailed, type SlotStart, validate, validateSlotCoverage } from "../utils/grid";
 import type { Grid, Slot } from "../types";
+
+export { sanitizeName };
 
 export type SnapshotFile = {
   name: string;
@@ -59,16 +62,6 @@ function normalizeWordKey(word: string): string {
   return word.trim().toUpperCase();
 }
 
-export function sanitizeName(name: string): string {
-  const base = path
-    .basename(name)
-    .replace(/[\r\n\t]/g, " ")
-    .trim();
-  const normalized = base.normalize("NFC");
-  const safe = normalized.replace(/[^\p{L}\p{N}\p{M}\-_. ]+/gu, "_");
-  return safe.replace(/_{2,}/g, "_").replace(/ {2,}/g, " ");
-}
-
 export function normalizeTemplateDisplayName(name: string): string {
   const sanitized = sanitizeName(name);
   const ext = path.extname(sanitized);
@@ -85,9 +78,7 @@ export function getSamplesDir(): string {
 
 export function getSamplesDirForIssue(issue: IssuePathContext): string {
   const base = getSamplesDir();
-  const editionDir = sanitizeName(issue.editionCode);
-  const issueDir = sanitizeName(issue.issueLabel);
-  return path.join(base, editionDir, issueDir);
+  return resolveIssueStorageDirectory(base, issue.editionCode, issue.issueLabel);
 }
 
 export function getOutputDir(): string {

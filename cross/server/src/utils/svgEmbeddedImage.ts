@@ -86,9 +86,14 @@ async function buildProcessedRasterBuffer(
   options: BuildEmbeddedImageHrefOptions
 ): Promise<{ buffer: Buffer; mimeType: string }> {
   const animated = mimeType === "image/gif";
-  const croppedBuffer = isFinitePositive(options.targetAspectRatio)
-    ? await cropRasterBufferToAspectRatio(buffer, mimeType, options.targetAspectRatio)
+  const metadata = await sharp(buffer, { animated }).metadata();
+  // Orient before measuring or cropping; use a lossless intermediate to avoid double JPEG encoding.
+  const orientedBuffer = metadata.orientation && metadata.orientation !== 1
+    ? await sharp(buffer, { animated }).autoOrient().png().toBuffer()
     : buffer;
+  const croppedBuffer = isFinitePositive(options.targetAspectRatio)
+    ? await cropRasterBufferToAspectRatio(orientedBuffer, mimeType, options.targetAspectRatio)
+    : orientedBuffer;
   const pipeline = sharp(croppedBuffer, { animated }).grayscale(options.grayscale === true);
   switch (mimeType) {
     case "image/jpeg":

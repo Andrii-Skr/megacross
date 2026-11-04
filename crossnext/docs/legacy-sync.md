@@ -6,7 +6,7 @@ Purpose
 - Atomic swap via temp tables to avoid partial reads.
 
 Environment
-- `DATABASE_URL` – Postgres DSN (used by Prisma)
+- `DATABASE_URL` – Postgres DSN (used by a dedicated pg connection)
 - `LEGACY_MYSQL_URL` – MySQL DSN (target legacy DB)
 - `LEGACY_EXPORT_SCHEMA` – schema in PG with export views (default `legacy_export`)
 - `SYNC_CRON` – optional cron expression; if not set, schedule is derived from `SYNK_TEST` (or runs once when `RUN_ONCE=true`)
@@ -24,13 +24,16 @@ Run with schedule (every hour example)
 Test mode schedule
 - `SYNK_TEST=true pnpm sync:legacy:once` → every 5 minutes
 - `SYNK_TEST=false pnpm sync:legacy:once` → daily at 03:00
-Note: overlapping runs are skipped if a previous sync is still running.
+Note: overlapping runs (including separate cron/manual processes) are skipped using a MySQL session lock scoped to the target database.
 
 Compose (dev)
 - Start dependencies: `docker compose --profile dev --profile mysql up -d db-dev mysql-dev`
 - Run sync as service: `docker compose --profile dev --profile mysql --profile sync up legacy-sync-dev`
 
 Safety notes
+- All pages of both Postgres views are read from one read-only `REPEATABLE READ` transaction. Concurrent dictionary edits appear in the next export.
+- Bigint pagination cursors retain their exact values, and DATE columns are exported without timezone conversion.
+- The MySQL lock is acquired before any staging-table changes and held through publication and cleanup. Closing the session releases the lock on failures.
 - The script creates `word_v_new` / `opred_v_new`, fills them, atomically renames both and drops the old tables.
 - Requires existing base tables `word_v` and `opred_v` in MySQL (structure is copied via `CREATE TABLE ... LIKE`).
 - Ensure MySQL user has privileges to CREATE, DROP, and RENAME tables.

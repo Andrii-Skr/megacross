@@ -458,7 +458,7 @@ export function TemplateSetupPanel({
   const activeAutocompleteCacheKey = useMemo(() => {
     if (!editingSlot) return null;
     return buildAutocompleteCacheKey({
-      dictionaryFilterCacheKey,
+      dictionaryFilterCacheKey: `${dictionaryFilterCacheKey}:${editingSlot.isPhotoDefinition === true}`,
       dictionaryLanguage,
       slotLength: editingSlot.len,
       searchSeed: activeSearchSeed,
@@ -574,7 +574,7 @@ export function TemplateSetupPanel({
       try {
         const searchSeed = allowEmpty ? null : modalSearchSeed;
         const cacheKey = buildAutocompleteCacheKey({
-          dictionaryFilterCacheKey,
+          dictionaryFilterCacheKey: `${dictionaryFilterCacheKey}:${editingSlot.isPhotoDefinition === true}`,
           dictionaryLanguage,
           slotLength: editingSlot.len,
           searchSeed,
@@ -605,6 +605,7 @@ export function TemplateSetupPanel({
             take: String(AUTOCOMPLETE_BATCH_SIZE),
           });
           appendDictionaryFilterToParams(params, dictionaryFilter);
+          if (editingSlot.isPhotoDefinition) params.set("isImageable", "true");
           if (!params.has("lang")) {
             params.set("lang", dictionaryLanguage || "ru");
           }

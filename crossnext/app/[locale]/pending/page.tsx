@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { prisma } from "@/lib/prisma";
 import { getSearchParamValue, type SearchParamsInput } from "@/lib/search-params";
+import { pendingImageability } from "@/lib/wordImageability";
 
 export const dynamic = "force-dynamic";
 
@@ -148,6 +149,11 @@ export default async function PendingWordsPage({
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex-1">
+                {pendingImageability(p.note) !== undefined && (
+                  <div className="mb-2 text-sm">
+                    {t("wordIsImageable")}: {t(pendingImageability(p.note) ? "yes" : "wordImageabilityNo")}
+                  </div>
+                )}
                 {/* Metadata: createdBy only (no CreatedAt display) */}
                 <div className="mb-2 text-xs text-muted-foreground">
                   <CreatedAt iso={p.createdAt.toISOString()} />

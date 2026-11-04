@@ -167,6 +167,10 @@ export async function updateUserAction(formData: FormData) {
   const allowedRoles = resolveAllowedRoles(sessionRole, allRoleCodes);
   const allowedSet = new Set<Role>(allowedRoles);
 
+  if (!currentRole || !allowedSet.has(currentRole)) {
+    throw actionError("FORBIDDEN", 403);
+  }
+
   const data: Parameters<typeof prisma.user.update>[0]["data"] = {};
   const password = passwordRaw.trim();
   if (password) {

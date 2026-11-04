@@ -114,7 +114,7 @@ pub fn quality(
     e: &Evaluation,
     pictures: &[Picture],
     weights: Option<&BTreeMap<usize, f64>>,
-    arrows: &[Arrow],
+    arrows: &ArrowTable,
 ) -> Quality {
     let photos = photo_cells(&e.mask, pictures);
     with_photos(e, pictures, weights, arrows, &photos)
@@ -123,7 +123,7 @@ pub fn with_photos(
     e: &Evaluation,
     pictures: &[Picture],
     weights: Option<&BTreeMap<usize, f64>>,
-    arrows: &[Arrow],
+    arrows: &ArrowTable,
     photos: &[bool],
 ) -> Quality {
     let m = &e.mask;

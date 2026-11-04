@@ -16,6 +16,7 @@ export type PolishSolutionOptions = {
   forbiddenWords?: Set<string>;
   repeatPenalty?: number;
   fixedLetters?: Map<string, string>;
+  allowedWordsBySlot?: Map<number, ReadonlySet<string>>;
 };
 
 export type PolishSolutionResult = {
@@ -159,6 +160,8 @@ export function polishSolvedRowsByCost(options: PolishSolutionOptions): PolishSo
 
       for (const candidateRaw of bucket) {
         const candidate = normalizeWordKey(candidateRaw);
+        const allowed = options.allowedWordsBySlot?.get(slot.id);
+        if (allowed && !allowed.has(candidate)) continue;
         if (!candidate || candidate === currentWord) continue;
         if (!matchesPattern(candidate, pattern)) continue;
         examinedCandidates += 1;

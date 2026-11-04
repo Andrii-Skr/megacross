@@ -91,6 +91,7 @@ model opred_v {
   user_set                                  String                 @default("") @db.VarChar(255)
   go_flag                                   Int                    @default(0) @db.SmallInt
   is_deleted                                Boolean                @default(false)
+  deletedWithWord Boolean @default(false)
   langId                                    Int
   approvedBy                                Int?                   @db.SmallInt
   createBy                                  Int?                   @db.SmallInt
@@ -210,6 +211,8 @@ model user {
 
 /// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model word_v {
+  isImageable Boolean @default(false)
+  imageGeneratedAt DateTime? @db.Timestamp(6)
   id                     BigInt                   @id @default(autoincrement())
   word_text              String                   @db.VarChar(255)
   length                 Int                      @db.SmallInt

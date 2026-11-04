@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Prisma } from "@prisma/client";
+import { create as parseFont } from "fontkit";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth";
@@ -93,7 +94,7 @@ function resolveFontFormat(
   mimeType: string;
 } | null {
   const extRaw = path.extname(fileName).toLowerCase();
-  const ext = extRaw === ".ttf" || extRaw === ".otf" || extRaw === ".woff" || extRaw === ".woff2" ? extRaw : null;
+  const ext = extRaw === ".ttf" || extRaw === ".otf" ? extRaw : null;
   if (!ext) return null;
 
   const mimeByExt: Record<string, string> = {
@@ -158,11 +159,22 @@ export async function POST(req: Request) {
     }
 
     const bytes = Buffer.from(await file.arrayBuffer());
+    try {
+      const signature = bytes.length >= 4 ? bytes.readUInt32BE(0) : 0;
+      const matchesFormat =
+        formatMeta.format === "otf" ? signature === 0x4f54544f : signature === 0x00010000 || signature === 0x74727565;
+      if (!matchesFormat) throw new Error("Font header does not match its format");
+      const font = parseFont(bytes);
+      if ("fonts" in font || !font.familyName || font.numGlyphs < 1) throw new Error("Invalid font");
+    } catch {
+      return error(400, "Invalid TTF/OTF font file", "UPLOAD_INVALID_FONT");
+    }
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     const storageFileName = `${sha256}${formatMeta.ext}`;
     const fontsDir = resolveFontsDir();
     await fs.mkdir(fontsDir, { recursive: true });
-    const targetPath = path.join(fontsDir, storageFileName);
+    // Fonts are uploaded to runtime storage; they are not build-time assets.
+    const targetPath = path.join(/* turbopackIgnore: true */ fontsDir, storageFileName);
     try {
       await fs.access(targetPath);
     } catch {

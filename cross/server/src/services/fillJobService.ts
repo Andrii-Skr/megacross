@@ -1,9 +1,10 @@
 import archiver from "archiver";
 import { EventEmitter } from "node:events";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isPhotoImageRatioAllowed } from "@megacross/cross-clues";
+import { resolveIssueStorageDirectory, resolveStorageChild } from "@megacross/cross-format/storage-paths";
+import { buildPhotoAreaBoundsBySlotId, isPhotoImageRatioAllowed } from "@megacross/cross-clues";
 import { Prisma, prisma } from "../db/prisma";
 import type { SolveFailInfo, SolveProgress, SolveOptions } from "../utils/solver";
 import {
@@ -73,7 +74,6 @@ import {
   getSamplesDir,
   getSamplesDirForIssue,
   resolveTemplatePaths,
-  sanitizeName,
   type SnapshotFile,
   type TemplateEntry,
   type TemplateError,
@@ -135,6 +135,7 @@ import {
 } from "./fillFinalizeService";
 import {
   cleanupOldFillJobArchives,
+  claimFillJobForFinalization,
   createQueuedFillJob,
   loadFillJobArchivePath,
   loadFillJobById,
@@ -142,6 +143,7 @@ import {
   loadLatestActiveJobByIssue,
   loadLatestFillJobByIssue,
   patchFillJob,
+  saveRegeneratedReviewIfCurrent,
   type FillJobRow,
   type FillJobPatch,
 } from "./fillJobRepository";
@@ -281,6 +283,7 @@ type FillExecutionContext = {
   invalidByKey: Map<string, TemplateError>;
   templateNeighbors: Map<string, Set<string>>;
   dict: Map<number, string[]>;
+  imageableDict: Map<number, string[]>;
   wordLengthByWord: Map<string, number>;
   usageCountByWord: Map<string, number>;
   editionUsageCountByWord: Map<string, number>;
@@ -592,6 +595,7 @@ async function selectWordsAndDefinitionsForEdition(
     preferUsageStats: boolean;
     definitionWhere: Prisma.opred_vWhereInput;
     usedDefinitions?: Set<string>;
+    imageableWords?: ReadonlySet<string>;
   }
 ): Promise<Map<string, ReviewWordSelection>> {
   const uniqueWords = [...new Set(words.map(normalizeWordKey).filter(Boolean))];
@@ -610,6 +614,7 @@ async function selectWordsAndDefinitionsForEdition(
       id: true,
       word_text: true,
       word_text_norm: true,
+      isImageable: true,
       opred_v: {
         where: {
           AND: [{ langId: params.langId }, params.definitionWhere],
@@ -705,6 +710,7 @@ async function selectWordsAndDefinitionsForEdition(
       normalized && normalized.length > 0 ? normalized : row.word_text
     );
     if (!word) continue;
+    if (params.imageableWords?.has(word) && !row.isImageable) continue;
     const list = byWord.get(word) ?? [];
     list.push(row);
     byWord.set(word, list);
@@ -1173,7 +1179,10 @@ async function loadFillExecutionContext(issueId: bigint, options: FillJobOptions
   }
 
   const { entries, lengths, invalid } = buildEntries(resolved);
-  const dict = await loadDictionaryByTemplate(dictionaryTemplate, { lengths });
+  const [dict, imageableDict] = await Promise.all([
+    loadDictionaryByTemplate(dictionaryTemplate, { lengths }),
+    loadDictionaryByTemplate(dictionaryTemplate, { lengths, isImageable: true }),
+  ]);
   if (!dict.size) throw new Error("Dictionary is empty for selected template");
 
   const wordLengthByWord = buildWordLengthLookup(dict);
@@ -1272,6 +1281,7 @@ async function loadFillExecutionContext(issueId: bigint, options: FillJobOptions
     invalidByKey,
     templateNeighbors,
     dict,
+    imageableDict,
     wordLengthByWord,
     usageCountByWord,
     editionUsageCountByWord,
@@ -1431,6 +1441,27 @@ async function solveSingleTemplateForReview(
   if (resolvedSetupResult.errors.length > 0) {
     return { error: resolvedSetupResult.errors[0] ?? "invalid-template-setup" };
   }
+  const photoAreas = buildPhotoAreaBoundsBySlotId(entry.grid, entry.slots, entry.grid.data, new Map());
+  const allowedWordsBySlot = new Map<number, ReadonlySet<string>>();
+  for (const slot of entry.slots) {
+    if (!photoAreas.has(slot.id)) continue;
+    const allowed = new Set(context.imageableDict.get(slot.len) ?? []);
+    allowedWordsBySlot.set(slot.id, allowed);
+    const fixed = resolvedSetupResult.resolved.fixedLetters;
+    if (![...allowed].some((word) => slot.cells.every(([r, c], i) => !fixed.has(`${r},${c}`) || fixed.get(`${r},${c}`) === word[i]))) {
+      return { error: `Template ${entry.name}: photo slot ${slot.id} has no imageable candidates matching its fixed letters` };
+    }
+  }
+  const fixedPhotoSlots = resolvedSetupResult.resolved.fixedSlots.filter((slot) => photoAreas.has(slot.slotId));
+  if (fixedPhotoSlots.length) {
+    const eligible = await prisma.word_v.findMany({
+      where: { id: { in: fixedPhotoSlots.map((slot) => BigInt(slot.wordId)) }, isImageable: true, is_deleted: false, ...(context.languageId != null ? { langId: context.languageId } : {}) },
+      select: { id: true, word_text: true, word_text_norm: true },
+    });
+    const eligibleWords = new Map(eligible.map((word) => [String(word.id), normalizeWordKey(word.word_text_norm?.trim() || word.word_text)]));
+    const invalid = fixedPhotoSlots.find((slot) => eligibleWords.get(slot.wordId) !== slot.word);
+    if (invalid) return { error: `Template ${entry.name}: fixed word in photo slot ${invalid.slotId} must be imageable` };
+  }
   const solveRowsBase = buildSolveRows(entry.grid.data, resolvedSetupResult.resolved.fixedLetters);
   let currentSolveRows = solveRowsBase;
   let constrainedLetters = resolvedSetupResult.resolved.fixedLetters;
@@ -1441,7 +1472,7 @@ async function solveSingleTemplateForReview(
       context.dict,
       resolvedSetupResult.resolved.fixedLetters,
       resolvedSetupResult.resolved.keyword,
-      { shuffle: options.shuffle },
+      { shuffle: options.shuffle, allowedWordsBySlot },
     );
     if ("error" in placement) {
       return { error: placement.error };
@@ -1481,6 +1512,7 @@ async function solveSingleTemplateForReview(
     const effectiveWordPriority =
       overrides.wordPriority ?? (options.usageStats ? context.usagePriorityByWord : undefined);
     const nativeOptions = {
+      allowedWordsBySlot,
       ...fillSolverSearchProfile(options.engine),
       ...callbacks.solverTuning,
       shuffle: overrides.shuffle ?? options.shuffle,
@@ -1674,6 +1706,7 @@ async function solveSingleTemplateForReview(
         shuffle: options.engine === "csp" && options.shuffle,
         seed: callbacks.solverTuning?.seed,
         label: `${entry.name}:probe`,
+        allowedWordsBySlot,
         maxNodes: options.maxNodes,
         maxMs: options.maxMs,
         uniqueWords: true,
@@ -1800,6 +1833,7 @@ async function solveSingleTemplateForReview(
       forbiddenWords: options.unique ? state.usedWordsInJob : undefined,
       repeatPenalty: IN_JOB_REPEAT_PRIORITY_MULTIPLIER,
       fixedLetters: constrainedLetters,
+      allowedWordsBySlot,
     });
     metrics.usageCostMetrics.examinedCandidates += polish.examinedCandidates;
     if (polish.improved) {
@@ -1818,10 +1852,17 @@ async function solveSingleTemplateForReview(
       lastFail = consumeLastNativeFail();
     }
     return {
-      error: lastFail ? formatFail(lastFail) : "no-solution",
+      error: photoAreas.size
+        ? `Template ${entry.name}: no solution with imageable words in photo slots ${[...photoAreas.keys()].join(", ")} (${lastFail ? formatFail(lastFail) : "no-solution"})`
+        : lastFail ? formatFail(lastFail) : "no-solution",
     };
   }
 
+  for (const slot of entry.slots) {
+    const allowed = allowedWordsBySlot.get(slot.id);
+    const word = slot.cells.map(([r, c]) => solved?.[r]?.[c] ?? "").join("");
+    if (allowed && !allowed.has(word)) return { error: `Template ${entry.name}: photo slot ${slot.id} requires an imageable word` };
+  }
   const constraintViolation = findConstraintViolation(entry.name, solved, constrainedLetters);
   if (constraintViolation) {
     return { error: constraintViolation };
@@ -1850,6 +1891,7 @@ async function solveSingleTemplateForReview(
           preferUsageStats: options.usageStats,
           definitionWhere: context.definitionWhere,
           usedDefinitions: usedDefinitionsForTemplate,
+          imageableWords: new Set(entry.slots.filter((slot) => photoAreas.has(slot.id)).map((slot) => slot.cells.map(([r, c]) => solved?.[r]?.[c] ?? "").join(""))),
         })
       : new Map<string, ReviewWordSelection>();
   const fallbackDefinitions = await loadDefinitions(usedWordsList, {
@@ -1903,7 +1945,8 @@ function matchesPhotoAreaRatio(
 async function findWordsByMask(
   mask: string,
   langId: number,
-  limit: number
+  limit: number,
+  imageableOnly = false
 ): Promise<Array<{ wordId: string; word: string; definitions: ReviewDefinitionOption[]; availableImages: ReviewWordImageOption[] }>> {
   const normalized = normalizeMask(mask);
   if (!normalized) return [];
@@ -1922,6 +1965,7 @@ async function findWordsByMask(
     WHERE w.is_deleted = false
       AND w."langId" = ${langId}
       AND w.length = ${normalized.length}
+      ${imageableOnly ? Prisma.sql`AND w."isImageable" = true` : Prisma.empty}
       AND UPPER(COALESCE(NULLIF(BTRIM(w.word_text_norm), ''), w.word_text)) LIKE ${likeMask} ESCAPE '\'
     ORDER BY w.id ASC
     LIMIT ${safeLimit}
@@ -2281,6 +2325,7 @@ async function resolveFinalizeSvgTypography(
   if (parsed.fontId != null) {
     const embedded = await loadEmbeddedSvgFont(parsed.fontId);
     if (!embedded) throw new Error(`Selected SVG font ${parsed.fontId} is unavailable`);
+    if (embedded.fontFormat !== "ttf" && embedded.fontFormat !== "otf") throw new Error("Selected font must be TTF or OTF for EPS export");
     fontFamily = embedded.familyName;
     fontFaceCss = embedded.fontFaceCss;
     fontData = embedded.fontData;
@@ -2744,16 +2789,12 @@ export async function regenerateFillJobTemplate(jobId: bigint, payloadRaw: unkno
 
   const completedTemplates = applied.templatesState.filter((item) => item.status === "done").length;
   const totalTemplates = applied.templatesState.length;
-  await updateJob(jobId, {
-    status: "review",
-    progress: 100,
-    currentTemplate: null,
-    completedTemplates,
-    totalTemplates,
-    error: null,
-    templates: applied.templatesState,
-    reviewData: applied.review,
-  });
+  const saved = await saveRegeneratedReviewIfCurrent(
+    prisma, jobId, row.reviewData, applied.review, applied.templatesState, completedTemplates, totalTemplates,
+  );
+  if (!saved) {
+    throw Object.assign(new Error("Review changed during regeneration; reload and try again"), { status: 409 });
+  }
   await emitCurrentJob(jobId);
 
   const updated = await getFillJob(jobId);
@@ -2788,7 +2829,7 @@ export async function getFillWordCandidates(
     throw new Error(`Language is not configured for template ${template.name}`);
   }
 
-  const candidates = await findWordsByMask(mask, template.langId, payload.limit ?? 80);
+  const candidates = await findWordsByMask(mask, template.langId, payload.limit ?? 80, slot.isPhotoDefinition);
   return {
     slotId,
     mask,
@@ -2797,14 +2838,20 @@ export async function getFillWordCandidates(
 }
 
 export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promise<FillJobUpdate> {
-  const row = await loadJobRow(jobId);
-  if (!row) throw new Error("Job not found");
-  const status = String(row.status ?? "");
-  if (status !== "review") throw new Error("Job is not waiting for review");
   const jobIdStr = String(jobId);
+  if (finalizingJobs.has(jobIdStr)) {
+    throw Object.assign(new Error("Job is already being finalized"), { status: 409 });
+  }
   finalizingJobs.add(jobIdStr);
+  let claimed = false;
+  let committed = false;
+  let stagingDirectory: string | null = null;
+  let incompleteArchive: string | null = null;
 
   try {
+    const row = await claimFillJobForFinalization(prisma, jobId);
+    if (!row) throw Object.assign(new Error("Job is not waiting for review"), { status: 409 });
+    claimed = true;
     const review = parseReviewPayload(row.reviewData);
     if (!review) throw new Error("Review data not found for this job");
     const payload = (payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {}) as FinalizePayload;
@@ -2822,13 +2869,10 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
 
   const options = parseFillJobOptions(row.options);
   const outputRoot = getOutputDir();
-  const issueRoot = path.join(
-    outputRoot,
-    sanitizeName(effectiveReview.issue.editionCode),
-    sanitizeName(effectiveReview.issue.issueLabel)
-  );
-  const issueDir = path.join(issueRoot, `job-${jobId.toString()}`);
-  mkdirSync(issueDir, { recursive: true });
+  const issueRoot = resolveIssueStorageDirectory(outputRoot, effectiveReview.issue.editionCode, effectiveReview.issue.issueLabel);
+  mkdirSync(issueRoot, { recursive: true });
+  const issueDir = mkdtempSync(path.join(issueRoot, `.job-${jobId.toString()}-`));
+  stagingDirectory = issueDir;
 
   const templatesState = parseTemplatesPayload(row.templates) ?? effectiveReview.templates.map((template) => ({
     key: template.key,
@@ -2897,6 +2941,22 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       states.set(slot.slotId, built.state);
       errors.push(...built.errors.map((msg) => `Template ${template.name}: ${msg}`));
     }
+    const photoSlots = template.slots.filter((slot) => slot.isPhotoDefinition);
+    if (photoSlots.length) {
+      const ids = photoSlots.flatMap((slot) => {
+        const id = states.get(slot.slotId)?.wordId;
+        return id == null ? [] : [id];
+      });
+      const words = await prisma.word_v.findMany({
+        where: { id: { in: ids }, isImageable: true, is_deleted: false, ...(template.langId != null ? { langId: template.langId } : {}) },
+        select: { id: true, word_text: true, word_text_norm: true },
+      });
+      const eligible = new Map(words.map((word) => [String(word.id), normalizeWordKey(word.word_text_norm?.trim() || word.word_text)]));
+      for (const slot of photoSlots) {
+        const state = states.get(slot.slotId);
+        if (!state || eligible.get(String(state.wordId)) !== normalizeWordKey(state.word)) errors.push(`Template ${template.name}: photo slot ${slot.slotId} requires an imageable word`);
+      }
+    }
     const wordsInTemplate = collectTemplateWords(states);
     errors.push(...validateWordUniqueness(template, states));
     errors.push(
@@ -2934,9 +2994,6 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       }
       continue;
     }
-    usedWordsByTemplate.set(template.key, wordsInTemplate);
-    registerUsedDefinitions(template, states, usedDefinitions);
-
     const slotStatesInOrder = template.slots
       .map((slot) => states.get(slot.slotId))
       .filter((item): item is FinalSlotState => Boolean(item));
@@ -2950,8 +3007,6 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       if (!definitions.has(state.word)) {
         definitions.set(state.word, state.definition);
       }
-      if (state.wordId !== null) addCount(issueWordUsage, state.wordId, 1);
-      if (state.opredId !== null) addCount(issueOpredUsage, state.opredId, 1);
     }
 
     const slots = template.slots.map((slot) => convertReviewSlotToSlot(slot));
@@ -2959,7 +3014,7 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     const photoErrors: string[] = [];
     const grayscalePhotoClues = resolvedSvgTypography.photoCluesGrayscale;
     const clueGroupByKey = new Map((template.clueGroups ?? []).map((group) => [group.key, group]));
-    const templateDir = path.join(issueDir, sanitizeName(template.name));
+    const templateDir = resolveStorageChild(issueDir, template.name);
     mkdirSync(templateDir, { recursive: true });
     for (const slot of template.slots) {
       const photoAreaBounds = slot.photoAreaBounds;
@@ -3050,6 +3105,13 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
       writeFileSync(path.join(templateDir, `${template.name}.crw`), crw);
     }
 
+    usedWordsByTemplate.set(template.key, wordsInTemplate);
+    registerUsedDefinitions(template, states, usedDefinitions);
+    for (const state of slotStatesInOrder) {
+      if (state.wordId !== null) addCount(issueWordUsage, state.wordId, 1);
+      if (state.opredId !== null) addCount(issueOpredUsage, state.opredId, 1);
+    }
+
     if (idx !== undefined) {
       templatesState[idx] = {
         ...templatesState[idx],
@@ -3076,6 +3138,9 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     writeFileSync(path.join(issueDir, "failures.json"), JSON.stringify(finalizeErrors, null, 2));
   }
 
+  const archivePath = path.join(issueRoot, buildArchiveFileName(jobId));
+  incompleteArchive = archivePath;
+  const archiveSize = await zipDirectory(issueDir, archivePath);
   if (options.usageStats && completedTemplates > 0) {
     await persistUsageStatsForIssue(
       BigInt(effectiveReview.issue.issueId),
@@ -3088,8 +3153,6 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     }
   }
 
-  const archivePath = path.join(issueRoot, buildArchiveFileName(jobId));
-  const archiveSize = await zipDirectory(issueDir, archivePath);
   const finalStatus: FillJobStatus = completedTemplates > 0 ? "done" : "error";
   const finalError =
     completedTemplates > 0
@@ -3108,12 +3171,17 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     reviewData: effectiveReview,
     ...(finalError ? { error: finalError } : {}),
   });
+  incompleteArchive = null;
+  committed = true;
   await emitCurrentJob(jobId);
 
     const updated = await getFillJob(jobId);
     if (!updated) throw new Error("Failed to load updated job");
     return updated;
   } catch (err) {
+    // Notification/response reads can fail after the archive and status are saved.
+    // Reopening that completed job would permit a second export.
+    if (!claimed || committed) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     await updateJob(jobId, {
       status: "review",
@@ -3124,6 +3192,14 @@ export async function finalizeFillJob(jobId: bigint, payloadRaw: unknown): Promi
     await emitCurrentJob(jobId);
     throw err;
   } finally {
+    if (stagingDirectory) {
+      try { rmSync(stagingDirectory, { recursive: true, force: true }); }
+      catch (error) { console.warn("Failed to remove export staging directory", error); }
+    }
+    if (incompleteArchive) {
+      try { rmSync(incompleteArchive, { force: true }); }
+      catch (error) { console.warn("Failed to remove incomplete archive", error); }
+    }
     finalizingJobs.delete(jobIdStr);
   }
 }

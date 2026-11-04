@@ -13,7 +13,15 @@ import type { GeneratedTemplate, TemplateGenerationRequest } from "../src/templa
 // Read-only replay: load a job's request/dictionary; never create jobs or save results.
 const jobArg = process.argv.indexOf("--job-id");
 const jobId = process.argv[jobArg + 1];
-if (jobArg < 0 || !/^\d+$/u.test(jobId ?? "")) throw new Error("Usage: template-pipeline-benchmark.ts --job-id ID [--compare-all] [--full-fill-budget]");
+if (jobArg < 0 || !/^\d+$/u.test(jobId ?? "")) throw new Error("Usage: template-pipeline-benchmark.ts --job-id ID [--compare-all] [--full-fill-budget] [--result-count N] [--max-ms N]");
+function positiveOption(name: string, fallback: number): number {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return fallback;
+  const value = Number(process.argv[index + 1]);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  return value;
+}
+const maxRunMs = positiveOption("--max-ms", 300000);
 const prisma = createPrismaClient();
 const started = performance.now();
 let request: TemplateGenerationRequest;
@@ -23,6 +31,7 @@ try {
   const [job] = await prisma.$queryRaw<Array<{ parameters: TemplateGenerationRequest }>>(Prisma.sql`SELECT parameters FROM scanword_template_generation_jobs WHERE id=${BigInt(jobId)} LIMIT 1`);
   if (!job) throw new Error("job not found");
   request = normalizeGenerationRequest(job.parameters);
+  request.resultCount = Math.min(request.resultCount, positiveOption("--result-count", request.resultCount));
   baseline = await prisma.$queryRaw<Array<{ qualityScore: number; fingerprint: string }>>(Prisma.sql`SELECT fingerprint, (metrics->>'qualityScore')::float AS "qualityScore" FROM scanword_template_generation_results WHERE "jobId"=${BigInt(jobId)} ORDER BY ordinal`);
   const lengths = Array.from({ length: 10 }, (_, i) => i + 2);
   if (request.dictionaryFilterId) {
@@ -37,7 +46,7 @@ const fingerprints = new Set<string>(), diversity: string[] = [], candidates: Ge
 const deferred: Array<{ candidate: GeneratedTemplate; seed: number; remainingMs: number }> = [];
 const totals = { geometryMs: 0, precheckMs: 0, solverMs: 0, evaluations: 0, earlyStops: 0, precheckIncomplete: 0, solverChecks: 0, searchCalls: 0 };
 const probeMs = process.argv.includes("--full-fill-budget") ? 30000 : 2500;
-const deadline = Date.now() + 300000;
+const deadline = Date.now() + maxRunMs;
 let rng = new SeededRandom(request.seed!), attempts = 0, stagnant = 0;
 console.log(JSON.stringify({ stage: "loaded", jobId, request, ms: Math.round(performance.now() - started) }));
 try {
@@ -82,6 +91,6 @@ try {
     console.log(JSON.stringify({ stage: "accepted", ordinal: candidates.length, elapsedMs: Math.round(performance.now() - started), metrics: candidate.metrics }));
   }
 } finally { controller.abort(); }
-assert.equal(candidates.length, request.resultCount, "replay must complete the requested package");
 const mean = (scores: number[]) => scores.reduce((s, x) => s + x, 0) / Math.max(1, scores.length);
 console.log(JSON.stringify({ stage: "total", accepted: candidates.length, attempts, wallMs: Math.round(performance.now() - started), ...totals, meanQuality: mean(candidates.map((c) => c.metrics.qualityScore!)), originalMeanQuality: mean(baseline.map((c) => c.qualityScore)), minQuality: Math.min(...candidates.map((c) => c.metrics.qualityScore!)), maxQuality: Math.max(...candidates.map((c) => c.metrics.qualityScore!)), sameOriginalFingerprints: baseline.length === candidates.length && candidates.every((c, i) => c.fingerprint === baseline[i].fingerprint), verifiedFills: true, readOnly: true }));
+assert.equal(candidates.length, request.resultCount, "replay must complete the requested package");

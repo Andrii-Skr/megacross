@@ -1,3 +1,4 @@
+import { buildDictionarySearchRegex, filterDictionarySearchRows } from "@megacross/cross-format/dictionary-search";
 import { Prisma, createPrismaClient } from "../db/prisma";
 
 export type DictionaryOptions = {
@@ -200,6 +201,7 @@ export type DictionaryFilterTemplate = {
 };
 
 type DictionaryTemplateOptions = {
+  isImageable?: boolean;
   lengths?: number[];
 };
 
@@ -215,7 +217,7 @@ export async function loadDictionaryByTemplate(
     const scope = scopeRaw === "def" || scopeRaw === "both" ? scopeRaw : "word";
     const modeRaw = (template.searchMode || "contains").toLowerCase();
     const searchMode: "contains" | "startsWith" | "exact" =
-      modeRaw === "startsWith" ? "startsWith" : modeRaw === "exact" ? "exact" : "contains";
+      modeRaw === "startswith" ? "startsWith" : modeRaw === "exact" ? "exact" : "contains";
     let lenFilterField =
       template.lenFilterField === "def" || template.lenFilterField === "word"
         ? template.lenFilterField
@@ -234,14 +236,8 @@ export async function loadDictionaryByTemplate(
     const tagNames = (template.tagNames ?? []).map((t) => t.trim()).filter(Boolean);
     const excludeTagNames = (template.excludeTagNames ?? []).map((t) => t.trim()).filter(Boolean);
 
-    const textFilter =
-      query.length > 0
-        ? searchMode === "contains"
-          ? { contains: query, mode: "insensitive" as const }
-          : searchMode === "startsWith"
-            ? { startsWith: query, mode: "insensitive" as const }
-            : { equals: query, mode: "insensitive" as const }
-        : null;
+    const textFilter = query.length > 0 ? { contains: query, mode: "insensitive" as const } : null;
+    const searchRegex = buildDictionarySearchRegex(query, searchMode);
 
     const now = new Date();
     const lengthFilter: Prisma.IntFilter = {};
@@ -308,6 +304,7 @@ export async function loadDictionaryByTemplate(
         : undefined;
 
     const baseWhere: Prisma.word_vWhereInput = {
+      ...(options.isImageable !== undefined ? { isImageable: options.isImageable } : {}),
       is_deleted: false,
       language: { is: { code: langCode } },
       ...(Object.keys(opredSomeBase).length > 0 ? { opred_v: { some: opredSomeBase } } : {}),
@@ -338,12 +335,20 @@ export async function loadDictionaryByTemplate(
 
     const rows = await prisma.word_v.findMany({
       where,
-      select: { word_text: true, word_text_norm: true, length: true },
+      select: {
+        word_text: true,
+        word_text_norm: true,
+        length: true,
+        opred_v: {
+          where: opredSomeBase,
+          select: { text_opr: true },
+        },
+      },
     });
 
     const map = new Map<number, string[]>();
     const seenByLen = new Map<number, Set<string>>();
-    for (const row of rows) {
+    for (const row of filterDictionarySearchRows(rows, searchRegex, scope)) {
       const normalized = row.word_text_norm?.trim();
       const text = normalized && normalized.length > 0 ? normalized : row.word_text;
       const word = text.toUpperCase();

@@ -8,6 +8,7 @@ import {
   normalizePersistedRows,
 } from "@/components/scanwords/workspace/reviewDraftState";
 import { Permissions } from "@/lib/authz";
+import { crossApiHeaders } from "@/lib/crossApiAuth";
 import { prisma } from "@/lib/db";
 import { getNumericUserId } from "@/lib/user";
 import { apiRoute } from "@/utils/appRoute";
@@ -188,7 +189,7 @@ export const POST = apiRoute<Body>(
     for (const upstreamBase of upstreamTargets) {
       const reviewUrl = `${upstreamBase}/api/fill/${encodeURIComponent(body.jobId)}/review`;
       try {
-        const response = await fetch(reviewUrl, { cache: "no-store" });
+        const response = await fetch(reviewUrl, { cache: "no-store", headers: crossApiHeaders() });
         const text = await response.text().catch(() => "");
         const json = parseJsonSafe(text);
         if (!response.ok) {
@@ -233,7 +234,7 @@ export const POST = apiRoute<Body>(
       try {
         upstream = await fetch(upstreamUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: crossApiHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({
             templateKey: body.templateKey,
             templates: editableTemplates,

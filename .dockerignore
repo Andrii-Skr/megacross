@@ -15,3 +15,10 @@ cross/server/out
 
 cross/server/native/template-generator/target
 cross/server/native/template-generator/*.node
+
+# Build containers receive configuration through build args and runtime env/secrets.
+**/.env
+**/.env.*
+**/secrets
+!**/.env.example
+!**/.env.sample

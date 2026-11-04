@@ -96,8 +96,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "${CROSS_PORT:-3001}:3001"
+    expose:
+      - "3001"
     volumes:
       - ${CROSSWORDS_HOST_DIR:-../var/crosswords}:/app/var/crosswords
     networks: [backend]
@@ -112,7 +112,7 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
-    secrets: [postgres_password]
+    secrets: [postgres_password, nextauth_secret]
 
   db:
     profiles: ["prod"]

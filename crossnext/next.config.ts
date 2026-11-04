@@ -39,6 +39,9 @@ const nextConfig: NextConfig = {
   // Their native files are not always discovered by standalone output tracing.
   outputFileTracingIncludes: {
     "/*": [
+      // Preview arrows are fixed assets. Runtime uploads/secrets are deliberately
+      // excluded from dynamic filesystem tracing at their call sites.
+      "../cross/server/src/arrows/*.svg",
       "./node_modules/.pnpm/@img+sharp-*/node_modules/@img/sharp-*/**/*",
       "./node_modules/.pnpm/@img+sharp-libvips-*/node_modules/@img/sharp-libvips-*/**/*",
     ],

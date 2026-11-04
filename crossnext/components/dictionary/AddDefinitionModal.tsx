@@ -219,12 +219,12 @@ export function AddDefinitionModal({
   const resolvedLang: "ru" | "uk" | "en" =
     requestLanguage === "ru" || requestLanguage === "uk" || requestLanguage === "en" ? requestLanguage : "ru";
   const buildExistingForAi = useCallback(
-    (currentIndex: number, extraBlocked: string[] = []) => {
+    (currentIndex: number) => {
       const localDefinitions = (definitions ?? [])
         .filter((_, index) => index !== currentIndex)
         .map((definition) => definition?.definition?.trim() ?? "")
         .filter((value) => value.length > 0);
-      const allTexts = existingForChecks.map((item) => item.text).concat(localDefinitions, extraBlocked);
+      const allTexts = existingForChecks.map((item) => item.text).concat(localDefinitions);
       const unique = new Set<string>();
       const result: string[] = [];
       for (const text of allTexts) {
@@ -260,7 +260,8 @@ export function AddDefinitionModal({
       const text = await generate({
         word: wordText,
         language: resolvedLang,
-        existing: buildExistingForAi(idx, blocked),
+        existing: buildExistingForAi(idx),
+        avoid: blocked,
         maxLength: DEF_MAX_LENGTH,
         toastOnSuccess: true,
       });

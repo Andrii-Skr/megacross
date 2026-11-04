@@ -10,6 +10,7 @@ export type GenerateDefinitionParams = {
   word: string;
   language: Lang;
   existing: string[];
+  avoid?: string[];
   maxLength: number;
   toastOnSuccess?: boolean;
 };
@@ -33,6 +34,7 @@ export function useGenerateDefinition() {
             word: params.word,
             language: params.language,
             existing: params.existing,
+            avoid: params.avoid ?? [],
             maxLength: params.maxLength,
           }),
         });

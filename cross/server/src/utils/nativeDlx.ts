@@ -176,7 +176,9 @@ export function solveDlxNative(
 
   const input = {
     rows: rawRows,
-    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells })),
+    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells,
+      allowedWords: options?.allowedWordsBySlot?.has(s.id) ? [...options.allowedWordsBySlot.get(s.id)!] : undefined,
+    })),
     dict: dictObj,
     options: {
       shuffle: options?.shuffle,
@@ -282,7 +284,9 @@ export function solveCspNative(
   const wordPriorityObj = serializeWordPriority(options?.wordPriority);
   const input = {
     rows: rawRows,
-    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells })),
+    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells,
+      allowedWords: options?.allowedWordsBySlot?.has(s.id) ? [...options.allowedWordsBySlot.get(s.id)!] : undefined,
+    })),
     dict: dictObj,
     options: {
       shuffle: options?.shuffle,
@@ -390,7 +394,9 @@ export async function solveDlxNativeAsync(
 
   const input = {
     rows: rawRows,
-    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells })),
+    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells,
+      allowedWords: options?.allowedWordsBySlot?.has(s.id) ? [...options.allowedWordsBySlot.get(s.id)!] : undefined,
+    })),
     dict: dictObj,
     options: {
       shuffle: options?.shuffle,
@@ -497,7 +503,9 @@ export async function solveCspNativeAsync(
 
   const input = {
     rows: rawRows,
-    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells })),
+    slots: slots.map((s) => ({ id: s.id, len: s.len, cells: s.cells,
+      allowedWords: options?.allowedWordsBySlot?.has(s.id) ? [...options.allowedWordsBySlot.get(s.id)!] : undefined,
+    })),
     dict: dictObj,
     options: {
       shuffle: options?.shuffle,

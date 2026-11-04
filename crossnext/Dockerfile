@@ -71,6 +71,8 @@ COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/prisma.config.ts ./prisma.config.ts
 # prisma.config.ts imports this runtime helper when Prisma CLI runs migrations.
 COPY --from=builder --chown=node:node /app/lib/resolveDatabaseUrl.ts ./lib/resolveDatabaseUrl.ts
+# The migration helper and entrypoint share the same URL encoder as the app.
+COPY packages/cross-format /packages/cross-format
 COPY --chown=node:node cross/server/src/arrows ./cross-arrows
 # entrypoint for running migrations/seed on start
 COPY --from=builder --chown=node:node /app/entrypoint.sh ./entrypoint.sh
@@ -84,6 +86,8 @@ RUN mkdir -p /app/var/crosswords/sample /app/var/crosswords/out \
 # PNPM creates symlinks into .pnpm; copy minimal tree for prisma CLI to work offline
 COPY --from=deps --chown=node:node /app/node_modules/.pnpm ./node_modules/.pnpm
 COPY --from=deps --chown=node:node /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=deps --chown=node:node /app/node_modules/@megacross ./node_modules/@megacross
+RUN node --input-type=module -e "import { buildPostgresUrlFromEnv } from '@megacross/cross-format/postgres-url'; new URL(buildPostgresUrlFromEnv({POSTGRES_PASSWORD:'test#/%'}))"
 COPY --from=deps --chown=node:node /app/node_modules/.pnpm/@prisma+engines@*/node_modules/@prisma ./node_modules/@prisma
 COPY --from=deps --chown=node:node /app/node_modules/prisma ./node_modules/prisma
 COPY --from=deps --chown=node:node /app/node_modules/dotenv ./node_modules/dotenv

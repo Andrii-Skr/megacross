@@ -30,6 +30,7 @@ export type DlxProbeResult = {
 };
 
 type DlxProbeOptions = {
+  allowedWordsBySlot?: Map<number, ReadonlySet<string>>;
   engine?: FillSolverEngine;
   shuffle?: boolean;
   seed?: number;
@@ -121,6 +122,7 @@ export function runSolverProbe(
     maxMs: budget.maxMs,
     label: options.label,
     wordPriority: options.wordPriority,
+    allowedWordsBySlot: options.allowedWordsBySlot,
     onFail: (info) => {
       failInfo = info;
     },

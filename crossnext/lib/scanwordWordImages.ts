@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isPhotoImageRatioAllowed, PHOTO_IMAGE_RATIO_TOLERANCE, type PhotoAreaSize } from "@megacross/cross-clues";
@@ -53,13 +53,19 @@ export function normalizeImageMimeType(fileName: string, mimeType: string): stri
   return normalized.startsWith("image/") ? normalized : fallback;
 }
 
-export function buildWordImageStorageRelPath(wordId: bigint | string, sha256: string, fileName: string): string {
+export function buildWordImageStorageRelPath(
+  wordId: bigint | string,
+  sha256: string,
+  fileName: string,
+  uploadId?: string,
+): string {
   const ext = path.extname(fileName).toLowerCase() || ".bin";
-  return path.posix.join(String(wordId), `${sha256}${ext}`);
+  return path.posix.join(String(wordId), `${sha256}${uploadId ? `_${uploadId}` : ""}${ext}`);
 }
 
 export function buildWordImageAbsolutePath(storageRelPath: string): string {
-  return path.join(resolveWordImagesDir(), storageRelPath);
+  // User images are supplied by runtime storage, not by output file tracing.
+  return path.join(/* turbopackIgnore: true */ resolveWordImagesDir(), storageRelPath);
 }
 
 export async function ensureWordImagesDir(storageRelPath: string): Promise<string> {
@@ -121,4 +127,15 @@ export function isMissingWordImagesRelationError(error: unknown): boolean {
   }
 
   return false;
+}
+
+/** Readers only see a complete file, including when repairing an older missing image. */
+export async function writeWordImageFile(absolutePath: string, bytes: Buffer): Promise<void> {
+  const temporary = `${absolutePath}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, bytes, { flag: "wx" });
+    await fs.rename(temporary, absolutePath);
+  } finally {
+    await safeUnlink(temporary);
+  }
 }

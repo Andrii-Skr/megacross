@@ -97,6 +97,9 @@ export function WordRow({
         <div className="w-full px-1 md:w-1/3 md:min-w-56">
           <div className="group relative font-medium md:pr-16 wrap-break-word">
             {word.word_text}
+            <div className="text-xs font-normal text-muted-foreground">
+              {t("wordIsImageable")}: {t(word.isImageable ? "yes" : "wordImageabilityNo")}
+            </div>
             <div className="mt-2 md:mt-0 md:absolute md:right-0 md:top-0 flex gap-1 controls-hover-visible transition">
               <Tooltip>
                 <TooltipTrigger asChild>

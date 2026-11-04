@@ -61,6 +61,8 @@ export type SolveFailInfo = {
 };
 
 export type SolveOptions = {
+  /** Unlisted slots are unrestricted; an explicitly empty set forbids all candidates. */
+  allowedWordsBySlot?: Map<number, ReadonlySet<string>>;
   shuffle?: boolean;
   lcv?: boolean;
   lcvPrioritySlack?: number;

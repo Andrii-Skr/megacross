@@ -18,6 +18,9 @@ ENV
 - Required (runtime): DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL.
 - Required (seeding only): ADMIN_LOGIN, ADMIN_PASSWORD.
 - Optional: ADMIN_EMAIL (used to set email for the seeded admin user).
+- Cross service: configure the same `CROSS_API_SECRET` in both applications, or use the same `NEXTAUTH_SECRET` as a fallback. Production Compose shares the existing `nextauth_secret` Docker secret with Cross automatically.
+- Set `CROSS_API_URL` to the server-side Cross address (locally `http://127.0.0.1:3001`; in Compose `http://cross:3001`). The browser uses authenticated `/api/cross/...` routes on the Next.js origin, including event streams and archive downloads. No public Cross URL is required.
+- Cross accepts only service-authenticated requests, except `GET /api/healthz`. Production Compose exposes port 3001 only inside the Docker network. Rebuild and deploy both applications together when upgrading from direct browser access.
 
 Migrations & Seeding
 
@@ -30,6 +33,8 @@ Testing
 
 - Unit: pnpm test
 - E2E: start the app then pnpm test:e2e
+- Standalone artifacts: after `pnpm build`, run `MEGACROSS_CHECK_STANDALONE=1 pnpm exec vitest run tests/integration/standalone-output.test.ts` to check that preview arrows and Sharp are present and project source/tests are excluded.
+- PostgreSQL regressions: set `MEGACROSS_REVIEW_TEST_DATABASE_URL` to a disposable PostgreSQL database with the current Prisma schema, then run `pnpm exec vitest run tests/integration/dictionary-moderation-postgres.test.ts`. Without that variable the integration suite is skipped. Fixtures use a unique language and are cleaned up after the run.
 
 Scripts
 

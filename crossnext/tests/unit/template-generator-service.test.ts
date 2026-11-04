@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { buildFsh, markerFor } from "@megacross/cross-format";
@@ -79,6 +79,7 @@ const metrics = {
 let directory: string | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
+  state.query.mockReset();
   state.job = {
     id: 1n,
     userId: 1,
@@ -250,6 +251,35 @@ describe("append templates snapshot", () => {
     );
   });
 });
+describe("append templates failures and retries", () => {
+  beforeEach(async () => {
+    directory = await mkdtemp(path.join(os.tmpdir(), "megacross-append-service-"));
+    vi.stubEnv("CROSS_SAMPLES_DIR", directory);
+    state.query.mockImplementation(async (sql: { strings: string[] }) =>
+      sql.strings.join("").includes("scanword_fill_jobs") ? [] : [{ editionCode: "edition", issueLabel: "42" }],
+    );
+    state.results.mockResolvedValue([{ id: 2n, ordinal: 1, fshBytes: buildFsh(grid) }]);
+  });
+  it("restores files when snapshot persistence fails and does not duplicate a retried request", async () => {
+    state.execute.mockRejectedValueOnce(new Error("snapshot unavailable"));
+    await expect(appendTemplatesToIssue(1n, [2n], 42n)).rejects.toThrow("snapshot unavailable");
+    if (!directory) throw new Error("Missing test directory");
+    const issueDirectory = path.join(directory, "edition", "42");
+    expect(await readdir(issueDirectory)).toEqual([]);
+    expect(await appendTemplatesToIssue(1n, [2n], 42n)).toMatchObject({ written: ["generated_1_1.fsh"], fileCount: 1 });
+    expect(await appendTemplatesToIssue(1n, [2n], 42n)).toMatchObject({ written: [], fileCount: 1 });
+    expect(await readdir(issueDirectory)).toEqual(["generated_1_1.fsh"]);
+  });
+  it("does not write files or snapshots while the issue is blocked", async () => {
+    state.query.mockResolvedValueOnce([{ id: 9n }]);
+    await expect(appendTemplatesToIssue(1n, [2n], 42n)).rejects.toMatchObject({ status: 409 });
+    expect(state.results).not.toHaveBeenCalled();
+    expect(state.execute).not.toHaveBeenCalled();
+    if (!directory) throw new Error("Missing test directory");
+    expect(await readdir(directory)).toEqual([]);
+  });
+});
+
 describe("repository cancellation guards", () => {
   it("guards updates and locks the active job before inserting a result", async () => {
     const repository = await vi.importActual<typeof import("../../../cross/server/src/templateGenerator/repository")>(

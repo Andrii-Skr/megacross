@@ -1,4 +1,6 @@
+import { streamJobEvents } from "./templateGenerator/events";
 import express, { type NextFunction, type Request, type Response } from "express";
+import { resolveApiSecret, serviceApiAuth } from "./utils/apiAuth";
 import { statSync } from "node:fs";
 import archiver from "archiver";
 import { getWordsAndDefinitions, getAllTags } from "./services/wordDefinitionService";
@@ -41,6 +43,7 @@ const requestBodyParameterLimit =
     ? Math.floor(requestBodyParameterLimitRaw)
     : 50_000;
 
+app.use(serviceApiAuth(resolveApiSecret()));
 app.use(express.json({ limit: requestBodyLimit }));
 app.use(
   express.urlencoded({
@@ -307,7 +310,7 @@ app.post("/api/fill/:jobId/finalize", async (req, res) => {
     res.json(job);
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to finalize job";
-    res.status(400).json({ error: msg });
+    res.status(error && typeof error === "object" && "status" in error && error.status === 409 ? 409 : 400).json({ error: msg });
   }
 });
 
@@ -322,7 +325,7 @@ app.post("/api/fill/:jobId/regenerate-template", async (req, res) => {
     res.json(job);
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to regenerate template";
-    res.status(400).json({ error: msg });
+    res.status(error && typeof error === "object" && "status" in error && error.status === 409 ? 409 : 400).json({ error: msg });
   }
 });
 
@@ -461,15 +464,10 @@ app.delete("/api/template-generator/jobs/:jobId", async (req, res) => {
 app.get("/api/template-generator/jobs/:jobId/events", async (req, res) => {
   const jobId = parseBigIntStrict(req.params.jobId);
   if (jobId === null) { res.status(400).json({ error: "Invalid jobId" }); return; }
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
-  const current = await readTemplateGenerationJob(jobId);
-  if (current) res.write(`data: ${JSON.stringify(current)}\n\n`);
-  const unsubscribe = subscribeTemplateGeneration(jobId, (job) => res.write(`data: ${JSON.stringify(job)}\n\n`));
-  const ping = setInterval(() => res.write("event: ping\ndata: {}\n\n"), 15_000);
-  req.on("close", () => { clearInterval(ping); unsubscribe(); res.end(); });
+  await streamJobEvents(req, res, {
+    read: () => readTemplateGenerationJob(jobId),
+    subscribe: (listener) => subscribeTemplateGeneration(jobId, listener),
+  });
 });
 
 app.get("/api/template-generator/jobs/:jobId/results", async (req, res) => {

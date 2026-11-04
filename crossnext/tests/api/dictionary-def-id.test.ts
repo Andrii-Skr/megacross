@@ -12,10 +12,12 @@ describe("/api/dictionary/def/[id] (PUT)", () => {
   });
 
   it("creates pending edit card for definition and returns pending id", async () => {
+    const expiry = new Date("2027-01-01T00:00:00Z");
     prisma.opred_v.findUnique.mockResolvedValueOnce({
       id: BigInt(777),
       word_id: BigInt(5),
       difficulty: 1,
+      end_date: expiry,
       langId: 3,
       word_v: { id: BigInt(5), word_text: "w", length: 1 },
     });
@@ -31,12 +33,31 @@ describe("/api/dictionary/def/[id] (PUT)", () => {
       | {
           data?: {
             id?: unknown;
-            descriptions?: { create?: Array<{ id?: unknown }> };
+            descriptions?: { create?: Array<{ id?: unknown; end_date?: Date }> };
           };
         }
       | undefined;
     expect(createArgs?.data?.id).toBeUndefined();
     expect(createArgs?.data?.descriptions?.create?.[0]?.id).toBeUndefined();
+    expect(createArgs?.data?.descriptions?.create?.[0]?.end_date).toEqual(expiry);
+  });
+
+  it("rejects whitespace-only edits before creating a moderation card", async () => {
+    prisma.word_v.findUnique.mockResolvedValue({ id: 1n, langId: 3 });
+    prisma.opred_v.findUnique.mockResolvedValue({
+      id: 1n,
+      word_id: 1n,
+      langId: 3,
+      difficulty: 1,
+      word_v: { id: 1n, word_text: "word", length: 4 },
+    });
+    prisma.pendingWords.create.mockResolvedValue({ id: 55n });
+    const response = await PUT(
+      makeReq("PUT", "http://localhost/api/dictionary/def/1", { text_opr: " \t\n " }),
+      makeCtx({ id: "1" }),
+    );
+    expect(response.status).toBe(400);
+    expect(prisma.pendingWords.create).not.toHaveBeenCalled();
   });
 
   it("returns 404 if definition not found", async () => {

@@ -11,3 +11,10 @@ coverage
 .env.local
 .env.development
 tmp
+
+# Build containers receive configuration through build args and runtime env/secrets.
+**/.env
+**/.env.*
+**/secrets
+!**/.env.example
+!**/.env.sample

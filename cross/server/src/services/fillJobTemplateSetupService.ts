@@ -27,6 +27,7 @@ export type FillTemplateKeywordPlacement = {
 };
 
 export type FindKeywordPlacementOptions = {
+  allowedWordsBySlot?: Map<number, ReadonlySet<string>>;
   shuffle?: boolean;
 };
 
@@ -369,7 +370,7 @@ export function findKeywordPlacements(
       if (letter) mask[index] = letter;
     });
     slotMasks.set(slot.id, mask);
-    if (!(dict.get(slot.len) ?? []).some((word) => matchesMask(word, mask))) {
+    if (!(dict.get(slot.len) ?? []).some((word) => (!options.allowedWordsBySlot?.has(slot.id) || options.allowedWordsBySlot.get(slot.id)!.has(word)) && matchesMask(word, mask))) {
       return { error: `Template ${entry.name}: fixed letters make slot ${slot.id} unsatisfiable` };
     }
   }
@@ -399,10 +400,10 @@ export function findKeywordPlacements(
     const slot = slotById.get(slotId);
     if (!slot) return false;
     const mask = slotMasks.get(slotId) ?? [];
-    const cacheKey = `${slot.len}:${mask.join("")}`;
+    const cacheKey = `${slot.id}:${slot.len}:${mask.join("")}`;
     const cached = cache.get(cacheKey);
     if (cached !== undefined) return cached;
-    const result = (dict.get(slot.len) ?? []).some((word) => matchesMask(word, mask));
+    const result = (dict.get(slot.len) ?? []).some((word) => (!options.allowedWordsBySlot?.has(slotId) || options.allowedWordsBySlot.get(slotId)!.has(word)) && matchesMask(word, mask));
     cache.set(cacheKey, result);
     return result;
   };

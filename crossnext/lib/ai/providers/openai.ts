@@ -1,3 +1,4 @@
+import { normalizeGeneratedDefinition } from "@/lib/ai/prompts";
 import type { GenerateInput, ProviderResult } from "@/lib/ai/types";
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -40,43 +41,57 @@ export async function generateWithOpenAI(
   const path = opts.path || "/v1/chat/completions";
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), Math.max(1000, opts.timeoutMs ?? 20000));
-  let res: Response;
+  const messages = [
+    { role: "system", content: opts.systemText },
+    { role: "user", content: opts.userText },
+  ];
   try {
-    res = await fetch(`${opts.baseUrl.replace(/\/$/, "")}${path}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: opts.model,
-        messages: [
-          { role: "system", content: opts.systemText },
-          { role: "user", content: opts.userText },
-        ],
-        temperature: 0.7,
-        max_tokens: Math.max(24, Math.min(300, Math.ceil(input.maxLength * 1.5))),
-      }),
-      signal: ac.signal,
-    });
-  } catch (e: unknown) {
-    clearTimeout(timer);
-    const msg =
-      (e as Error)?.name === "AbortError"
-        ? "OpenAI request timed out"
-        : (e as Error)?.message || "OpenAI request failed";
-    return { ok: false, message: msg, status: (e as Error)?.name === "AbortError" ? 504 : 502 };
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    // One bounded correction for invalid output; HTTP errors are not retried.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const res = await fetch(`${opts.baseUrl.replace(/\/$/, "")}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: opts.model,
+          messages,
+          temperature: 0.3,
+          max_tokens: Math.max(128, Math.min(1024, Math.ceil(input.maxLength * 2))),
+        }),
+        signal: ac.signal,
+      });
+      if (!res.ok) {
+        return {
+          ok: false,
+          message: (await res.text().catch(() => "")) || `Upstream error ${res.status}`,
+          status: res.status === 429 ? 429 : 502,
+        };
+      }
+      const data: unknown = await res.json();
+      const content = deepGet(data, ["choices", 0, "message", "content"]);
+      const text = typeof content === "string" ? content : "";
+      const cleaned = normalizeGeneratedDefinition(
+        text,
+        input.word,
+        [...input.existing, ...(input.avoid ?? [])],
+        input.maxLength,
+      );
+      if (cleaned && deepGet(data, ["choices", 0, "finish_reason"]) !== "length") return { ok: true, text: cleaned };
+      messages.push({ role: "assistant", content: text });
+      messages.push({
+        role: "user",
+        content: `The previous clue failed validation (length: ${text.trim().length}; maximum: ${input.maxLength} characters including spaces). Rewrite it as a substantially shorter, complete clue in the requested language. Preserve the correct meaning, avoid the answer and exact existing clues. Return only the clue. Do not explain or truncate.`,
+      });
+    }
+    return { ok: false, message: "AI returned invalid content", status: 502 };
+  } catch {
+    const timedOut = ac.signal.aborted;
     return {
       ok: false,
-      message: text || `Upstream error ${res.status}`,
-      status: res.status === 429 ? 429 : 502,
+      message: timedOut ? "OpenAI request timed out" : "OpenAI request failed",
+      status: timedOut ? 504 : 502,
     };
+  } finally {
+    // Keep the timeout active through body reading and both attempts.
+    clearTimeout(timer);
   }
-  const data: unknown = await res.json();
-  const content = deepGet(data, ["choices", 0, "message", "content"]);
-  const text: string = typeof content === "string" ? content : String((content as unknown) ?? "");
-  if (!text) return { ok: false, message: "Empty response", status: 500 };
-  return { ok: true, text };
 }

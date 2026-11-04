@@ -5,6 +5,7 @@ import { useId } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { getActionErrorMeta } from "@/lib/action-error";
@@ -16,17 +17,20 @@ export function EditWordModal({
   onOpenChange,
   wordId,
   initialValue,
+  initialIsImageable = false,
   onSaved,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   wordId: string;
   initialValue: string;
+  initialIsImageable?: boolean;
   onSaved?: () => void;
 }) {
   const t = useTranslations();
 
   const schema = z.object({
+    isImageable: z.boolean(),
     word_text: z.string().min(1, t("wordRequired")),
     note: z.string().max(512).optional().or(z.literal("")),
   });
@@ -37,10 +41,12 @@ export function EditWordModal({
     handleSubmit,
     formState: { errors, isSubmitting },
     reset,
+    watch,
+    setValue,
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { word_text: initialValue, note: "" },
-    values: { word_text: initialValue, note: "" },
+    defaultValues: { word_text: initialValue, note: "", isImageable: initialIsImageable },
+    values: { word_text: initialValue, note: "", isImageable: initialIsImageable },
   });
 
   const onSubmit = handleSubmit(async (values) => {
@@ -50,6 +56,7 @@ export function EditWordModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           word_text: values.word_text.trim(),
+          isImageable: values.isImageable,
           note: (values.note || "").trim() || undefined,
         }),
       });
@@ -71,7 +78,7 @@ export function EditWordModal({
     <Dialog
       open={open}
       onOpenChange={(v) => {
-        if (!v) reset({ word_text: initialValue, note: "" });
+        if (!v) reset({ word_text: initialValue, note: "", isImageable: initialIsImageable });
         onOpenChange(v);
       }}
     >
@@ -88,6 +95,15 @@ export function EditWordModal({
           </Button>
         </div>
         <div className="grid gap-3">
+          <label htmlFor={`${wordIdLabel}-imageable`} className="flex items-center gap-2 text-sm">
+            <Checkbox
+              id={`${wordIdLabel}-imageable`}
+              checked={watch("isImageable")}
+              onCheckedChange={(value) => setValue("isImageable", value === true, { shouldDirty: true })}
+              disabled={isSubmitting}
+            />
+            {t("wordIsImageable")}
+          </label>
           <div className="grid gap-1">
             <span className="text-sm text-muted-foreground" id={`${wordIdLabel}-label`}>
               {t("word")}

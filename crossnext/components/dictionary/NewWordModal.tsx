@@ -9,6 +9,7 @@ import { DefinitionSection } from "@/components/dictionary/add-definition/Defini
 import { MetaSection } from "@/components/dictionary/add-definition/MetaSection";
 import type { Tag } from "@/components/dictionary/add-definition/TagPicker";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { getActionErrorMeta } from "@/lib/action-error";
@@ -75,6 +76,7 @@ export function NewWordModal({ open, onOpenChange, onCreated, languageOverride, 
   }, [constrainedLength, fixedLetters]);
   const initializedConstraintRef = useRef<string | null>(null);
   const schema = z.object({
+    isImageable: z.boolean(),
     word: z
       .string()
       .min(1, t("wordRequired"))
@@ -110,6 +112,7 @@ export function NewWordModal({ open, onOpenChange, onCreated, languageOverride, 
     resolver: zodResolver(schema),
     defaultValues: {
       word: "",
+      isImageable: false,
       definitions: [{ definition: "", note: "", difficulty: 1, endDate: null, tags: [] }],
     },
   });
@@ -168,6 +171,7 @@ export function NewWordModal({ open, onOpenChange, onCreated, languageOverride, 
     const nextWord = constrainedLength ? buildConstrainedWord(nextOtp) : "";
     reset({
       word: nextWord,
+      isImageable: false,
       definitions: [{ definition: "", note: "", difficulty: defaultDifficulty, endDate: null, tags: [] }],
     });
     replace([{ definition: "", note: "", difficulty: defaultDifficulty, endDate: null, tags: [] }]);
@@ -213,6 +217,7 @@ export function NewWordModal({ open, onOpenChange, onCreated, languageOverride, 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           word: normalizedWord,
+          isImageable: values.isImageable,
           definitions: defs,
           language: requestLanguage,
         }),
@@ -367,6 +372,15 @@ export function NewWordModal({ open, onOpenChange, onCreated, languageOverride, 
               )}
               {errors.word && <span className="text-xs text-destructive">{errors.word.message}</span>}
             </div>
+            <label htmlFor={`${wordId}-imageable`} className="flex items-center gap-2 text-sm">
+              <Checkbox
+                id={`${wordId}-imageable`}
+                checked={watch("isImageable")}
+                onCheckedChange={(value) => setValue("isImageable", value === true, { shouldDirty: true })}
+                disabled={submitting}
+              />
+              {t("wordIsImageable")}
+            </label>
             <div className="flex flex-col gap-3 min-w-0">
               <div className="order-first flex justify-center sm:order-last sm:justify-start">
                 <Button

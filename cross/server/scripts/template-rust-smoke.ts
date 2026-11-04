@@ -29,12 +29,13 @@ try {
   const presets = new Set<string>();
   for (let i = 0; i < 20; i += 1) {
     const fixture = { ...request, cutoutPresetId: CUTOUT_PRESETS[i % CUTOUT_PRESETS.length], seed: `rust-control-${i}` };
-    const result = generateNativeCandidate({ ...input, request: fixture, rngPosition: new SeededRandom(fixture.seed).position }, first);
+    const result = generateNativeCandidate({ ...input, request: fixture, rngPosition: new SeededRandom(fixture.seed).position, attemptBudget: 40 }, first);
     if (result.candidate) presets.add(fixture.cutoutPresetId);
   }
   assert.equal(presets.size, CUTOUT_PRESETS.length, "all cutouts must pass independent native-result validation");
   const manual = { ...request, rows: 19, cols: 14, pictures: { mode: "manual" as const, items: [{ width: 5, height: 4 }] }, cutoutPresetId: "corner" as const, seed: "quality-picture" };
-  const manualResult = generateNativeCandidate({ ...input, request: manual, rngPosition: new SeededRandom(manual.seed).position, attemptBudget: 40 }, first);
+  // This fixture checks photo geometry; dictionary supply is exercised separately.
+  const manualResult = generateNativeCandidate({ ...input, request: manual, rngPosition: new SeededRandom(manual.seed).position, dictionaryCounts: undefined, weights: undefined, attemptBudget: 40 }, first);
   assert.ok(manualResult.candidate);
   assert.equal(manualResult.candidate.metrics.pictureBounds[0].width, 5);
   assert.equal(manualResult.candidate.metrics.pictureBounds[0].height, 4);

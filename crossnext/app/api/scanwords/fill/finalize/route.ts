@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { Permissions } from "@/lib/authz";
+import { crossApiHeaders } from "@/lib/crossApiAuth";
 import { apiRoute } from "@/utils/appRoute";
 
 const slotSchema = z.object({
@@ -162,7 +163,7 @@ export const POST = apiRoute<Body>(
       try {
         upstream = await fetch(upstreamUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: crossApiHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify(body.payload),
           cache: "no-store",
           signal: controller.signal,

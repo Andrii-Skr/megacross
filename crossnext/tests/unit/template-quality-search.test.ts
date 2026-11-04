@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { type ClueGroup, matchClueGroups } from "../../../cross/server/src/templateGenerator/clueMatching";
+import {
+  type ClueGroup,
+  ClueMatchingCache,
+  matchClueGroups,
+} from "../../../cross/server/src/templateGenerator/clueMatching";
 import { geometryDistance, isDiverseGeometry } from "../../../cross/server/src/templateGenerator/diversity";
 import {
   buildMask,
@@ -67,6 +71,44 @@ describe("clue conflict search", () => {
         bruteForce(groups) === groups.reduce((sum, g) => sum + g.directions.length, 0),
       );
     }
+  });
+  it("reuses bounded conflict matches without changing choices or feasibility", () => {
+    const rng = new SeededRandom("matching-cache-parity");
+    const cache = new ClueMatchingCache();
+    for (let trial = 0; trial < 400; trial += 1) {
+      const groups: ClueGroup[] = Array.from({ length: 1 + rng.int(8) }, () => {
+        const double = rng.next() < 0.5;
+        return {
+          directions: double ? [6, 8] : [6],
+          options: Array.from({ length: rng.int(5) }, (_, code) => {
+            const a = rng.int(10);
+            const b = (a + 1 + rng.int(9)) % 10;
+            return { code, resources: double ? [String(a), String(b)] : [String(a)] };
+          }),
+        };
+      });
+      const renamed = groups.map((group) => ({
+        ...group,
+        options: group.options.map((o) => ({ code: o.code + 20, resources: o.resources.map((r) => `r${r}`) })),
+      }));
+      for (const requireAll of [false, true])
+        for (const budget of [0, 1, 16, 2048]) {
+          for (const problem of [groups, renamed, groups]) {
+            const expected = matchClueGroups(problem, budget, requireAll);
+            const actual = matchClueGroups(problem, budget, requireAll, cache);
+            expect(actual.exhaustive).toBe(expected.exhaustive);
+            expect(actual.choices).toBe(expected.choices);
+            const choices = (result: typeof actual) =>
+              problem.map((group) => {
+                const chosen = result.selected.get(group);
+                return chosen ? group.options.indexOf(chosen) : -1;
+              });
+            expect(choices(actual)).toEqual(choices(expected));
+            covered(problem, actual.selected);
+          }
+        }
+    }
+    expect(cache.hits).toBeGreaterThan(1000);
   });
 });
 

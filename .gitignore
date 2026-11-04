@@ -6,6 +6,7 @@ dist
 coverage
 .next
 out
+output/imagegen/
 var/
 temp/
 
