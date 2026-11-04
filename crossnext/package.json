@@ -21,6 +21,8 @@
     "test": "vitest run",
     "test:ui": "vitest --ui",
     "test:e2e": "playwright test",
+    "images:export-word-flags": "tsx scripts/export-word-images.ts --word-flags",
+    "images:export": "tsx scripts/export-word-images.ts",
     "auth:smoke": "tsx scripts/api-auth-smoke.ts",
     "sync:legacy:once": "RUN_ONCE=1 tsx services/legacy-sync/src/index.ts",
     "sync:legacy:cron": "SYNC_CRON=\"0 * * * *\" tsx services/legacy-sync/src/index.ts"

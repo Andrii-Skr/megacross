@@ -28,7 +28,7 @@ import { actionError } from "@/lib/action-error";
 import { Permissions, requirePermissionAsync } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { buildPhotoAreaBoundsBySlotId } from "@/lib/scanwordPhotoClues";
-import { scanSlotsDetailed, validate } from "@/utils/cross/grid";
+import { lengthStats, scanSlots, scanSlotsDetailed, validate, validateSlotCoverage } from "@/utils/cross/grid";
 import { parseFshBytes } from "@/utils/cross/parseFsh";
 import type { GridCell } from "@/utils/cross/types";
 
@@ -395,10 +395,6 @@ function buildCandidateCode(base: string, suffix: number | null) {
   const suffixText = `_${suffix}`;
   const available = 32 - suffixText.length;
   return `${trimmedBase.slice(0, Math.max(1, available))}${suffixText}`;
-}
-
-function snapshotCutoffDate() {
-  return new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 }
 
 function samplesBaseDir() {
@@ -1091,11 +1087,7 @@ export async function saveScanwordUploadSnapshotAction(input: z.infer<typeof upl
   await ensureScanwordsAccess();
   const data = uploadSnapshotSchema.parse(input);
   const issueId = BigInt(data.issueId);
-  const cutoff = snapshotCutoffDate();
   const templateSetup = normalizeTemplateSetupPayload(data.templateSetup);
-  await prisma.scanwordUploadSnapshot.deleteMany({
-    where: { updatedAt: { lt: cutoff } },
-  });
 
   try {
     await prisma.scanwordUploadSnapshot.upsert({
@@ -1155,10 +1147,6 @@ export async function getScanwordUploadSnapshotAction(input: z.infer<typeof uplo
   await ensureScanwordsAccess();
   const data = uploadSnapshotLoadSchema.parse(input);
   const issueId = BigInt(data.issueId);
-  const cutoff = snapshotCutoffDate();
-  await prisma.scanwordUploadSnapshot.deleteMany({
-    where: { updatedAt: { lt: cutoff } },
-  });
 
   let snapshot:
     | {
@@ -1216,7 +1204,59 @@ export async function getScanwordUploadSnapshotAction(input: z.infer<typeof uplo
     });
   }
 
-  if (!snapshot) return null;
+  // Older issues may have files on disk but no snapshot (including snapshots
+  // removed by the former 30-day cleanup). Restore the metadata for both the UI
+  // and the fill service, which reads the same snapshot from the database.
+  const savedFiles = snapshotFilesSchema.safeParse(snapshot?.files);
+  if (!snapshot || snapshot.fileCount === 0 || (savedFiles.success && savedFiles.data.length === 0)) {
+    const samplesDir = await resolveIssueSamplesDir(issueId);
+    if (!samplesDir) return null;
+    let names: string[];
+    try {
+      names = await readdir(/* turbopackIgnore: true */ samplesDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return null;
+    }
+    const files: z.infer<typeof snapshotFilesSchema> = [];
+    const errors: z.infer<typeof snapshotErrorsSchema> = [];
+    const neededStats: Record<string, number> = {};
+    for (const name of names.sort((a, b) => a.localeCompare(b, "en", { numeric: true }))) {
+      if (!/\.fsh$/i.test(name) || sanitizeName(name) !== name) continue;
+      const filePath = path.join(/* turbopackIgnore: true */ samplesDir, name);
+      const info = await stat(/* turbopackIgnore: true */ filePath);
+      if (!info.isFile()) continue;
+      const key = `${name}:${info.size}`;
+      files.push({ key, name, size: info.size });
+      try {
+        const grid = parseFshBytes(await readFile(/* turbopackIgnore: true */ filePath));
+        validate(grid);
+        const slots = scanSlots(grid);
+        validateSlotCoverage(grid, slots);
+        for (const [length, count] of Object.entries(lengthStats(slots))) {
+          neededStats[length] = (neededStats[length] ?? 0) + count;
+        }
+      } catch (error) {
+        errors.push({ key, name, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (!files.length) return null;
+    const templateSetup = normalizeTemplateSetupPayload(
+      snapshot && "templateSetup" in snapshot ? snapshot.templateSetup : null,
+    );
+    const restored = {
+      issueId: data.issueId,
+      templateId: snapshot?.templateId ?? null,
+      templateName: snapshot?.templateName ?? null,
+      fileCount: files.length,
+      files,
+      errors,
+      neededStats,
+      templateSetup,
+    };
+    await saveScanwordUploadSnapshotAction(restored);
+    return { ...restored, errorCount: errors.length, updatedAt: new Date().toISOString() };
+  }
 
   const files = snapshotFilesSchema.safeParse(snapshot.files);
   const errors = snapshotErrorsSchema.safeParse(snapshot.errors);
