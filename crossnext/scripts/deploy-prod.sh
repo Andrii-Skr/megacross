@@ -27,11 +27,9 @@ CROSS_REMOTE="${CROSS_GIT_REMOTE:-origin}"
 # Read APP_PORT from .env (fallback 3000)
 APP_PORT_ENV="$(awk -F= '/^APP_PORT[[:space:]]*=/{print $2}' "$APP_DIR/.env" 2>/dev/null | tr -d '"' | tr -d "'" | head -n1 || true)"
 APP_PORT="${APP_PORT:-${APP_PORT_ENV:-3000}}"
-## Read CROSS_PORT from .env (fallback 3001)
-CROSS_PORT_ENV="$(awk -F= '/^CROSS_PORT[[:space:]]*=/{print $2}' "$APP_DIR/.env" 2>/dev/null | tr -d '"' | tr -d "'" | head -n1 || true)"
-CROSS_PORT="${CROSS_PORT:-${CROSS_PORT_ENV:-3001}}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${APP_PORT}/api/healthz}"
-CROSS_HEALTH_URL="${CROSS_HEALTH_URL:-http://127.0.0.1:${CROSS_PORT}/api/healthz}"
+# Cross is private to the Docker network. Allow an explicit external endpoint.
+CROSS_HEALTH_URL="${CROSS_HEALTH_URL:-}"
 
 echo "📦 Monorepo root: $REPO_ROOT | App dir: $APP_DIR | Branch: $BRANCH | Profile: $PROFILE"
 
@@ -146,12 +144,21 @@ until curl -fsS "$HEALTH_URL" >/dev/null; do
 done
 echo "✅ App health OK"
 
-echo "🩺 Cross health check: $CROSS_HEALTH_URL"
+check_cross_health() {
+  if [[ -n "$CROSS_HEALTH_URL" ]]; then
+    curl -fsS --connect-timeout 2 --max-time 5 "$CROSS_HEALTH_URL" >/dev/null
+  else
+    docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.yml" --profile "$PROFILE" \
+      exec -T cross node -e "fetch('http://127.0.0.1:3001/api/healthz', {signal: AbortSignal.timeout(5000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  fi
+}
+
+echo "🩺 Cross health check: ${CROSS_HEALTH_URL:-inside cross container (port 3001)}"
 ATTEMPTS=0
-until curl -fsS "$CROSS_HEALTH_URL" >/dev/null; do
+until check_cross_health; do
   ATTEMPTS=$((ATTEMPTS+1))
   if [[ $ATTEMPTS -gt 60 ]]; then
-    echo "❌ Cross health check failed after 60s. Recent logs:" >&2
+    echo "❌ Cross health check failed after 60 retries. Recent logs:" >&2
     docker compose -f "$APP_DIR/docker-compose.yml" --profile "$PROFILE" logs --tail 120 cross app db || true
     exit 1
   fi
