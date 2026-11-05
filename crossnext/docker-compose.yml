@@ -18,7 +18,7 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      HOST: 0.0.0.0
+      HOSTNAME: 0.0.0.0
       # В контейнере всегда слушаем 3000. Снаружи публикуем на APP_PORT.
       PORT: 3000
       # entrypoint соберёт DATABASE_URL из секрета:
@@ -36,8 +36,6 @@ services:
       CROSS_SAMPLES_DIR: /app/var/crosswords/sample
       CROSS_OUTPUT_DIR: /app/var/crosswords/out
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    entrypoint: ["/app/entrypoint.sh"]
-    command: ["node","app/server.js"]
     depends_on:
       db:
         condition: service_healthy
@@ -51,7 +49,7 @@ services:
     init: true
     restart: unless-stopped
     healthcheck:
-      test: ["CMD","node","-e","fetch('http://app:3000/api/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test: ["CMD","node","-e","fetch('http://127.0.0.1:3000/api/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -318,12 +316,12 @@ services:
       - "host.docker.internal:${HOST_GATEWAY_IP:-host-gateway}"
 
   legacy-sync:
-    profiles: ["prod", "sync"]
+    profiles: ["prod"]
     image: crossnext-legacy-sync:prod
     build:
       context: ..
       dockerfile: crossnext/Dockerfile
-      target: dev
+      target: sync
     pull_policy: build
     working_dir: /app
     env_file:
@@ -348,8 +346,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    entrypoint: ["/app/entrypoint.sh"]
-    command: ["pnpm","exec","tsx","services/legacy-sync/src/index.ts"]
     networks: [backend]
     init: true
     restart: unless-stopped

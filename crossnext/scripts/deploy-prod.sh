@@ -14,6 +14,8 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$APP_DIR/.." && pwd)}"
 LEGACY_CROSS_DIR="${LEGACY_CROSS_DIR:-$REPO_ROOT/cross}"
 
 PROFILE=prod
+COMPOSE_BUILD="docker compose -f docker-compose.yml"
+COMPOSE_PREBUILT="$COMPOSE_BUILD -f docker-compose.prebuilt.yml"
 ROOT_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 APP_BRANCH="$(git -C "$APP_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 BRANCH="${BRANCH:-${ROOT_BRANCH:-${APP_BRANCH:-main}}}"
@@ -110,25 +112,25 @@ else
 fi
 
 echo "🏗️ Building Docker images (profile=$PROFILE)..."
-make -C "$APP_DIR" build PROFILE="$PROFILE"
+make -C "$APP_DIR" build PROFILE="$PROFILE" COMPOSE="$COMPOSE_BUILD"
 
 echo "⏳ Waiting for Postgres to be healthy..."
 docker compose --project-directory "$APP_DIR" -f "$APP_DIR/docker-compose.yml" --profile "$PROFILE" up -d --wait db
-make -C "$APP_DIR" pg-wait PROFILE="$PROFILE"
+make -C "$APP_DIR" pg-wait PROFILE="$PROFILE" COMPOSE="$COMPOSE_PREBUILT"
 
 if [[ "$RUN_MIGRATIONS" == "1" || "$RUN_MIGRATIONS" == "true" || "$RUN_MIGRATIONS" == "TRUE" ]]; then
   echo "🧩 Applying migrations (prisma migrate deploy)..."
-  make -C "$APP_DIR" migrate PROFILE="$PROFILE"
+  make -C "$APP_DIR" migrate PROFILE="$PROFILE" COMPOSE="$COMPOSE_PREBUILT"
 else
   echo "⏭️  Skipping migrations (MIGRATE=$RUN_MIGRATIONS)"
 fi
 
 echo "🚀 Starting/Updating services (profile=$PROFILE)..."
-make -C "$APP_DIR" up PROFILE="$PROFILE"
+make -C "$APP_DIR" up PROFILE="$PROFILE" COMPOSE="$COMPOSE_PREBUILT"
 
 if [[ "$SEED" == "1" || "$SEED" == "true" || "$SEED" == "TRUE" ]]; then
   echo "🌱 Seeding database..."
-  make -C "$APP_DIR" seed PROFILE="$PROFILE" || true
+  make -C "$APP_DIR" seed PROFILE="$PROFILE" COMPOSE="$COMPOSE_PREBUILT" || true
 fi
 
 echo "🩺 App health check: $HEALTH_URL"

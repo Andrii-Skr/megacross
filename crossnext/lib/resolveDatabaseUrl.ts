@@ -21,6 +21,7 @@ function getPostgresPassword() {
   return (
     process.env.POSTGRES_PASSWORD ||
     readSecretFile(process.env.POSTGRES_PASSWORD_FILE) ||
+    readSecretFile("/run/secrets/postgres_password") ||
     readSecretFile("secrets/postgres_password")
   );
 }

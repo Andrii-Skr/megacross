@@ -13,17 +13,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
   && corepack enable
 
 # ---- deps: install dependencies with cache ----
-FROM base AS deps
+FROM base AS install-base
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ pkg-config \
   && rm -rf /var/lib/apt/lists/*
 COPY crossnext/package.json ./package.json
+COPY crossnext/docker-runtime/package.json ./docker-runtime/package.json
 COPY crossnext/pnpm-lock.yaml ./pnpm-lock.yaml
 COPY crossnext/pnpm-config.yaml ./pnpm-workspace.yaml
 COPY packages/cross-clues /packages/cross-clues
 COPY packages/cross-format /packages/cross-format
-# Copy Prisma schema (folder-based schema)
-COPY crossnext/prisma/schema prisma/schema
-RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+
+FROM install-base AS deps
+ARG TARGETARCH
+RUN --mount=type=cache,id=crossnext-pnpm-${TARGETARCH},target=/root/.local/share/pnpm/store \
   pnpm install --frozen-lockfile \
   && node -e "const sharp=require('sharp');if(!sharp.versions?.vips)throw new Error('Sharp/libvips install is unavailable');console.log('Installed Sharp/libvips',sharp.versions.vips)"
 
@@ -31,79 +33,76 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
 FROM deps AS dev
 ENV NODE_ENV=development
 COPY crossnext/. .
-COPY packages/cross-clues /packages/cross-clues
-COPY packages/cross-format /packages/cross-format
 RUN pnpm prisma generate
 EXPOSE 3000
 CMD ["pnpm","dev"]
 
 # ---- builder: compile Next.js (standalone) ----
 FROM deps AS builder
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
+ARG TARGETARCH
+ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
 # Safe fallback for Prisma during build only; runtime must supply real DATABASE_URL
 ENV PRISMA_ALLOW_FALLBACK=1 PRISMA_FALLBACK_URL=postgresql://prisma:prisma@localhost:5432/prisma?schema=public
 # Provide safe defaults for build-time env validation. Runtime secrets are loaded in the runner via entrypoint.
-ARG NEXTAUTH_SECRET=builder-secret-placeholder
 ARG NEXTAUTH_URL=http://localhost:3000
 ARG NEXT_PUBLIC_CROSS_API_URL=http://localhost:3001
-ENV NEXTAUTH_SECRET=$NEXTAUTH_SECRET NEXTAUTH_URL=$NEXTAUTH_URL NEXT_PUBLIC_CROSS_API_URL=$NEXT_PUBLIC_CROSS_API_URL
+ENV NEXTAUTH_SECRET=builder-secret-placeholder NEXTAUTH_URL=$NEXTAUTH_URL NEXT_PUBLIC_CROSS_API_URL=$NEXT_PUBLIC_CROSS_API_URL
 COPY crossnext/. .
-COPY packages/cross-clues /packages/cross-clues
-COPY packages/cross-format /packages/cross-format
-RUN pnpm prisma generate \
-  && pnpm build \
-  && pnpm prune --prod
+RUN --mount=type=cache,id=crossnext-build-${TARGETARCH},target=/app/.next/cache,sharing=locked \
+  pnpm prisma generate && pnpm build
+
+# Deploy the Prisma and legacy sync dependencies from the same lockfile as Next.js.
+FROM install-base AS runtime-deps
+ARG TARGETARCH
+RUN --mount=type=cache,id=crossnext-pnpm-${TARGETARCH},target=/root/.local/share/pnpm/store \
+  pnpm --filter crossnext-container-runtime --prod --config.inject-workspace-packages=true deploy /runtime
+WORKDIR /runtime
+COPY crossnext/prisma/schema ./prisma/schema
+COPY crossnext/prisma.config.ts ./
+COPY crossnext/lib/resolveDatabaseUrl.ts ./lib/resolveDatabaseUrl.ts
+RUN ./node_modules/.bin/prisma generate
 
 # ---- runner: minimal runtime, non-root, healthcheck ----
-FROM node:24-bookworm-slim AS runner
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 TZ=UTC NEXT_TELEMETRY_DISABLED=1 PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1
+FROM base AS runtime
+ENV NODE_ENV=production
 ENV PRISMA_CONFIG_PATH=/app/prisma.config.ts PRISMA_SCHEMA_PATH=/app/prisma/schema/schema.prisma
-WORKDIR /app
-# только системные сертификаты; init обеспечит compose (init: true)
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && corepack enable
+ENV PATH="/app/node_modules/.bin:${PATH}"
+COPY --from=runtime-deps --chown=node:node /runtime/node_modules ./node_modules
+COPY crossnext/prisma ./prisma
+COPY crossnext/prisma.config.ts crossnext/tsconfig.json ./
+COPY crossnext/lib/db.ts crossnext/lib/resolveDatabaseUrl.ts crossnext/lib/word-normalize.ts ./lib/
+COPY --chmod=755 crossnext/entrypoint.sh ./entrypoint.sh
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+FROM runtime AS sync
+COPY crossnext/services/legacy-sync ./services/legacy-sync
+USER node
+CMD ["tsx","services/legacy-sync/src/index.ts"]
+
+FROM runtime AS runner
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
+ENV HOSTNAME=0.0.0.0 PORT=3000
 # build artifacts
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./app/.next/static
 COPY --from=builder --chown=node:node /app/public ./app/public
-COPY --from=builder --chown=node:node /app/prisma ./prisma
-COPY --from=builder --chown=node:node /app/prisma.config.ts ./prisma.config.ts
-# prisma.config.ts imports this runtime helper when Prisma CLI runs migrations.
-COPY --from=builder --chown=node:node /app/lib/resolveDatabaseUrl.ts ./lib/resolveDatabaseUrl.ts
-# The migration helper and entrypoint share the same URL encoder as the app.
-COPY packages/cross-format /packages/cross-format
 COPY --chown=node:node cross/server/src/arrows ./cross-arrows
-# entrypoint for running migrations/seed on start
-COPY --from=builder --chown=node:node /app/entrypoint.sh ./entrypoint.sh
 COPY --from=builder --chown=node:node /app/sanitize-router-state-header.cjs ./sanitize-router-state-header.cjs
-# ensure it's executable before switching to non-root
-RUN chmod +x /app/entrypoint.sh
 # prepare shared scanword folders for cross/crossnext shared mount
 RUN mkdir -p /app/var/crosswords/sample /app/var/crosswords/out \
   && chown -R node:node /app/var
-# только Prisma CLI (для миграций в контейнере)
-# PNPM creates symlinks into .pnpm; copy minimal tree for prisma CLI to work offline
-COPY --from=deps --chown=node:node /app/node_modules/.pnpm ./node_modules/.pnpm
-COPY --from=deps --chown=node:node /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=deps --chown=node:node /app/node_modules/@megacross ./node_modules/@megacross
-RUN node --input-type=module -e "import { buildPostgresUrlFromEnv } from '@megacross/cross-format/postgres-url'; new URL(buildPostgresUrlFromEnv({POSTGRES_PASSWORD:'test#/%'}))"
-COPY --from=deps --chown=node:node /app/node_modules/.pnpm/@prisma+engines@*/node_modules/@prisma ./node_modules/@prisma
-COPY --from=deps --chown=node:node /app/node_modules/prisma ./node_modules/prisma
-COPY --from=deps --chown=node:node /app/node_modules/dotenv ./node_modules/dotenv
-COPY --from=deps --chown=node:node /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
-ENV PATH="/app/node_modules/.bin:${PATH}"
-RUN chmod +x /app/node_modules/.bin/prisma || true
+USER node
 # Refuse to publish a standalone image without the native runtime used by
 # photo uploads. The dependency must resolve from the actual server entry.
-RUN node -e "const fs=require('node:fs');const {createRequire}=require('node:module');const entry=['/app/app/server.js','/app/server.js','/app/crossnext/server.js'].find(fs.existsSync);if(!entry)throw new Error('Next.js standalone server entry not found');const sharp=createRequire(entry)('sharp');if(!sharp.versions?.vips)throw new Error('Sharp/libvips runtime is unavailable');console.log('Sharp/libvips',sharp.versions.vips)"
-USER node
+RUN test -f /app/app/server.js \
+  && node -e "const sharp = require('node:module').createRequire('/app/app/server.js')('sharp'); if (!sharp.versions.vips) throw new Error('Sharp/libvips runtime is unavailable')"
 EXPOSE 3000
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD ["node","-e","fetch('http://app:3000/api/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+  CMD ["node","-e","fetch('http://127.0.0.1:3000/api/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
 LABEL org.opencontainers.image.created=$BUILD_DATE \
-      org.opencontainers.image.source="https://example.com/repository" \
       org.opencontainers.image.revision=$VCS_REF \
       org.opencontainers.image.version=$VERSION \
       org.opencontainers.image.title="crossnext" \

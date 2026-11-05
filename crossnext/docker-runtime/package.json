@@ -1,0 +1,18 @@
+{
+  "name": "crossnext-container-runtime",
+  "private": true,
+  "dependencies": {
+    "@megacross/cross-format": "file:../../packages/cross-format",
+    "@prisma/adapter-pg": "^7.1.0",
+    "@prisma/client": "^7.8.0",
+    "@prisma/config": "^7.8.0",
+    "bcrypt": "^6.0.0",
+    "dotenv": "^16.4.5",
+    "mysql2": "^3.11.3",
+    "node-cron": "^3.0.3",
+    "pg": "^8.16.3",
+    "prisma": "^7.8.0",
+    "tsx": "^4.19.1",
+    "zod": "^4.6.6"
+  }
+}

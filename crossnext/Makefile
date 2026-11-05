@@ -284,18 +284,18 @@ sync-sh:
 #   make sync-sh-prod
 #   make sync-down-prod
 sync-up-prod:
-	HOST_GATEWAY_IP=$(HOST_GATEWAY_IP) $(COMPOSE) --profile prod --profile sync up -d $(SYNC_SERVICE_PROD)
+	HOST_GATEWAY_IP=$(HOST_GATEWAY_IP) $(COMPOSE) --profile prod up -d $(SYNC_SERVICE_PROD)
 
 sync-logs-prod:
-	$(COMPOSE) --profile prod --profile sync logs -f $(SYNC_SERVICE_PROD)
+	$(COMPOSE) --profile prod logs -f $(SYNC_SERVICE_PROD)
 
 sync-sh-prod:
-	$(COMPOSE) --profile prod --profile sync exec $(SYNC_SERVICE_PROD) sh -lc 'command -v bash >/dev/null && exec bash || exec sh'
+	$(COMPOSE) --profile prod exec $(SYNC_SERVICE_PROD) sh -lc 'command -v bash >/dev/null && exec bash || exec sh'
 
 sync-down-prod:
-	-$(COMPOSE) --profile prod --profile sync rm -sf $(SYNC_SERVICE_PROD) || true
+	-$(COMPOSE) --profile prod rm -sf $(SYNC_SERVICE_PROD) || true
 
 # Prod sync against local mysql-dev container (for testing)
 # Brings up mysql-dev and points DSN to it
 sync-up-prod-local-mysql:
-	HOST_GATEWAY_IP=$(HOST_GATEWAY_IP) LEGACY_MYSQL_URL=mysql://legacy:legacy@mysql-dev:3306/legacydb $(COMPOSE) --profile prod --profile mysql --profile sync up -d $(SYNC_SERVICE_PROD)
+	HOST_GATEWAY_IP=$(HOST_GATEWAY_IP) LEGACY_MYSQL_URL=mysql://legacy:legacy@mysql-dev:3306/legacydb $(COMPOSE) --profile prod --profile mysql up -d $(SYNC_SERVICE_PROD)

@@ -7,14 +7,21 @@
 **/coverage
 **/dist
 **/test-results
+**/.turbo
+**/.agents
+**/*.tsbuildinfo
+_legacy_backup
+output
+temp
 var
 crossnext/var
+cross/server/generated
 cross/server/out
 *.log
 **/.DS_Store
 
-cross/server/native/template-generator/target
-cross/server/native/template-generator/*.node
+cross/server/native/*/target
+cross/server/native/*/*.node
 
 # Build containers receive configuration through build args and runtime env/secrets.
 **/.env

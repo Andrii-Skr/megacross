@@ -1,0 +1,10 @@
+services:
+  app:
+    build: !reset null
+    pull_policy: never
+  cross:
+    build: !reset null
+    pull_policy: never
+  legacy-sync:
+    build: !reset null
+    pull_policy: never
