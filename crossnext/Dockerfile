@@ -39,7 +39,6 @@ CMD ["pnpm","dev"]
 
 # ---- builder: compile Next.js (standalone) ----
 FROM deps AS builder
-ARG TARGETARCH
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
 # Safe fallback for Prisma during build only; runtime must supply real DATABASE_URL
 ENV PRISMA_ALLOW_FALLBACK=1 PRISMA_FALLBACK_URL=postgresql://prisma:prisma@localhost:5432/prisma?schema=public
@@ -48,8 +47,8 @@ ARG NEXTAUTH_URL=http://localhost:3000
 ARG NEXT_PUBLIC_CROSS_API_URL=http://localhost:3001
 ENV NEXTAUTH_SECRET=builder-secret-placeholder NEXTAUTH_URL=$NEXTAUTH_URL NEXT_PUBLIC_CROSS_API_URL=$NEXT_PUBLIC_CROSS_API_URL
 COPY crossnext/. .
-RUN --mount=type=cache,id=crossnext-build-${TARGETARCH},target=/app/.next/cache,sharing=locked \
-  pnpm prisma generate && pnpm build
+# A restored Turbopack cache can emit stale PostCSS output.
+RUN pnpm prisma generate && pnpm build
 
 # Deploy the Prisma and legacy sync dependencies from the same lockfile as Next.js.
 FROM install-base AS runtime-deps

@@ -215,3 +215,75 @@
     overflow: hidden;
   }
 }
+
+/* Keep the root 404 styles in the stylesheet shared by all routes. */
+.not-found-page {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 3rem 1.5rem;
+}
+
+.not-found-content {
+  display: flex;
+  width: 100%;
+  max-width: 28rem;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.not-found-code {
+  margin-bottom: 1.5rem;
+  color: color-mix(in oklab, var(--primary) 20%, transparent);
+  font-size: clamp(7rem, 15vw, 9rem);
+  font-weight: 600;
+  letter-spacing: -0.08em;
+  line-height: 1;
+  user-select: none;
+}
+
+.not-found-description {
+  max-width: 24rem;
+  margin-top: 0.75rem;
+  color: var(--muted-foreground);
+  line-height: 1.6;
+}
+
+.not-found-action {
+  gap: 0.5rem;
+  margin-top: 2rem;
+  border-radius: 0.75rem;
+  padding-inline: 1.25rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .not-found-content {
+    animation: not-found-enter 350ms ease-out both;
+  }
+
+  .not-found-action,
+  .not-found-action svg {
+    transition: transform 200ms ease;
+  }
+
+  .not-found-action:hover {
+    transform: translateY(-2px);
+  }
+
+  .not-found-action:hover svg {
+    transform: translateX(-2px);
+  }
+}
+
+@keyframes not-found-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
