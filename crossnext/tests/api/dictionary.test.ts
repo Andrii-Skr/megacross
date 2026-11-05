@@ -9,6 +9,47 @@ describe("/api/dictionary (GET)", () => {
     setAuthed({ id: "u1" }); // not required, but consistent
   });
 
+  it("returns image presence for the current page in one batch", async () => {
+    prisma.word_v.findMany.mockResolvedValue([
+      { id: 1n, word_text: "cat", isImageable: true, opred_v: [] },
+      { id: 2n, word_text: "dog", isImageable: true, opred_v: [] },
+      { id: 3n, word_text: "bird", isImageable: true, opred_v: [] },
+    ]);
+    prisma.scanwordWordImage.findMany.mockResolvedValue([{ wordId: 1n }, { wordId: 3n }]);
+    const response = await GET(makeReq("GET", "http://localhost/api/dictionary"), makeCtx({}));
+    const json = await response.json();
+    expect(response.status).toBe(200);
+    expect(json.items.map((word: { hasImage: boolean }) => word.hasImage)).toEqual([true, false, true]);
+    expect(prisma.scanwordWordImage.findMany).toHaveBeenCalledExactlyOnceWith({
+      where: { wordId: { in: [1n, 2n, 3n] } },
+      select: { wordId: true },
+      distinct: ["wordId"],
+    });
+  });
+
+  it("skips the image query for an empty page", async () => {
+    prisma.word_v.findMany.mockResolvedValue([]);
+    const response = await GET(makeReq("GET", "http://localhost/api/dictionary"), makeCtx({}));
+    expect(response.status).toBe(200);
+    expect((await response.json()).items).toEqual([]);
+    expect(prisma.scanwordWordImage.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns hasImage false when the image table is missing", async () => {
+    prisma.word_v.findMany.mockResolvedValue([{ id: 1n, word_text: "cat", opred_v: [] }]);
+    prisma.scanwordWordImage.findMany.mockRejectedValue(new Error('relation "scanword_word_images" does not exist'));
+    const response = await GET(makeReq("GET", "http://localhost/api/dictionary"), makeCtx({}));
+    expect(response.status).toBe(200);
+    expect((await response.json()).items[0].hasImage).toBe(false);
+  });
+
+  it("does not hide unrelated image query failures", async () => {
+    prisma.word_v.findMany.mockResolvedValue([{ id: 1n, word_text: "cat", opred_v: [] }]);
+    prisma.scanwordWordImage.findMany.mockRejectedValue(new Error("connection lost"));
+    const response = await GET(makeReq("GET", "http://localhost/api/dictionary"), makeCtx({}));
+    expect(response.status).toBe(500);
+  });
+
   it.each([
     "0",
     "-1",

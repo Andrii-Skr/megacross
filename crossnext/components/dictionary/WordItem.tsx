@@ -17,6 +17,7 @@ export type Word = {
   id: string;
   word_text: string;
   isImageable?: boolean;
+  hasImage: boolean;
   is_pending_edit?: boolean;
   defs_total?: number;
   opred_v: Def[];

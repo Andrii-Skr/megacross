@@ -51,7 +51,7 @@ export async function generateWithGemini(
 
   const isVertex =
     /aiplatform\.googleapis\.com/.test(opts.baseUrl) || /\/projects\/[^/]+\/locations\//.test(pathFor(opts.model));
-  const maxOutTokens = Math.max(256, Math.min(2048, Math.ceil(input.maxLength * 4)));
+  const maxOutTokens = Math.max(256, Math.min(6144, Math.ceil(input.maxLength * 4 * (input.count ?? 1))));
   const makeBody = (userText: string, sysText: string) =>
     JSON.stringify(
       isVertex

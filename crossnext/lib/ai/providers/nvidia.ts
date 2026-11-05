@@ -61,7 +61,10 @@ export async function generateWithNvidia(
           { role: "system", content: opts.systemText },
           { role: "user", content: opts.userText },
         ],
-        max_tokens: Math.max(24, Math.min(512, Math.ceil(input.maxLength * 1.5))),
+        max_tokens: Math.max(
+          24,
+          Math.min(512 * (input.count ?? 1), Math.ceil(input.maxLength * 1.5 * (input.count ?? 1))),
+        ),
         temperature: Number.isFinite(temp) ? temp : 0.2,
         top_p: Number.isFinite(topP) ? topP : 0.7,
         frequency_penalty: Number.isFinite(frequencyPenalty) ? frequencyPenalty : 0,

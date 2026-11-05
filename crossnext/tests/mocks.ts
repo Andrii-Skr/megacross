@@ -66,7 +66,7 @@ export const prisma = {
   },
   scanwordWordImage: {
     update: vi.fn(),
-    findMany: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
     findUnique: vi.fn(),
     findFirst: vi.fn(),
     create: vi.fn(),
@@ -114,4 +114,5 @@ export function resetMocks() {
       }
     }
   }
+  prisma.scanwordWordImage.findMany.mockResolvedValue([]);
 }

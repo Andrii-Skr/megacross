@@ -45,6 +45,16 @@ describe("proxy auth status", () => {
     expect(res.headers.get("location")).toContain("/ru/auth/sign-in");
   });
 
+  it.each(["ru", "uk", "en"])("forwards the URL locale %s for missing pages", async (locale) => {
+    getTokenMock.mockResolvedValue({ role: "USER", isDeleted: false } as JWT);
+    const req = new NextRequest(`http://localhost/${locale}/dashboard/publication-issue-mappings`, {
+      headers: { "X-NEXT-INTL-LOCALE": "wrong-locale" },
+    });
+    const res = await proxy(req);
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.headers.get("x-middleware-request-x-next-intl-locale")).toBe(locale);
+  });
+
   it("allows when status endpoint confirms role", async () => {
     getTokenMock.mockResolvedValue({ id: 1, role: "USER", isDeleted: false } as JWT);
     const fetchMock = vi

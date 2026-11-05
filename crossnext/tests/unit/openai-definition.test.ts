@@ -14,6 +14,77 @@ const response = (content: string, finish_reason = "stop") =>
 afterEach(() => vi.restoreAllMocks());
 
 describe("OpenAI definition correction", () => {
+  it.each([
+    [6, "[]"],
+    [3, "[]"],
+    [1, ""],
+    [1, '""'],
+  ] as const)("accepts an explicit empty result for count=%s without a correction request", async (count, text) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(response(text));
+    await expect(generateWithOpenAI({ ...input, count }, opts)).resolves.toEqual({ ok: true, text });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat missing or token-truncated content as an explicit empty result", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(response("[]", "length"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: null }, finish_reason: "stop" }] })),
+      );
+    await expect(generateWithOpenAI({ ...input, count: 3 }, opts)).resolves.toMatchObject({ ok: false, status: 502 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it("accepts three distinct clues in one upstream request", async () => {
+    const texts = ["small pet", "domestic feline", "furry companion"];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(response(JSON.stringify(texts)));
+    await expect(generateWithOpenAI({ ...input, count: 3 }, opts)).resolves.toEqual({
+      ok: true,
+      text: JSON.stringify(texts),
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+  it("preserves six candidates for server filtering in one upstream request", async () => {
+    const texts = [
+      "small pet",
+      "domestic feline",
+      "furry companion",
+      "night hunter",
+      "mouse catcher",
+      "purring animal",
+    ];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(response(JSON.stringify(texts)));
+    await expect(generateWithOpenAI({ ...input, count: 6 }, opts)).resolves.toEqual({
+      ok: true,
+      text: JSON.stringify(texts),
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).max_tokens).toBe(240);
+  });
+
+  it("keeps the six-candidate contract when correcting an invalid batch", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(response("invalid array"))
+      .mockResolvedValueOnce(response('["small pet"]'));
+    await expect(generateWithOpenAI({ ...input, count: 6 }, opts)).resolves.toEqual({
+      ok: true,
+      text: '["small pet"]',
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).messages.at(-1).content).toContain("up to 6 distinct");
+  });
+  it("corrects a malformed batch with the same JSON-array contract", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(response("not a JSON array"))
+      .mockResolvedValueOnce(response('["small pet"]'));
+    await expect(generateWithOpenAI({ ...input, count: 3 }, opts)).resolves.toEqual({
+      ok: true,
+      text: '["small pet"]',
+    });
+    const second = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(second.messages.at(-1).content).toContain("JSON array");
+  });
   it("rewrites an overlong clue once without cutting it", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

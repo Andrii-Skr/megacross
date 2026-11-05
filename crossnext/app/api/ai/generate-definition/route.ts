@@ -1,16 +1,25 @@
 import { type NextRequest, NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { z } from "zod";
-import { buildUserPrompt, normalizeGeneratedDefinition, systemEn } from "@/lib/ai/prompts";
+import {
+  buildDefinitionSystemPrompt,
+  buildUserPrompt,
+  isEmptyGeneratedDefinitions,
+  normalizeGeneratedDefinitions,
+} from "@/lib/ai/prompts";
 import { generateWithAnthropic } from "@/lib/ai/providers/anthropic";
 import { generateWithGemini } from "@/lib/ai/providers/gemini";
 import { generateWithNvidia } from "@/lib/ai/providers/nvidia";
 import { generateWithOpenAI } from "@/lib/ai/providers/openai";
 import { Permissions } from "@/lib/authz";
+import { prisma } from "@/lib/db";
+import { filterUniqueDefinitions } from "@/lib/definitionDeduplication";
 import { apiRoute } from "@/utils/appRoute";
 
 const schema = z.object({
   word: z.string().min(1),
+  wordId: z.string().regex(/^\d+$/).optional(),
+  count: z.union([z.literal(1), z.literal(3)]).default(1),
   language: z.enum(["ru", "uk", "en"]).default("ru"),
   existing: z.array(z.string()).default([]),
   avoid: z.array(z.string()).default([]),
@@ -131,7 +140,29 @@ export const POST = apiRoute<Body>(
       );
     }
 
-    const { word, existing, avoid, language, maxLength } = body;
+    const { word, wordId, avoid, language, maxLength, count } = body;
+    let existing = body.existing;
+    if (wordId) {
+      // The list on the client may still be filtered or loading. Read the full active context here.
+      const storedWord = await prisma.word_v.findFirst({
+        where: { id: BigInt(wordId), is_deleted: false, language: { code: language } },
+        select: {
+          opred_v: {
+            where: {
+              is_deleted: false,
+              language: { code: language },
+              OR: [{ end_date: null }, { end_date: { gte: new Date() } }],
+            },
+            select: { text_opr: true },
+          },
+        },
+      });
+      if (!storedWord) return NextResponse.json({ success: false, message: "Word not found" }, { status: 404 });
+      existing = [...new Set([...existing, ...storedWord.opred_v.map((definition) => definition.text_opr)])];
+    }
+    // Generate a reserve, then apply the display limit after duplicate filtering.
+    const candidateCount = count === 3 ? 6 : 1;
+    const systemText = buildDefinitionSystemPrompt(candidateCount);
     const timeoutMs = Math.max(1000, Math.min(60000, Number(process.env.AI_TIMEOUT_MS) || 20000));
 
     try {
@@ -144,14 +175,15 @@ export const POST = apiRoute<Body>(
             existing,
             avoid,
             maxLength,
+            count: candidateCount,
           },
           {
             apiKey: anthropicKey,
             model: anthropicModel,
             version: process.env.ANTHROPIC_VERSION || "2023-06-01",
             extraHeaders,
-            systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
+            systemText,
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid, candidateCount),
             timeoutMs,
           },
         );
@@ -176,6 +208,7 @@ export const POST = apiRoute<Body>(
             existing,
             avoid,
             maxLength,
+            count: candidateCount,
           },
           {
             baseUrl: baseUrlGemini,
@@ -185,8 +218,8 @@ export const POST = apiRoute<Body>(
             pathTemplate: process.env.GEMINI_PATH,
             authHeader: process.env.GEMINI_AUTH_HEADER?.trim(),
             extraHeaders,
-            systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
+            systemText,
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid, candidateCount),
             timeoutMs,
           },
         );
@@ -211,14 +244,15 @@ export const POST = apiRoute<Body>(
             existing,
             avoid,
             maxLength,
+            count: candidateCount,
           },
           {
             baseUrl: baseUrlNvidia,
             apiKey: nvidiaKey,
             model: nvidiaModel,
             extraHeaders,
-            systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
+            systemText,
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid, candidateCount),
             path: process.env.NVIDIA_PATH || "/v1/chat/completions",
             authHeader: process.env.NVIDIA_AUTH_HEADER || "Authorization",
             authScheme: process.env.NVIDIA_AUTH_SCHEME ?? "Bearer",
@@ -250,14 +284,15 @@ export const POST = apiRoute<Body>(
             existing,
             avoid,
             maxLength,
+            count: candidateCount,
           },
           {
             baseUrl: baseUrlOpenAI,
             apiKey: apiKeyOpenAI,
             model: openAIModel,
             extraHeaders,
-            systemText: systemEn,
-            userText: buildUserPrompt(language, word, existing, maxLength, avoid),
+            systemText,
+            userText: buildUserPrompt(language, word, existing, maxLength, avoid, candidateCount),
             path: process.env.AI_PATH || "/v1/chat/completions",
             authHeader: process.env.AI_AUTH_HEADER || "Authorization",
             authScheme: process.env.AI_AUTH_SCHEME ?? "Bearer",
@@ -278,15 +313,39 @@ export const POST = apiRoute<Body>(
         }
         textOut = r.text;
       }
-      const cleaned = normalizeGeneratedDefinition(textOut, word, [...existing, ...avoid], maxLength);
-      if (!cleaned) {
+      if (isEmptyGeneratedDefinitions(textOut, candidateCount)) {
+        return NextResponse.json(
+          { success: false, errorCode: "AI_NO_NEW_DEFINITIONS", message: "No new definitions found" },
+          { status: 422 },
+        );
+      }
+      const normalized = normalizeGeneratedDefinitions(
+        textOut,
+        word,
+        [...existing, ...avoid],
+        maxLength,
+        candidateCount,
+      );
+      if (!normalized.length) {
         aiLog("AI returned an invalid, duplicate or overlong definition", { provider });
         return NextResponse.json({ success: false, message: "AI returned invalid content" }, { status: 502 });
+      }
+      const texts = filterUniqueDefinitions(
+        normalized,
+        [...existing, ...avoid].map((text, id) => ({ id, text, lang: language })),
+        language,
+      ).slice(0, count);
+      if (!texts.length) {
+        return NextResponse.json(
+          { success: false, errorCode: "AI_NO_UNIQUE_DEFINITIONS", message: "All suggestions are duplicates" },
+          { status: 422 },
+        );
       }
 
       return NextResponse.json({
         success: true,
-        text: cleaned,
+        text: texts[0],
+        texts,
       });
     } catch (e: unknown) {
       const msg =

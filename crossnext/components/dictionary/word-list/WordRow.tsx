@@ -1,5 +1,5 @@
 "use client";
-import { CirclePlus, Hash, Loader2, SquarePen, Trash2 } from "lucide-react";
+import { CirclePlus, Hash, Image, ImagePlus, Loader2, SquarePen, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -97,9 +97,36 @@ export function WordRow({
         <div className="w-full px-1 md:w-1/3 md:min-w-56">
           <div className="group relative font-medium md:pr-16 wrap-break-word">
             {word.word_text}
-            <div className="text-xs font-normal text-muted-foreground">
-              {t("wordIsImageable")}: {t(word.isImageable ? "yes" : "wordImageabilityNo")}
-            </div>
+            {word.isImageable && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={t("wordIsImageable")}
+                      className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <ImagePlus className="size-4" aria-hidden />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{t("wordIsImageable")}</TooltipContent>
+                </Tooltip>
+                {word.hasImage && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={t("wordHasImage")}
+                        className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <Image className="size-4" aria-hidden />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("wordHasImage")}</TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
+            )}
             <div className="mt-2 md:mt-0 md:absolute md:right-0 md:top-0 flex gap-1 controls-hover-visible transition">
               <Tooltip>
                 <TooltipTrigger asChild>

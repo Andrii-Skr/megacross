@@ -4,6 +4,7 @@ import type { Session } from "next-auth";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { buildDictionarySearchRegex, filterDictionarySearchRows } from "@/lib/dictionarySearch";
+import { isMissingWordImagesRelationError } from "@/lib/scanwordWordImages";
 import { apiRoute } from "@/utils/appRoute";
 
 const pageSizeSchema = z.coerce.number().int().min(1);
@@ -295,7 +296,7 @@ const getHandler = async (
   // Pending status for words/definitions to hide edit buttons
   const wordIds = pageRaw.map((w) => w.id);
   const defIds = pageRaw.flatMap((w) => w.opred_v.map((d) => d.id));
-  const [renamePendingsRaw, defPendingsRaw, defsCountRaw] = await Promise.all([
+  const [renamePendingsRaw, defPendingsRaw, defsCountRaw, imagesRaw] = await Promise.all([
     wordIds.length
       ? prisma.pendingWords.findMany({
           where: { status: "PENDING", targetWordId: { in: wordIds }, note: { contains: '"kind":"editWord"' } },
@@ -323,7 +324,20 @@ const getHandler = async (
           _count: { _all: true },
         })
       : Promise.resolve([] as Array<{ word_id: bigint; _count: { _all: number } }>),
+    wordIds.length
+      ? prisma.scanwordWordImage
+          .findMany({
+            where: { wordId: { in: wordIds } },
+            select: { wordId: true },
+            distinct: ["wordId"],
+          })
+          .catch((error: unknown) => {
+            if (!isMissingWordImagesRelationError(error)) throw error;
+            return [];
+          })
+      : Promise.resolve([]),
   ]);
+  const wordsWithImages = new Set((imagesRaw ?? []).map((image) => String(image.wordId)));
   const renamePendings = renamePendingsRaw ?? [];
   const defPendings = defPendingsRaw ?? [];
   const wordPendingSet = new Set<string>(renamePendings.map((r) => String(r.targetWordId ?? "")));
@@ -344,6 +358,7 @@ const getHandler = async (
     id: String(w.id),
     word_text: w.word_text,
     isImageable: w.isImageable,
+    hasImage: wordsWithImages.has(String(w.id)),
     is_pending_edit: wordPendingSet.has(String(w.id)),
     defs_total: defsCountMap.get(String(w.id)) ?? w.opred_v.length,
     opred_v: w.opred_v.map((d) => ({

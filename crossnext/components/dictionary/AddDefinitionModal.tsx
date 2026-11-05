@@ -15,14 +15,20 @@ import {
   SimilarMatchesList,
   type Tag,
 } from "@/components/dictionary/add-definition";
+import {
+  type DefinitionSuggestions,
+  GeneratedDefinitions,
+} from "@/components/dictionary/add-definition/GeneratedDefinitions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogOverlay, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getActionErrorMeta } from "@/lib/action-error";
 import { toEndOfDayUtcIso } from "@/lib/date";
+import { filterUniqueDefinitions, getSimilarDefinitionMatches } from "@/lib/definitionDeduplication";
+import { definitionSuggestionsSchema } from "@/lib/definitionSuggestions";
 import { fetcher } from "@/lib/fetcher";
 import type { ExistingDef } from "@/lib/similarityClient";
-import { compareWithPrepared, prepareExisting } from "@/lib/similarityClient";
+import { prepareExisting } from "@/lib/similarityClient";
 import { SIMILARITY_CONFIG } from "@/lib/similarityConfig";
 import { useDifficulties } from "@/lib/useDifficulties";
 import { useGenerateDefinition } from "@/lib/useGenerateDefinition";
@@ -100,6 +106,7 @@ export function AddDefinitionModal({
     formState: { errors, isSubmitting },
     reset,
     setValue,
+    getValues,
     control,
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -118,7 +125,16 @@ export function AddDefinitionModal({
     requestLanguage === "ru" || requestLanguage === "uk" || requestLanguage === "en"
       ? (requestLanguage as "ru" | "uk" | "en")
       : undefined;
-  const { generate, loading: genLoading } = useGenerateDefinition();
+  const { generate, loading: genLoading, cancel: cancelGeneration } = useGenerateDefinition();
+  const [suggestionsByField, setSuggestionsByField] = useState<Record<string, DefinitionSuggestions>>({});
+  const [generatingField, setGeneratingField] = useState<string | null>(null);
+  const generationSession = useRef(0);
+  useEffect(
+    () => () => {
+      generationSession.current += 1;
+    },
+    [],
+  );
   const [fetchedExisting, setFetchedExisting] = useState<Array<Pick<ExistingDef, "id" | "text" | "lang">>>([]);
   const [aiHistoryByField, setAiHistoryByField] = useState<Record<string, string[]>>({});
 
@@ -179,6 +195,9 @@ export function AddDefinitionModal({
     return deduped;
   }, [existing, fetchedExisting, simLang]);
 
+  const liveContext = useRef({ open, wordId, requestLanguage, fields, existingForChecks });
+  liveContext.current = { open, wordId, requestLanguage, fields, existingForChecks };
+
   // Подготовка кэша существующих определений (зависит только от языка и входного массива)
   const preparedExisting = useMemo(() => {
     return prepareExisting(
@@ -194,24 +213,35 @@ export function AddDefinitionModal({
   }, [existingForChecks, simLang]);
 
   const definitionsKey = JSON.stringify((definitions ?? []).map((d) => (d?.definition ?? "").trim()));
+  const visibleSuggestionsByField = useMemo(() => {
+    const localDefinitions = (JSON.parse(definitionsKey) as string[])
+      .filter(Boolean)
+      .map((text, index) => ({ id: `local-${index}`, text, lang: simLang }));
+    const existing = [...existingForChecks, ...localDefinitions];
+    const visible: Record<string, DefinitionSuggestions> = {};
+    for (const [fieldKey, suggestions] of Object.entries(suggestionsByField)) {
+      const parsed = definitionSuggestionsSchema.safeParse(suggestions);
+      if (!parsed.success) continue;
+      const texts = filterUniqueDefinitions(parsed.data.texts, existing, simLang);
+      if (texts.length) {
+        visible[fieldKey] = { texts, selected: parsed.data.selected.filter((text) => texts.includes(text)) };
+      }
+    }
+    return visible;
+  }, [definitionsKey, existingForChecks, simLang, suggestionsByField]);
+
   const similarByDefinition = useMemo(() => {
     if (!open) return [];
     const defTexts = JSON.parse(definitionsKey) as string[];
-    return defTexts.map((text) => {
-      if (!text || preparedExisting.length === 0) return [];
-      const res = compareWithPrepared({ text, lang: simLang }, preparedExisting, {
-        nearThreshold: SIMILARITY_CONFIG.nearThreshold,
-        duplicateThreshold: SIMILARITY_CONFIG.duplicateThreshold,
-        topK: SIMILARITY_CONFIG.topK,
-      });
-      return res.top
-        .filter((i) => i.percent >= SIMILARITY_CONFIG.nearThreshold)
-        .map((i) => ({
-          ...i,
-          kind: i.percent >= SIMILARITY_CONFIG.duplicateThreshold ? ("duplicate" as const) : ("similar" as const),
-        }));
-    });
+    return defTexts.map((text) => getSimilarDefinitionMatches(text, preparedExisting, simLang));
   }, [definitionsKey, simLang, preparedExisting, open]);
+
+  const suggestionMatchesByText = useMemo(() => {
+    const texts = new Set(Object.values(visibleSuggestionsByField).flatMap((suggestions) => suggestions.texts));
+    return Object.fromEntries(
+      [...texts].map((text) => [text, getSimilarDefinitionMatches(text, preparedExisting, simLang)]),
+    );
+  }, [visibleSuggestionsByField, preparedExisting, simLang]);
 
   const { data: difficultiesData } = useDifficulties(open);
   const difficulties = difficultiesData ?? [];
@@ -255,29 +285,129 @@ export function AddDefinitionModal({
   const handleGenerateForIndex = useCallback(
     async (idx: number, fieldKey: string) => {
       if (!wordText) return;
-      const currentValue = definitions?.[idx]?.definition?.trim() ?? "";
-      const blocked = [...(aiHistoryByField[fieldKey] ?? []), currentValue].filter((value) => value.length > 0);
-      const text = await generate({
+      const session = generationSession.current;
+      const currentValue = getValues(`definitions.${idx}.definition`)?.trim() ?? "";
+      const blocked = [...Object.values(aiHistoryByField).flat(), currentValue].filter(Boolean);
+      setGeneratingField(fieldKey);
+      const texts = await generate({
         word: wordText,
+        wordId,
         language: resolvedLang,
         existing: buildExistingForAi(idx),
         avoid: blocked,
         maxLength: DEF_MAX_LENGTH,
-        toastOnSuccess: true,
+        count: 3,
       });
-      if (!text) return;
-      rememberAiVariant(fieldKey, text);
-      setValue(`definitions.${idx}.definition`, text, {
-        shouldTouch: true,
-        shouldDirty: true,
+      const context = liveContext.current;
+      if (
+        generationSession.current !== session ||
+        !context.open ||
+        context.wordId !== wordId ||
+        context.requestLanguage !== requestLanguage ||
+        !context.fields.some((field) => field.id === fieldKey)
+      )
+        return;
+      setGeneratingField(null);
+      if (!texts?.length) return;
+      for (const text of texts) rememberAiVariant(fieldKey, text);
+      const localDefinitions = getValues("definitions")
+        .map((definition, index) => ({ id: `local-${index}`, text: definition.definition, lang: resolvedLang }))
+        .filter((definition) => definition.text.trim().length > 0);
+      const uniqueTexts = filterUniqueDefinitions(
+        texts,
+        [...context.existingForChecks, ...localDefinitions],
+        resolvedLang,
+      );
+      if (!uniqueTexts.length) {
+        toast.info(t("aiNoUniqueDefinitions"));
+        return;
+      }
+      setSuggestionsByField((prev) => ({ ...prev, [fieldKey]: { texts: uniqueTexts, selected: [] } }));
+    },
+    [
+      aiHistoryByField,
+      buildExistingForAi,
+      generate,
+      getValues,
+      rememberAiVariant,
+      requestLanguage,
+      resolvedLang,
+      t,
+      wordId,
+      wordText,
+    ],
+  );
+
+  const toggleSuggestion = useCallback((fieldKey: string, text: string, checked: boolean) => {
+    setSuggestionsByField((prev) => {
+      const current = prev[fieldKey];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [fieldKey]: {
+          ...current,
+          selected: checked
+            ? [...new Set([...current.selected, text])]
+            : current.selected.filter((item) => item !== text),
+        },
+      };
+    });
+  }, []);
+
+  const addSelectedSuggestions = useCallback(
+    (fieldKey: string) => {
+      const idx = liveContext.current.fields.findIndex((field) => field.id === fieldKey);
+      const suggestions = visibleSuggestionsByField[fieldKey];
+      if (idx < 0 || !suggestions) return;
+      const localDefinitions = getValues("definitions")
+        .filter((definition) => definition.definition.trim().length > 0)
+        .map((definition, index) => ({ id: `local-${index}`, text: definition.definition, lang: simLang }));
+      const selected = filterUniqueDefinitions(
+        suggestions.texts.filter((text) => suggestions.selected.includes(text)),
+        [...liveContext.current.existingForChecks, ...localDefinitions],
+        simLang,
+      );
+      if (!selected.length) return;
+      if (!getValues(`definitions.${idx}.definition`)?.trim()) {
+        setValue(`definitions.${idx}.definition`, selected.shift() ?? "", {
+          shouldTouch: true,
+          shouldDirty: true,
+          shouldValidate: true,
+        });
+      }
+      if (selected.length)
+        append(
+          selected.map((definition) => ({
+            definition,
+            note: "",
+            difficulty: defaultDifficulty,
+            endDate: null,
+            tags: [],
+          })),
+          { shouldFocus: false },
+        );
+      setSuggestionsByField((prev) => {
+        const next = { ...prev };
+        delete next[fieldKey];
+        return next;
       });
     },
-    [aiHistoryByField, buildExistingForAi, definitions, generate, rememberAiVariant, resolvedLang, setValue, wordText],
+    [append, defaultDifficulty, getValues, setValue, simLang, visibleSuggestionsByField],
   );
 
   const removeDefinition = useCallback(
     (idx: number, fieldKey: string) => {
       remove(idx);
+      if (generatingField === fieldKey) {
+        generationSession.current += 1;
+        cancelGeneration?.();
+        setGeneratingField(null);
+      }
+      setSuggestionsByField((prev) => {
+        const next = { ...prev };
+        delete next[fieldKey];
+        return next;
+      });
       setAiHistoryByField((prev) => {
         if (!(fieldKey in prev)) return prev;
         const next = { ...prev };
@@ -285,7 +415,7 @@ export function AddDefinitionModal({
         return next;
       });
     },
-    [remove],
+    [cancelGeneration, generatingField, remove],
   );
 
   const onCreate = handleSubmit(async (values) => {
@@ -338,10 +468,14 @@ export function AddDefinitionModal({
 
   const listId = useId();
   const resetForm = useCallback(() => {
+    generationSession.current += 1;
+    cancelGeneration?.();
+    setGeneratingField(null);
+    setSuggestionsByField({});
     setAiHistoryByField({});
     reset({ definitions: [{ definition: "", note: "", difficulty: defaultDifficulty, endDate: null, tags: [] }] });
     replace([{ definition: "", note: "", difficulty: defaultDifficulty, endDate: null, tags: [] }]);
-  }, [replace, reset, defaultDifficulty]);
+  }, [cancelGeneration, replace, reset, defaultDifficulty]);
 
   const resolvePanelPosition = useCallback(
     (anchor?: { x: number; y: number }) => {
@@ -579,11 +713,20 @@ export function AddDefinitionModal({
                                   errorMessage={errors.definitions?.[idx]?.definition?.message}
                                   valueLength={current?.definition?.length ?? 0}
                                   maxLength={DEF_MAX_LENGTH}
-                                  genLoading={genLoading}
+                                  genLoading={genLoading && generatingField === field.id}
                                   aiDisabled={submitting || genLoading || !wordText}
                                   autoComplete="off"
                                   onGenerate={() => handleGenerateForIndex(idx, field.id)}
                                 />
+                                {visibleSuggestionsByField[field.id] && (
+                                  <GeneratedDefinitions
+                                    suggestions={visibleSuggestionsByField[field.id]}
+                                    matchesByText={suggestionMatchesByText}
+                                    disabled={submitting || genLoading}
+                                    onToggle={(text, checked) => toggleSuggestion(field.id, text, checked)}
+                                    onAdd={() => addSelectedSuggestions(field.id)}
+                                  />
+                                )}
                                 <SimilarMatchesList items={similar} threshold={SIMILARITY_CONFIG.nearThreshold} />
                                 <MetaSection
                                   noteLabelId={noteLabelId}
@@ -807,11 +950,20 @@ export function AddDefinitionModal({
                                         errorMessage={errors.definitions?.[idx]?.definition?.message}
                                         valueLength={current?.definition?.length ?? 0}
                                         maxLength={DEF_MAX_LENGTH}
-                                        genLoading={genLoading}
+                                        genLoading={genLoading && generatingField === field.id}
                                         aiDisabled={submitting || genLoading || !wordText}
                                         autoComplete="off"
                                         onGenerate={() => handleGenerateForIndex(idx, field.id)}
                                       />
+                                      {visibleSuggestionsByField[field.id] && (
+                                        <GeneratedDefinitions
+                                          suggestions={visibleSuggestionsByField[field.id]}
+                                          matchesByText={suggestionMatchesByText}
+                                          disabled={submitting || genLoading}
+                                          onToggle={(text, checked) => toggleSuggestion(field.id, text, checked)}
+                                          onAdd={() => addSelectedSuggestions(field.id)}
+                                        />
+                                      )}
                                       <SimilarMatchesList items={similar} threshold={SIMILARITY_CONFIG.nearThreshold} />
                                       <MetaSection
                                         noteLabelId={noteLabelId}

@@ -1,11 +1,28 @@
-import { getTranslations } from "next-intl/server";
+import { ArrowLeft } from "lucide-react";
+import Link from "next/link";
+import { getLocale, getTranslations } from "next-intl/server";
+import { Button } from "@/components/ui/button";
+import styles from "./not-found.module.css";
 
 export default async function NotFound() {
-  const t = await getTranslations();
+  const [t, locale] = await Promise.all([getTranslations(), getLocale()]);
   return (
-    <div className="container py-10">
-      <h1 className="text-2xl font-semibold mb-2">{t("notFoundTitle")}</h1>
-      <p className="text-muted-foreground">{t("notFoundDescription")}</p>
-    </div>
+    <section aria-labelledby="not-found-title" className={styles.page}>
+      <div className={styles.content}>
+        <span aria-hidden className={styles.code}>
+          {404}
+        </span>
+        <h1 id="not-found-title" className="text-2xl font-semibold tracking-tight sm:text-3xl">
+          {t("notFoundTitle")}
+        </h1>
+        <p className={styles.description}>{t("notFoundDescription")}</p>
+        <Button asChild size="lg" className={styles.action}>
+          <Link href={`/${locale}/dictionary`}>
+            <ArrowLeft aria-hidden className="size-4" />
+            {t("backToDictionary")}
+          </Link>
+        </Button>
+      </div>
+    </section>
   );
 }

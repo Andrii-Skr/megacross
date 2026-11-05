@@ -38,7 +38,10 @@ export async function generateWithAnthropic(
       },
       body: JSON.stringify({
         model: opts.model,
-        max_tokens: Math.max(64, Math.min(300, Math.ceil(input.maxLength * 1.5))),
+        max_tokens: Math.max(
+          64,
+          Math.min(300 * (input.count ?? 1), Math.ceil(input.maxLength * 1.5 * (input.count ?? 1))),
+        ),
         messages: [
           {
             role: "user",

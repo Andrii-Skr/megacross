@@ -1,4 +1,4 @@
-import { normalizeGeneratedDefinition } from "@/lib/ai/prompts";
+import { isEmptyGeneratedDefinitions, normalizeGeneratedDefinitions } from "@/lib/ai/prompts";
 import type { GenerateInput, ProviderResult } from "@/lib/ai/types";
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -55,7 +55,7 @@ export async function generateWithOpenAI(
           model: opts.model,
           messages,
           temperature: 0.3,
-          max_tokens: Math.max(128, Math.min(1024, Math.ceil(input.maxLength * 2))),
+          max_tokens: Math.max(128, Math.min(3072, Math.ceil(input.maxLength * 2 * (input.count ?? 1)))),
         }),
         signal: ac.signal,
       });
@@ -69,17 +69,29 @@ export async function generateWithOpenAI(
       const data: unknown = await res.json();
       const content = deepGet(data, ["choices", 0, "message", "content"]);
       const text = typeof content === "string" ? content : "";
-      const cleaned = normalizeGeneratedDefinition(
+      const finishReason = deepGet(data, ["choices", 0, "finish_reason"]);
+      if (
+        typeof content === "string" &&
+        (finishReason === "stop" || finishReason == null) &&
+        isEmptyGeneratedDefinitions(text, input.count)
+      )
+        return { ok: true, text };
+      const cleaned = normalizeGeneratedDefinitions(
         text,
         input.word,
         [...input.existing, ...(input.avoid ?? [])],
         input.maxLength,
+        input.count,
       );
-      if (cleaned && deepGet(data, ["choices", 0, "finish_reason"]) !== "length") return { ok: true, text: cleaned };
+      if (cleaned.length > 0 && finishReason !== "length")
+        return { ok: true, text: (input.count ?? 1) > 1 ? JSON.stringify(cleaned) : cleaned[0] };
       messages.push({ role: "assistant", content: text });
       messages.push({
         role: "user",
-        content: `The previous clue failed validation (length: ${text.trim().length}; maximum: ${input.maxLength} characters including spaces). Rewrite it as a substantially shorter, complete clue in the requested language. Preserve the correct meaning, avoid the answer and exact existing clues. Return only the clue. Do not explain or truncate.`,
+        content:
+          (input.count ?? 1) > 1
+            ? `The previous response failed validation. Return ONLY a valid JSON array of up to ${input.count} distinct complete clues in the requested language, each within maximum: ${input.maxLength} characters including spaces. Preserve a real established meaning and avoid the answer. Use different verified identifying facts from existing clues, the avoid list and each other; synonym swaps and word reordering are not new facts. Return fewer clues if needed, or [] if none fit. Do not explain or truncate.`
+            : `The previous clue failed validation (length: ${text.trim().length}; maximum: ${input.maxLength} characters including spaces). Rewrite it as a substantially shorter, complete clue in the requested language. Preserve a real established meaning and avoid the answer. Use a different verified identifying fact from existing and rejected clues; do not restate the same fact with synonyms or reordered words. Return only the clue, or an empty string if no accurate, non-redundant clue fits. Do not explain or truncate.`,
       });
     }
     return { ok: false, message: "AI returned invalid content", status: 502 };

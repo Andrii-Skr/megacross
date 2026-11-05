@@ -94,6 +94,7 @@ export async function proxy(req: NextRequest) {
   const segments = pathname.split("/").filter(Boolean);
   const maybeLocale = segments[0];
   const hasLocale = locales.includes(maybeLocale as unknown as (typeof locales)[number]);
+  if (hasLocale) requestHeaders.set("X-NEXT-INTL-LOCALE", maybeLocale);
   const restPath = hasLocale ? `/${segments.slice(1).join("/")}` : pathname;
 
   const isAuthRoute = restPath.startsWith("/auth");
